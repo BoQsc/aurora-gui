@@ -102,6 +102,14 @@ int main(string[] args)
             "the strip is not to the right of the header text");
         assert(first.y + first.height <= objective.y,
             "the strip overlaps the objective row");
+        const last = root.detachedPlanStripRectForTesting(
+            root.detachedPlanStripCountForTesting() - 1);
+        const lastRight = last.x + last.width;
+        const rightLimit = liveCard.x + liveCard.width - 12;
+        assert(lastRight <= rightLimit + 1,
+            "the strip runs past the card's right padding");
+        assert(lastRight >= rightLimit - 16,
+            "the strip is not biased toward the card's right edge");
     }
     const firstX = first.x + first.width / 2;
     const firstY = first.y + first.height / 2;

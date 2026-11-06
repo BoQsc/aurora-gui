@@ -7,20 +7,27 @@ module auroraopencode.computeruse;
 // 1/on/true/yes/enabled/y to expose the `computer` tool; anything unset or in
 // the disable list keeps it hidden from both the toolset and the prompt.
 //
-// Design (from the feature request): a two-level agent. The "computer loop"
-// takes one tiny action at a time - screen, click, double_click, type, key,
-// scroll, wait_for_change - and is meant to run with no/low model reasoning so
-// each step is immediate. Only when the model is genuinely stuck ("which
-// installer option?", "why did this fail?") should it escalate to normal
-// planning. That escalation steering lives in systemprompt.d; this module only
-// exposes the local tool and never builds model requests.
+// Design: a two-level agent. The "computer loop" takes one tiny action at a time
+// - screen, click, double_click, type, key, scroll, wait_for_change - with
+// no/low model reasoning so each step is immediate. `action: "subagent"` runs
+// that loop itself over a STREAMED provider reply: every round attaches the
+// current frame, the model answers with one short sentence about that frame and
+// exactly one action, and the loop shows the sentence the moment it decodes,
+// then runs the action as soon as the message closes. Sentence cutting, the
+// action-readiness rule, the discipline prompt and pace accounting live in
+// sentenceloop.d; the SSE decode is the chat transport's own
+// ProviderStreamDecoder, so the loop reads provider output like the transcript.
+// Only when the model is genuinely stuck ("which installer option?", "why did
+// this fail?") should it escalate to normal planning; that steering lives in
+// systemprompt.d.
 //
 // The entire feature lives in this file plus deliberately tiny, greppable hooks
 // elsewhere (all tagged `experimental: computer use`):
 //   * source/auroraopencode/tools.d        - import, toolset registration, dispatch
 //   * source/auroraopencode/systemprompt.d - one steering sentence
-//   * source/auroraopencode/appui.d        - UI titles/subtitle
-//   * tests/tools_test.d                   - coverage
+//   * source/auroraopencode/appui.d        - UI titles/subtitle, one settings switch
+//   * source/auroraopencode/sentenceloop.d - sentence discipline, pace, shared switch
+//   * tests/test_computeruse_nested.py     - scripted SSE end-to-end loop coverage
 // To drop the feature: delete this file and delete the tagged hooks. Nothing
 // else references it.
 //
@@ -40,7 +47,8 @@ import auroraopencode.attachments : attachmentImageForData;
 // same one the chat transport uses, so the loop reads provider output exactly
 // like the transcript does.
 import auroraopencode.sentenceloop : SentencePace, actionArgumentsReady,
-    millisecondsText, sentenceLoopPrompt, sentencePaceText, takeSentences;
+    experimentalSentenceLoopEnabled, millisecondsText, sentenceLoopPrompt,
+    sentencePaceText, takeSentences;
 import auroraopencode.events : OpenCodeEvent, OpenCodeEventKind;
 import auroraopencode.providerstream : ProviderStreamDecoder;
 import std.algorithm : canFind, min;
@@ -350,7 +358,16 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "and a tab character. `screen` accepts a `region` {x,y,w,h} for a " ~
             "zoomed-in crop of one area. Every call costs a full model turn, so " ~
             "prefer one `steps` batch (click a field, type a line, press enter) " ~
-            "over a see -> act -> see round trip per action; `screenshot` " ~
+            "over a see -> act -> see round trip per action. For a longer " ~
+            "sequence whose next move depends on what the screen shows, use the " ~
+            "loop action (`subagent`) with a `task` (optionally `window`, " ~
+            "`frame`, `reasoning`, `max_steps`, `seconds`); it is an " ~
+            "experimental streaming " ~
+            "sentence loop - every round attaches the current frame, the model " ~
+            "answers with one short sentence about it and exactly one action, " ~
+            "the sentences appear as they decode, and the result reports " ~
+            "measured ms per sentence. Its Settings switch is off by default, " ~
+            "so it refuses until the operator enables it. `screenshot` " ~
             "decides whether a fresh capture comes back (default: yes for " ~
             "input and `steps`, always for `screen`). Aim from the " ~
             "latest `screen`: coordinates come from the frame you last saw. " ~
@@ -361,7 +378,7 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "not an application response. Set `input_mode` to `native` for games or " ~
             "shell controls that ignore virtual input. Verify progress in the latest " ~
             "screenshot; never treat an attempted action as proof of success. Windows only.",
-            `{"type":"object","properties":{"input_mode":{"type":"string","enum":["native","virtual"],"description":"Input mode for this call and its batch/nested actions. Native sends real OS input and is needed by games/shell controls that ignore posted messages. Virtual queues window messages with a ghost cursor; application response must be verified. Omit to use Settings. Subagent defaults to native; all its nested calls inherit the loop mode."},"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change","wait"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up (e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\"; key_down key_up hold it until the matching key_up) OR the macro name for macro"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"wait: full dwell 1..10000 ms (default 1000); drag: movement duration (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"click/double_click/drag: mouse button (default left); right_click always uses right"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\""},"window":{"type":"string","description":"Input target for type/key/click/drag: window title substring. Overrides the remembered target and refocuses it, so input cannot land in the wrong window; subagent: bind the loop to this window (otherwise inherits the established target)"},"repeat":{"type":"integer","description":"macro: how many times to run the sequence (default 1, max 64)"},"delay_ms":{"type":"integer","description":"macro: pause between repeats, in ms"},"seconds":{"type":"integer","description":"loop/subagent: time budget in seconds (loop default 10; subagent default 60)"},"task":{"type":"string","description":"subagent: the goal for the nested computer-use loop"},"max_steps":{"type":"integer","description":"subagent: how many model steps the nested loop may take (default 4, max 16)"},"frame":{"type":"string","enum":["full","half","quarter","tiny","diff"],"description":"subagent: per-step view - full/half/quarter (downscaled) or diff (only changed tiles at native scale with origins, fastest + most accurate coordinates; default half)"},"model":{"type":"string","description":"subagent: explicit model override; omission uses the selected application model"},"reasoning":{"type":"string","enum":["none","default"],"description":"subagent: hidden thinking - none (fast, default) or default (slower, better spatial judgement)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in screenshot pixels for a zoomed view of one area","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change","wait"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string","enum":["left","right","middle"],"description":"Mouse button for click/double_click/drag (default left); right_click uses right"},"title":{"type":"string"},"window":{"type":"string"},"repeat":{"type":"integer"},"delay_ms":{"type":"integer"},"seconds":{"type":"integer"},"task":{"type":"string"},"max_steps":{"type":"integer"},"frame":{"type":"string"},"model":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
+            `{"type":"object","properties":{"input_mode":{"type":"string","enum":["native","virtual"],"description":"Input mode for this call and its batch/nested actions. Native sends real OS input and is needed by games/shell controls that ignore posted messages. Virtual queues window messages with a ghost cursor; application response must be verified. Omit to use Settings. The streaming loop (action: \"subagent\") defaults to native; all its nested calls inherit the loop mode."},"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change","wait"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up (e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\"; key_down key_up hold it until the matching key_up) OR the macro name for macro"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"wait: full dwell 1..10000 ms (default 1000); drag: movement duration (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"click/double_click/drag: mouse button (default left); right_click always uses right"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\""},"window":{"type":"string","description":"Input target for type/key/click/drag: window title substring. Overrides the remembered target and refocuses it, so input cannot land in the wrong window; subagent: bind the loop to this window (otherwise inherits the established target)"},"repeat":{"type":"integer","description":"macro: how many times to run the sequence (default 1, max 64)"},"delay_ms":{"type":"integer","description":"macro: pause between repeats, in ms"},"seconds":{"type":"integer","description":"loop/subagent: time budget in seconds (loop default 10; subagent default 60)"},"task":{"type":"string","description":"subagent: the goal for the nested computer-use loop"},"max_steps":{"type":"integer","description":"subagent: how many model steps the nested loop may take (default 4, max 16)"},"frame":{"type":"string","enum":["full","half","quarter","tiny","diff"],"description":"subagent: per-step view - full/half/quarter (downscaled) or diff (only changed tiles at native scale with origins, fastest + most accurate coordinates; default half)"},"model":{"type":"string","description":"subagent: explicit model override; omission uses the selected application model"},"reasoning":{"type":"string","enum":["none","default"],"description":"subagent: hidden thinking - none (fast, default) or default (slower, better spatial judgement)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in screenshot pixels for a zoomed view of one area","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change","wait"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string","enum":["left","right","middle"],"description":"Mouse button for click/double_click/drag (default left); right_click uses right"},"title":{"type":"string"},"window":{"type":"string"},"repeat":{"type":"integer"},"delay_ms":{"type":"integer"},"seconds":{"type":"integer"},"task":{"type":"string"},"max_steps":{"type":"integer"},"frame":{"type":"string"},"model":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
         ),
     ];
 }
@@ -3295,9 +3312,9 @@ version (Windows)
         return builder.data;
     }
 
-    /// POST a JSON body over WinINet and return the response text.
-    /// Reused connection: opening a WinINet session + TLS handshake costs ~0.3-0.6 s,
-    /// which would be paid on every round of the loop.
+    /// A kept-alive WinINet connection for the loop's rounds. Reused on purpose:
+    /// opening a session + TLS handshake costs ~0.3-0.6 s, which would otherwise
+    /// be paid on every round.
     private struct HttpConn
     {
         void* session;
@@ -3339,76 +3356,6 @@ version (Windows)
         conn.connect = null;
         conn.session = null;
     }
-
-    private string httpPostJson(HttpConn conn, string url, string apiKey,
-        string body,
-        out string error)
-    {
-        error = null;
-        const parts = parseUrl(url);
-        if (conn.connect is null)
-        {
-            error = "HTTP connection is not open.";
-            return null;
-        }
-        uint flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE;
-        if (parts.secure) flags |= INTERNET_FLAG_SECURE;
-        auto request = HttpOpenRequestW(conn.connect, toUTF16z("POST"),
-            toUTF16z(parts.path), null, null, null, flags, 0);
-        if (request is null)
-        {
-            error = "could not open the request.";
-            return null;
-        }
-        scope (exit) InternetCloseHandle(request);
-        const headers = "Content-Type: application/json\r\n" ~
-            "Authorization: Bearer " ~ apiKey ~ "\r\n" ~
-            "x-opencode-session: " ~ computerUseRoutingSession() ~ "\r\n";
-        if (!HttpSendRequestW(request, toUTF16z(headers), -1,
-            cast(void*) body.ptr, cast(uint) body.length))
-        {
-            error = "send failed (" ~ to!string(GetLastError()) ~ ").";
-            return null;
-        }
-        uint status;
-        uint statusLength = uint.sizeof;
-        uint statusIndex;
-        if (!HttpQueryInfoW(request, HTTP_QUERY_STATUS_CODE |
-            HTTP_QUERY_FLAG_NUMBER, &status, &statusLength, &statusIndex))
-            status = 0;
-        if (status != 200)
-        {
-            try
-            {
-                import std.file : write;
-                const dir = environment.get("TEMP", ".");
-                write(dir ~ "/aurora-subagent-request.json", body);
-            }
-            catch (Exception) {}
-            error = "HTTP " ~ to!string(status) ~ " (body " ~
-                to!string(body.length) ~ " bytes).";
-            return null;
-        }
-        auto builder = appender!string();
-        ubyte[8192] buffer;
-        while (true)
-        {
-            uint read;
-            if (!InternetReadFile(request, buffer.ptr,
-                cast(uint) buffer.length, &read))
-            {
-                error = "read failed.";
-                return null;
-            }
-            if (read == 0) break;
-            foreach (i; 0 .. read) builder.put(cast(char) buffer[i]);
-        }
-        return builder.data;
-    }
-
-
-
-
 
     /// POST a JSON body and hand each response chunk to `onChunk` as it
     /// arrives, so the loop can decode sentences while the model is still
@@ -3838,6 +3785,15 @@ version (Windows)
         const task = jsonString(value, "task");
         if (task.length == 0)
             return failedResult("Error: subagent requires `task`.");
+        // The streaming loop is the experimental prototype: it runs only while
+        // its Settings switch is on, so an install that merely enables computer
+        // use keeps the plain, one-action-per-call tool.
+        if (!experimentalSentenceLoopEnabled())
+            return failedResult("Error: the streaming computer loop is an " ~
+                "experimental prototype and its switch is off. Enable " ~
+                "Settings > \"Experimental streaming computer loop (drive " ~
+                "this desktop)\" (or set AURORA_STREAMING_LOOP=1), or drive " ~
+                "the desktop one action at a time with the plain actions.");
         if (effectiveComputerApiKey().length == 0 ||
             effectiveComputerBaseUrl().length == 0 ||
             effectiveComputerModel().length == 0)

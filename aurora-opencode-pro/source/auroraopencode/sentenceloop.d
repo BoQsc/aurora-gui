@@ -123,7 +123,6 @@ struct SentencePace
     int rounds;
     int sentences;
     long lastCycleMs;
-    long totalCycleMs;
     long firstSentenceMs;
 }
 

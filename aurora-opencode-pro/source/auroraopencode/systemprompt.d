@@ -390,8 +390,12 @@ private string toolPolicySection(in SystemPromptContext ctx)
             "when the latest evidence does not support continuing. Camera motion may be opposite " ~
             "to a drag: calibrate against a stationary landmark. Use mouse_move then wait with " ~
             "duration_ms for edge-pan dwell; wait_for_change may end on animation. A nested " ~
-            "subagent uses the selected model and native input by default; pass window to bind " ~
-            "its target. Treat old gameplay notes as unverified until the current instruction " ~
+            "subagent is a streaming sentence loop: it runs on the selected model with native " ~
+            "input, attaches a fresh frame to every round, answers with one sentence plus one " ~
+            "action, and reports measured ms per sentence; it is an experimental prototype " ~
+            "that stays off until the operator enables its Settings switch, and window binds " ~
+            "its target. " ~
+            "Treat old gameplay notes as unverified until the current instruction " ~
             "confirms them. Never call an objective nearly complete without visible evidence.\n";
     text ~= "Use background execution for a command that may run longer " ~
         "than an ordinary interactive check. Inspect its elapsed time, status, " ~

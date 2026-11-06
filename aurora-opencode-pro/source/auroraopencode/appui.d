@@ -6493,7 +6493,6 @@ private final class PlanCard : Widget
         }
         const int rowY = y + (lineH - stripBarH) / 2;
         const int maxX = width - padH;
-        _stripRowRect = Rect(startX, y, maxInt(0, maxX - startX), lineH);
         // Shrink the rectangles before dropping any plan, so every plan of the
         // conversation stays represented while it fits.
         const int total = cast(int) _plans.length;
@@ -6521,9 +6520,14 @@ private final class PlanCard : Widget
             return;
         }
         const size_t first = _plans.length - cast(size_t) fit;
+        // Sit the row toward the card's right edge instead of hugging the
+        // title: the header reads as title on the left, plans on the right.
+        const int stripWidth = fit * barWidth + (fit - 1) * gap;
+        const int rowX = maxInt(startX, maxX - stripWidth);
+        _stripRowRect = Rect(rowX, y, stripWidth, lineH);
         Rect[] rects;
         int[] entries;
-        int x = startX;
+        int x = rowX;
         foreach (i; first .. _plans.length)
         {
             const bar = Rect(x, rowY, barWidth, stripBarH);
@@ -27577,8 +27581,9 @@ private void pollButtonSuggestionRequest()
         // messages never reach it. Turning it off puts all of that back.
         auto reactiveRow = new HBox(8);
         reactiveRow.layoutHints().preferredHeight = 32;
-        auto reactiveCheck = new CheckBox(
-            "Experimental streaming computer loop (drive this desktop)");
+        _computerLoopSwitchLabel =
+            "Experimental streaming computer loop (drive this desktop)";
+        auto reactiveCheck = new CheckBox(_computerLoopSwitchLabel);
         reactiveCheck.setId("oc-reactiveparagraph");
         reactiveCheck.setChecked(_settings.experimentalReactiveParagraph, false);
         reactiveCheck.onChanged = delegate(bool value)
@@ -35513,6 +35518,21 @@ private void pollButtonSuggestionRequest()
         return headers;
     }
 
+    /// Test-only: expand every action group so a rendered frame shows the tool
+    /// rows and the detail they recorded (for the computer loop, its sentence
+    /// lines). Returns how many groups were expanded.
+    public int expandToolGroupsForTesting()
+    {
+        int expanded;
+        foreach (child; messageColumnVisuals())
+            if (auto group = cast(ToolGroupBubble) child)
+            {
+                group.setCollapsed(false);
+                ++expanded;
+            }
+        return expanded;
+    }
+
     public string[] toolResultHeaderTextsForTesting()
     {
         string[] headers;
@@ -36238,6 +36258,25 @@ private void pollButtonSuggestionRequest()
     {
         showSettingsDialog();
         return cast(CheckBox) findWidgetById(this, "oc-detachedplan");
+    }
+
+    /// Label the streaming computer loop switch is built with, kept so a probe
+    /// can assert what the row actually says without a text getter on CheckBox.
+    private string _computerLoopSwitchLabel;
+
+    /// Test-only: open Settings and return the streaming computer loop switch
+    /// (the one switch that also arms the `computer` tool).
+    public CheckBox computerLoopCheckboxForTesting()
+    {
+        showSettingsDialog();
+        return cast(CheckBox) findWidgetById(this, "oc-reactiveparagraph");
+    }
+
+    /// Test-only: the label the streaming computer loop switch was built with.
+    public string computerLoopSwitchLabelForTesting()
+    {
+        showSettingsDialog();
+        return _computerLoopSwitchLabel;
     }
 
     /// Test-only: flip the detached-plan setting as the dialog checkbox does,

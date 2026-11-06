@@ -3,11 +3,12 @@ module computeruse_input_test;
 import auroraopencode.computeruse : experimentalComputerUseExecute,
     setComputerUseVirtualPointer, setComputerUseProvider, setComputerUseSetting,
     requestComputerUseAbort, clearComputerUseAbort;
+import auroraopencode.sentenceloop : setSentenceLoopSetting;
 import std.file : readText, write;
 import std.base64 : Base64;
 import std.path : buildPath;
 import std.conv : to;
-import std.json : parseJSON, JSONValue;
+import std.json : parseJSON, JSONType, JSONValue;
 import std.stdio : writeln;
 import core.thread : Thread;
 import core.time : msecs;
@@ -27,6 +28,7 @@ int main(string[] args)
     if (args.length > 3)
     {
         setComputerUseSetting(true);
+        setSentenceLoopSetting(true);
         setComputerUseProvider(args[3], "local-fixture-key", "deepseek-v4.1-flash");
     }
     auto cases = parseJSON(readText(args[1])).array;
@@ -40,7 +42,12 @@ int main(string[] args)
             interrupter = new Thread({ Thread.sleep(msecs(milliseconds)); requestComputerUseAbort(); });
             interrupter.start();
         }
+        bool loopOn = true;
+        if (auto flag = "sentence_loop" in item.object)
+            loopOn = flag.type == JSONType.true_;
+        setSentenceLoopSetting(loopOn);
         auto result = experimentalComputerUseExecute(item.toString(), "");
+        setSentenceLoopSetting(true);
         if (interrupter !is null) { interrupter.join(); clearComputerUseAbort(); }
         JSONValue output;
         output["failed"] = result.failed;

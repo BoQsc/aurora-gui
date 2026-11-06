@@ -2,7 +2,8 @@
   "inputs": [
     "aurora-opencode-pro/source/auroraopencode/appui.d",
     "aurora-opencode-core/source/auroraopencode/core.d",
-    "aurora-opencode-pro/tests/plan_strip_contracts.d"
+    "aurora-opencode-pro/tests/plan_strip_contracts.d",
+    "aurora-opencode-pro/tests/crop_ppm.py"
   ],
   "steps": [
     {
@@ -28,6 +29,42 @@
         "workdir": "aurora-opencode-pro",
         "timeout": 300000
       }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-plan-strip-verify\\plan_strip_contracts.exe",
+        "args": ["build/plan-strip-full.ppm"],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "interaction",
+      "command": {
+        "program": "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-plan-strip-verify\\plan_strip_contracts.exe",
+        "args": ["build/plan-strip-interaction.ppm"],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "python",
+        "args": [
+          "tests/crop_ppm.py", "build/plan-strip-full.ppm",
+          "build/plan-strip-actual.ppm", "1030", "55", "470", "110"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "render",
+      "reference": "aurora-opencode-pro/tests/references/plan-strip-header.ppm",
+      "actual": "aurora-opencode-pro/build/plan-strip-actual.ppm",
+      "referenceSource": "Frozen crop (470x110 at 1030,55 of the 1500x1000 app paint-path frame) after visual inspection: title on the left ending in '· 1/2' and both plan rectangles right-aligned in the header"
     }
   ]
 }

@@ -91,6 +91,10 @@ with tempfile.TemporaryDirectory(prefix='aurora-nested-test-') as temporary:
              'task': 'Use fixture A only.', 'max_steps': 2},
             {'action': 'subagent', 'window': positions['A']['title'], 'frame': 'full',
              'task': 'Inspect a crop.', 'max_steps': 1},
+            # The prototype is switch-gated: with the switch off it refuses
+            # instead of quietly running a different loop.
+            {'action': 'subagent', 'window': positions['A']['title'],
+             'task': 'Switch-off refusal.', 'max_steps': 1, 'sentence_loop': False},
         ]
         scenario = directory / 'cases.json'
         scenario.write_text(json.dumps(cases), encoding='utf-8')
@@ -100,6 +104,9 @@ with tempfile.TemporaryDirectory(prefix='aurora-nested-test-') as temporary:
         assert run.returncode == 0, (run.returncode, run.stdout, run.stderr)
         rows = [json.loads(line) for line in run.stdout.splitlines()]
         assert not rows[0]['failed'] and rows[1]['failed'] and rows[2]['failed'], rows
+        assert rows[3]['failed'], rows[3]
+        assert 'experimental prototype' in rows[3]['output'], rows[3]['output']
+        assert 'AURORA_STREAMING_LOOP' in rows[3]['output'], rows[3]['output']
         assert all(r['images'] == 1 for r in rows), 'Loop exit omitted current evidence'
         assert 'model=deepseek-v4.1-flash, input_mode=native' in rows[0]['output'], rows[0]
         assert 'desktop-switching shortcuts' in rows[0]['output']
