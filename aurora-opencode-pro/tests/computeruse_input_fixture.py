@@ -1,9 +1,23 @@
 """Dedicated disposable windows for computer input integration tests."""
+import ctypes
 import json
 import sys
 import time
 import tkinter as tk
 from pathlib import Path
+
+# The loop clicks physical desktop pixels read from a physical screenshot. A
+# DPI-unaware Tk (the default) reports widget positions in virtualized 125%/150%
+# space instead, so the click landed on the window but not on its entry and the
+# typed character went nowhere. Declare per-monitor awareness before Tk starts so
+# every coordinate this fixture publishes matches the screenshot.
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 directory = Path(sys.argv[1])
 root = tk.Tk()
