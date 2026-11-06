@@ -93,13 +93,15 @@ int main(string[] args)
     assert(first.width > 0 && first.height > 0,
         "history strip rectangle has no area");
     {
-        // The strip keeps clear of the card's bottom edge, so aiming at a
-        // rectangle cannot slip off the card and un-expand the panel.
-        const gapBelow = liveCard.y + liveCard.height -
-            (first.y + first.height);
-        assert(gapBelow >= 8,
-            "the strip sits too close to the card's bottom edge: " ~
-            to!string(gapBelow) ~ " px");
+        // The rectangles sit on the header row, to the right of the title and
+        // above the objective row.
+        const objective = root.detachedPlanObjectiveRectForTesting();
+        assert(first.y > liveCard.y && first.y < objective.y,
+            "the strip is not on the header row");
+        assert(first.x > liveCard.x + 60,
+            "the strip is not to the right of the header text");
+        assert(first.y + first.height <= objective.y,
+            "the strip overlaps the objective row");
     }
     const firstX = first.x + first.width / 2;
     const firstY = first.y + first.height / 2;
@@ -125,16 +127,16 @@ int main(string[] args)
         assert(still.x == first.x && still.y == first.y &&
             still.width == first.width,
             "previewing a plan moved the rectangles");
-        // The card height follows the shorter previewed plan, and its bottom
-        // edge (and the strip) stays where the live card's bottom edge was.
+        // The card height follows the shorter previewed plan from the top, so
+        // the strip under the title stays put.
         const previewCard = root.detachedPlanRectForTesting();
         assert(previewCard.height < liveCard.height,
             "the card height did not adapt to the shorter previewed plan");
-        assert(previewCard.y > liveCard.y,
-            "the shorter preview did not shrink from the top");
-        assert(previewCard.y + previewCard.height ==
+        assert(previewCard.y == liveCard.y,
+            "the previewed card moved off the top margin");
+        assert(previewCard.y + previewCard.height <
             liveCard.y + liveCard.height,
-            "the previewed card's bottom edge moved");
+            "the preview did not shorten the card");
     }
     // The neighbouring rectangle switches plans at its visible edge, without
     // moving the strip under the pointer.
@@ -144,7 +146,7 @@ int main(string[] args)
     assert(paint(root, driver), "hovering the current plan rectangle did not paint");
     assert(root.detachedPlanPreviewIndexForTesting() == 1,
         "hovering the current plan rectangle did not preview it");
-    assert(root.detachedPlanTitleForTesting().indexOf("current plan 2/2") >= 0,
+    assert(root.detachedPlanTitleForTesting().indexOf("  ·  2/2") >= 0,
         "the current plan preview is not labelled: " ~
         root.detachedPlanTitleForTesting());
     {
@@ -164,7 +166,7 @@ int main(string[] args)
     assert(root.detachedPlanStepCountForTesting() == 1 &&
         root.detachedPlanStepTextForTesting(0) == "Earlier A",
         "preview did not show the earlier plan's steps");
-    assert(root.detachedPlanTitleForTesting().indexOf("earlier plan 1/2") >= 0,
+    assert(root.detachedPlanTitleForTesting().indexOf("  ·  1/2") >= 0,
         "preview title does not name the plan: " ~
         root.detachedPlanTitleForTesting());
     // Optional frozen-frame capture for the independent render check.

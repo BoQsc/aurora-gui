@@ -81,14 +81,11 @@ import auroraopencode.computeruse :
     stopComputerUseKillSwitch, computerUseAbortActive,
     setComputerUseVirtualPointer, beginComputerUseUserRequest,
     setComputerUseExplanationOnly;
-// experimental: reactive paragraph - delete with
-// source/auroraopencode/reactiveparagraph.d
-import auroraopencode.reactiveparagraph :
-    experimentalReactiveParagraphEnabled, reactiveParagraphContinues,
-    reactiveParagraphFirstDelta, reactiveParagraphPace,
-    reactiveParagraphPromptModule, reactiveParagraphReset,
-    reactiveParagraphRoundStarted,
-    reactiveParagraphStatus, setReactiveParagraphSetting;
+// experimental: streaming sentence loop - the shared switch and the paragraph
+// continuation live with the loop's sentence discipline in sentenceloop.d.
+import auroraopencode.sentenceloop :
+    experimentalSentenceLoopEnabled, sentenceLoopContinues,
+    setSentenceLoopSetting;
 // experimental: orchestrator - delete with source/auroraopencode/orchestrator.d
 import auroraopencode.orchestrator : setOrchestratorSetting,
     experimentalOrchestratorEnabled,
@@ -843,6 +840,12 @@ private final class MessageBubble : Widget
     // ~39 px above the next collapsed row. 20 px makes the two distances equal so
     // the answer looks vertically centred between the header and the next row.
     private static immutable int thinkingContentGap = 20;
+    // Once a live reply has produced no new fragment for this long, the Thinking
+    // header says how long it has been quiet. Without it a reasoning burst that
+    // ends before the answer starts left the transcript visually frozen: the
+    // token count stopped climbing and only a small pulse still moved, which read
+    // as "nothing is happening" even though the turn was still running.
+    private static immutable double thinkingQuietNoteSeconds = 3.0;
 
     private string _role;
     private dstring _thinking;
@@ -856,9 +859,9 @@ private final class MessageBubble : Widget
     // bottom inset: the markdown line box already carries enough descent, and
     // keeping the full inset made this transition look one row-gap too wide.
     private bool _compactBottom;
-    // experimental: reactive paragraph - this reply follows a tool result, so it
-    // continues the paragraph above it instead of starting a fresh block. Only
-    // the top inset changes; the message itself stays its own durable row.
+    // experimental: streaming sentence loop - this reply follows a tool result,
+    // so it continues the paragraph above it instead of starting a fresh block.
+    // Only the top inset changes; the message stays its own durable row.
     private bool _continuation;
     private bool _failed;
     private bool _toolDeferred;
@@ -1177,6 +1180,9 @@ private final class MessageBubble : Widget
     private bool _thinkingHover;
     private double _thinkingElapsed = 0;
     private bool _thinkingLive;
+    // Seconds since the last streamed reasoning or answer fragment, used by the
+    // live Thinking header to explain a quiet gap (`no new output for Ns`).
+    private double _quietSeconds = 0.0;
 
     /// Diagnostic: total number of text shapes performed by all bubbles.
     static __gshared size_t shapeCount;
@@ -1461,6 +1467,9 @@ private final class MessageBubble : Widget
         _thinkingElapsed += deltaSeconds;
         const next = cast(int) (_thinkingElapsed * 2);
         const shownBefore = cast(long) _shownTokens;
+        const quietBefore = quietOutputSeconds();
+        _quietSeconds += deltaSeconds;
+        const quietAfter = quietOutputSeconds();
         if (_tokensLive && _shownTokens < cast(double) _liveTokens)
         {
             // Close the gap between the shown and the measured count over the
@@ -1473,9 +1482,12 @@ private final class MessageBubble : Widget
             if (_shownTokens > cast(double) _liveTokens)
                 _shownTokens = cast(double) _liveTokens;
         }
-        // Repaint for the pulse phase or for a changed visible number; a tick
-        // that only moves the fractional part costs no frame.
-        if (next != phase || cast(long) _shownTokens != shownBefore) invalidate();
+        // Repaint for the pulse phase, a changed visible number, or a newly
+        // displayed quiet second; a tick that only moves a fractional part
+        // costs no frame.
+        if (next != phase || cast(long) _shownTokens != shownBefore ||
+            quietAfter != quietBefore)
+            invalidate();
     }
 
     /// Test-only: current thinking collapsed state.
@@ -1658,6 +1670,7 @@ private final class MessageBubble : Widget
         _thinkingBuffered ~= toUTF32(chunk);
         _thinkingDirty = true;
         ++_thinkingGen;
+        _quietSeconds = 0.0;
         invalidate();
     }
 
@@ -1671,6 +1684,7 @@ private final class MessageBubble : Widget
         ++_contentGen;
         _contentCacheCount = 0;
         _contentCacheNext = 0;
+        _quietSeconds = 0.0;
         invalidate();
     }
 
@@ -3289,11 +3303,33 @@ private final class MessageBubble : Widget
             text ~= "  " ~ formatTokenRate(_tokenRateTenths);
         if (_thinkingLive || _tokensLive)
         {
+            // A live reply that stopped producing output is still working; say
+            // so with a clock, so the end of a reasoning burst never looks like
+            // a frozen transcript. It clears on the next streamed fragment.
+            const quiet = quietOutputSeconds();
+            if (quiet > 0)
+                text ~= "  · no new output for " ~ to!string(quiet) ~ "s";
             // Pulsing indicator: cycle between ▌ and ▐ every half second.
             const phase = cast(int) (_thinkingElapsed * 2) & 1;
             text ~= phase == 0 ? " ▌" : " ▐";
         }
         return text;
+    }
+
+    /// Whole seconds the live reply has gone without a new streamed fragment,
+    /// or 0 while the header should stay quiet about it.
+    private size_t quietOutputSeconds() const
+    {
+        if (_quietSeconds < thinkingQuietNoteSeconds) return 0;
+        return cast(size_t) _quietSeconds;
+    }
+
+    /// Record that the live reply is still producing work even though its text
+    /// channel is quiet (streamed tool-call arguments, for example), so the
+    /// quiet clock cannot contradict a live progress row.
+    void noteStreamProgress()
+    {
+        _quietSeconds = 0.0;
     }
 
     /// Test-only: the exact Thinking header line as drawn.
@@ -6044,16 +6080,11 @@ private final class PlanCard : Widget
     private static immutable int progressH = 6;
     private static immutable int progressTopGap = 4;
     private static immutable int progressBottomGap = 6;
-    // Plan history strip: small rectangles under the steps, one per
-    // conversation plan, filling from the left. Hovering one previews that plan.
-    private static immutable int stripH = 20;
+    // Plan history strip: small rectangles on the header row, right of the
+    // title, one per conversation plan. Hovering one previews that plan.
     private static immutable int stripBarW = 14;
     private static immutable int stripBarH = 10;
     private static immutable int stripGap = 4;
-    // Extra room below the strip while it is shown. Without it the rectangles
-    // sit flush with the card's bottom edge, so aiming at one slips out of the
-    // card and un-expands the panel under the pointer.
-    private static immutable int stripBottomPad = 10;
     // The bent-arrow hide button parked in the card's bottom-right corner.
     // `hideIconReserve` keeps the step text clear of it on the last rows.
     private static immutable int hideIconSize = 14;
@@ -6360,6 +6391,7 @@ private final class PlanCard : Widget
         return index < _stripRects.length ? _stripRects[index] : Rect.init;
     }
     int previewIndexForTesting() const { return _previewIndex; }
+    bool stripShown() const { return historyStripVisible(); }
     Rect objectiveRectForTesting() const { return _objectiveRect; }
     Rect stepsRectForTesting() const { return _stepsRect; }
 
@@ -6382,10 +6414,35 @@ private final class PlanCard : Widget
         if (previewing())
         {
             const current = _previewIndex == cast(int) _plans.length - 1;
-            title ~= current ? "  ·  current plan " : "  ·  earlier plan ";
-            title ~= to!string(_previewIndex + 1) ~ "/" ~
-                to!string(_plans.length);
+            if (historyStripVisible())
+            {
+                // The strip already marks which plan is shown; keep the header
+                // short so it and the rectangles share the row.
+                title ~= "  ·  " ~ to!string(_previewIndex + 1) ~ "/" ~
+                    to!string(_plans.length);
+            }
+            else
+            {
+                title ~= current ? "  ·  current plan " : "  ·  earlier plan ";
+                title ~= to!string(_previewIndex + 1) ~ "/" ~
+                    to!string(_plans.length);
+            }
         }
+        return title;
+    }
+
+    /// The header text as it reads for the live plan, without a preview suffix.
+    /// The strip reserves room for the live header plus that suffix, so the
+    /// rectangles keep their x when a preview adds the marker.
+    private string liveTitleText() const
+    {
+        int done;
+        foreach (status; _liveStatuses)
+            if (status == "completed") ++done;
+        string title = "Plan  " ~ to!string(done) ~ "/" ~
+            to!string(_liveTexts.length) ~ " done";
+        if (_checklistStale) title ~= " · needs update";
+        else if (_liveStatus.length > 0) title ~= "  -  " ~ _liveStatus;
         return title;
     }
 
@@ -6411,8 +6468,7 @@ private final class PlanCard : Widget
         if (_subagents.length > 0 && !previewing())
             subagentRows = 1 + cast(int) _subagents.length;
         return 2 * padV + lineH * (1 + (hasObjective() ? 1 : 0) + rows +
-            subagentRows) + progressBlock() +
-            (historyStripVisible() ? stripH + stripBottomPad : 0);
+            subagentRows) + progressBlock();
     }
 
     /// The strip appears only for more than one conversation plan, and never
@@ -6422,33 +6478,11 @@ private final class PlanCard : Widget
         return _showHistory && !_railOnly && _plans.length > 1;
     }
 
-    /// Height of the live plan's card. The panel anchors a preview's bottom
-    /// edge to it, so a shorter preview shrinks the card from the top and the
-    /// strip stays under the pointer.
-    int liveBaseHeight() const
-    {
-        const rows = cast(int) _liveTexts.length;
-        int nestedRows;
-        if (_showNested)
-            foreach (plan; _nestedPlans)
-                if (plan.expanded && plan.parentStep >= 1 &&
-                    plan.parentStep <= _liveTexts.length)
-                    nestedRows += cast(int) plan.steps.length;
-        const subagentRows = _subagents.length > 0
-            ? 1 + cast(int) _subagents.length : 0;
-        return 2 * padV + lineH * (1 + (_liveObjective.length ? 1 : 0) +
-            rows + nestedRows + subagentRows) +
-            (_liveTexts.length > 0
-                ? progressTopGap + progressH + progressBottomGap : 0) +
-            (historyStripVisible() ? stripH + stripBottomPad : 0);
-    }
 
-    bool previewActive() const { return previewing(); }
-
-    /// One small rectangle per conversation plan, newest last, filling from the
-    /// left. The current plan is outlined and the hovered one is filled.
-    /// Rectangles are recorded so pointer moves map back to a history index.
-    private void paintHistoryStrip(ref Canvas canvas, int y, int width)
+    /// One small rectangle per conversation plan, newest last, drawing to the
+    /// right of the header text. The current plan is outlined and the hovered
+    /// one is filled; rectangles are recorded for pointer hit testing.
+    private void paintHistoryStrip(ref Canvas canvas, int y, int startX, int width)
     {
         if (!historyStripVisible())
         {
@@ -6457,22 +6491,20 @@ private final class PlanCard : Widget
             _stripRowRect = Rect.init;
             return;
         }
-        const int rowY = y + (stripH - stripBarH) / 2;
-        const int maxX = width - padH - hideIconReserve;
-        // Clear the card's left collapse-handle hit strip; a rectangle under it
-        // would open the handle instead of previewing its plan.
-        const int startX = maxInt(padH, handleHitWidth + stripGap);
-        _stripRowRect = Rect(padH, y, maxInt(0, maxX - padH), stripH);
+        const int rowY = y + (lineH - stripBarH) / 2;
+        const int maxX = width - padH;
+        _stripRowRect = Rect(startX, y, maxInt(0, maxX - startX), lineH);
         // Shrink the rectangles before dropping any plan, so every plan of the
         // conversation stays represented while it fits.
         const int total = cast(int) _plans.length;
+        const int available = maxInt(0, maxX - startX);
         int barWidth = stripBarW;
         int gap = stripGap;
         while (barWidth > 5 &&
-            startX + total * barWidth + (total - 1) * gap > maxX)
+            total * barWidth + (total - 1) * gap > available)
             --barWidth;
         while (gap > 2 &&
-            startX + total * barWidth + (total - 1) * gap > maxX)
+            total * barWidth + (total - 1) * gap > available)
             --gap;
         const int stride = barWidth + gap;
         int fit;
@@ -6536,9 +6568,40 @@ private final class PlanCard : Widget
 
         const textWidth = maxInt(0, width - 2 * padH);
         int y = padV;
-        canvas.drawTextInRect(Rect(padH, y, textWidth, lineH),
+        int titleRoom = textWidth;
+        int stripStart = 0;
+        if (historyStripVisible())
+        {
+            // Reserve the live header plus the preview marker, so adding the
+            // marker during a preview cannot slide the rectangles sideways.
+            const marker = "  ·  " ~ to!string(_plans.length) ~ "/" ~
+                to!string(_plans.length);
+            // Reserve room for the widest plan header, so previewing a plan
+            // with a longer status never clips the text against the strip.
+            string widest = liveTitleText() ~ marker;
+            foreach (i, plan; _plans)
+            {
+                int done;
+                foreach (step; plan.steps)
+                    if (step.status == "completed") ++done;
+                string candidate = "Plan  " ~ to!string(done) ~ "/" ~
+                    to!string(plan.steps.length) ~ " done";
+                if (plan.status.length > 0)
+                    candidate ~= "  -  " ~ plan.status;
+                candidate ~= marker;
+                if (candidate.length > widest.length) widest = candidate;
+            }
+            const headerNeed = canvas.measureText(toUTF32(widest), 1).width;
+            const total = cast(int) _plans.length;
+            const stripMin = total * 5 + (total - 1) * 2;
+            titleRoom = clampInt(headerNeed, 40,
+                maxInt(40, textWidth - stripMin - stripGap));
+            stripStart = padH + titleRoom + stripGap;
+        }
+        canvas.drawTextInRect(Rect(padH, y, titleRoom, lineH),
             toUTF32(titleText()), opencodeText, 1,
             HorizontalAlign.left, VerticalAlign.middle, true);
+        paintHistoryStrip(canvas, y, stripStart, width);
         y += lineH;
         if (hasObjective())
         {
@@ -6656,7 +6719,6 @@ private final class PlanCard : Widget
         {
             _subagentRects = null;
         }
-        paintHistoryStrip(canvas, y, width);
         drawHideIcon(canvas);
         // Painted last so the panel covers the progress bar and steps it
         // overlaps; gated on the hover flag so it disappears on unhover instead
@@ -6952,6 +7014,8 @@ private final class DetachedPlanPanel : Widget
     private static immutable int cardWidth = 300;
     // Hovered width: the extra room keeps long step text from being clipped.
     private static immutable int hoverCardWidth = 440;
+    // Extra resting width while the plan rectangles share the header row.
+    private static immutable int stripExtraWidth = 44;
     private static immutable int margin = 12;
     // Clear the transcript's scrollbar (10 px wide, 2 px from the edge) so the
     // card never sits under it.
@@ -7046,15 +7110,10 @@ private final class DetachedPlanPanel : Widget
         const available = maxInt(0, bounds().width - margin - rightMargin);
         const width = _collapsed
             ? minInt(collapsedWidth, available)
-            : minInt(_hoverExpanded ? hoverCardWidth : cardWidth, available);
+            : minInt((_hoverExpanded ? hoverCardWidth : cardWidth) +
+                (_card.stripShown() ? stripExtraWidth : 0), available);
         const height = _collapsed ? collapsedHeight : _card.totalHeight();
-        // A preview's bottom edge stays where the live card's bottom edge is:
-        // the height adapts to the previewed plan, but the strip under it does
-        // not move out from under the pointer.
-        int top = margin;
-        if (!_collapsed && _card.previewActive())
-            top = maxInt(margin, margin + _card.liveBaseHeight() - height);
-        return Rect(maxInt(margin, bounds().width - rightMargin - width), top,
+        return Rect(maxInt(margin, bounds().width - rightMargin - width), margin,
             width, height);
     }
 
@@ -13528,8 +13587,8 @@ private string _suggestExcludeId;
         // experimental: computer use - mirror the persisted switch into the
         // toolset/prompt gate before any request or toolset build.
         setComputerUseSetting(_settings.experimentalComputerUse);
-        // experimental: reactive paragraph
-        setReactiveParagraphSetting(_settings.experimentalReactiveParagraph);
+        // experimental: streaming sentence loop
+        setSentenceLoopSetting(_settings.experimentalReactiveParagraph);
         setComputerUseVirtualPointer(
             _settings.experimentalComputerUseVirtualPointer);
         // experimental: orchestrator - apply the persisted switch before any
@@ -20161,15 +20220,15 @@ private void pollButtonSuggestionRequest()
         return session.messages[found - 1].id;
     }
 
-    /// experimental: reactive paragraph - the message at `index` continues the
-    /// paragraph above it when the row before it is a tool result.
+    /// experimental: streaming sentence loop - the message at `index` continues
+    /// the paragraph above it when the row before it is a tool result.
     private bool continuationFor(size_t index)
     {
-        if (!experimentalReactiveParagraphEnabled()) return false;
+        if (!experimentalSentenceLoopEnabled()) return false;
         if (_current < 0 || _current >= cast(int) _sessions.length) return false;
         const messages = _sessions[_current].messages;
         if (index == 0 || index >= messages.length) return false;
-        return reactiveParagraphContinues(messages[index - 1].role,
+        return sentenceLoopContinues(messages[index - 1].role,
             messages[index].role);
     }
 
@@ -20760,9 +20819,6 @@ private void pollButtonSuggestionRequest()
         message.role = "assistant";
         message.time = currentTimestamp();
         appendMessage(*session, message);
-        // experimental: reactive paragraph - count the round before the
-        // visibility check so a background conversation keeps its pace honest.
-        reactiveParagraphRoundStarted();
 
         if (_current != sessionIndex)
         {
@@ -20774,12 +20830,10 @@ private void pollButtonSuggestionRequest()
         _streamBubble = new MessageBubble();
         _streamBubble.setRole("assistant");
         _streamBubble.setStreaming(true);
-        // experimental: reactive paragraph - a round that answers a tool result
-        // continues the paragraph above it, so a screenshot/act loop reads as
-        // one reply instead of a stack of them.
+        // experimental: streaming sentence loop - a round that answers a tool
+        // result continues the paragraph above it, so a screenshot/act loop
+        // reads as one reply instead of a stack of them.
         _streamBubble.setContinuation(continuationFor(session.messages.length - 1));
-        const reactiveStatus = reactiveParagraphStatus(reactiveParagraphPace());
-        if (reactiveStatus.length > 0) updateStatus(reactiveStatus);
         _streamBubble.setWorkspace(workspaceForSession(sessionIndex));
         // The durable assistant message must exist now, but an empty visual
         // bubble must not reserve padding above the activity/tool row. Reveal
@@ -20831,9 +20885,6 @@ private void pollButtonSuggestionRequest()
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
         _lastStreamOutputAt = MonoTime.currTime;
-        // experimental: reactive paragraph - the first visible text of this
-        // round closes the previous step's measurement.
-        reactiveParagraphFirstDelta();
         if (_lastStreamSilenceSeconds >= 30)
             updateStatus("Generating…");
         _lastStreamSilenceSeconds = -1;
@@ -21443,6 +21494,11 @@ private void pollButtonSuggestionRequest()
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
         if (event.toolCalls.length == 0) return;
+        // Streamed tool arguments are progress even though no reasoning or answer
+        // text arrived; do not let the Thinking header claim the reply is quiet
+        // while the live tool row is visibly filling in.
+        if (_streamBubble !is null && _current == sessionIndex)
+            _streamBubble.noteStreamProgress();
         _receivedFirstDelta = true;
         const previousShape = toolProgressRenderShape(_preparingToolCalls);
         const nextShape = toolProgressRenderShape(event.toolCalls);
@@ -21978,11 +22034,6 @@ private void pollButtonSuggestionRequest()
     /// client's event queue as toolResult events.
     private void handleToolCalls(const OpenCodeEvent event)
     {
-        // experimental: reactive paragraph - a round that answers with a tool
-        // call has produced its visible output, so it closes the step too. A
-        // computer-use round often emits no prose at all, and without this the
-        // pace readout stayed silent in exactly the mode it exists to measure.
-        reactiveParagraphFirstDelta();
         _preparingToolCalls.length = 0;
         recordRequestTokenUsage(event.requestId, event.totalTokens,
             event.promptTokens, event.completionTokens);
@@ -24718,11 +24769,6 @@ private void pollButtonSuggestionRequest()
             return;
         }
         if (_turnTiming) freezeTurnTiming();
-        // experimental: reactive paragraph - one user turn is one loop, so the
-        // round counter and step pace start over here, not per request (a tool
-        // round is a request too, and resetting there pinned the readout at
-        // round 1).
-        reactiveParagraphReset();
         _turnStartedAt = MonoTime.currTime;
         _turnUserId = userId;
         _turnSessionIndex = sessionIndex;
@@ -24832,15 +24878,10 @@ private void pollButtonSuggestionRequest()
         key.put(experimentalWebSearchEnabled() ? "|web" : "|no-web");
         key.put(experimentalComputerUseEnabled() ? "|computer" : "|no-computer");
         key.put(experimentalStrictPlanEnabled() ? "|plan" : "|no-plan");
-        // experimental: reactive paragraph - the loop discipline is part of the
-        // prompt, so the switch must invalidate the cached render.
-        key.put(experimentalReactiveParagraphEnabled()
-            ? "|reactive" : "|no-reactive");
         if (_systemPromptCache.length > 0 && key.data == _systemPromptCacheKey)
             return _systemPromptCache;
         auto rendered = buildSystemPrompt(nativeOnly, workspace, platform,
             verbosity);
-        rendered ~= reactiveParagraphPromptModule();
         _systemPromptCacheKey = key.data;
         _systemPromptCache = rendered;
         return rendered;
@@ -27530,21 +27571,20 @@ private void pollButtonSuggestionRequest()
         virtualPointerRow.add(virtualPointerCheck);
         optionsBody.add(virtualPointerRow);
 
-        // experimental: reactive paragraph - delete with
-        // source/auroraopencode/reactiveparagraph.d. ONE switch for the whole
-        // loop: it also turns on the `computer` tool, its kill switch and native
+        // experimental: streaming sentence loop. ONE switch for the whole loop:
+        // it also turns on the `computer` tool, its kill switch and native
         // input, because a game window reads raw device state and posted window
         // messages never reach it. Turning it off puts all of that back.
         auto reactiveRow = new HBox(8);
         reactiveRow.layoutHints().preferredHeight = 32;
         auto reactiveCheck = new CheckBox(
-            "Experimental reactive paragraph (drive this desktop)");
+            "Experimental streaming computer loop (drive this desktop)");
         reactiveCheck.setId("oc-reactiveparagraph");
         reactiveCheck.setChecked(_settings.experimentalReactiveParagraph, false);
         reactiveCheck.onChanged = delegate(bool value)
         {
             _settings.experimentalReactiveParagraph = value;
-            setReactiveParagraphSetting(value);
+            setSentenceLoopSetting(value);
             _settings.experimentalComputerUse = value;
             setComputerUseSetting(value);
             if (value) startComputerUseKillSwitch();
@@ -35951,6 +35991,14 @@ private void pollButtonSuggestionRequest()
                 ++count;
         }
         return count;
+    }
+
+    /// Test-only: the live reply's Thinking header line ("" when there is no
+    /// live reply), so a contract can prove the quiet-gap note appears while
+    /// output is stalled and clears when it resumes.
+    public string liveThinkingHeaderForTesting() const
+    {
+        return _streamBubble is null ? "" : _streamBubble.thinkingHeaderTextForTesting();
     }
 
     /// Test-only: the text of the first visible "Thinking" block.

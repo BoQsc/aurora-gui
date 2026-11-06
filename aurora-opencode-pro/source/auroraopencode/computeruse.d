@@ -28,17 +28,21 @@ module auroraopencode.computeruse;
 // clear "not supported" result instead of failing silently.
 // ===========================================================================
 
-import auroraopencode.core : ChatImageAttachment, OpenCodeToolDef;
+import auroraopencode.core : ChatImageAttachment, OpenCodeToolCall, OpenCodeToolDef;
 import auroraopencode.screenshotimage : encodeScreenshotJpeg;
 import aurora.platform.gdi : ScreenCapture;
 import auroraopencode.computerprogress : DesktopClickProgress, DesktopDragProgress,
     observeDesktop, desktopVisiblyChanged, cropDesktop;
 import auroraopencode.requestintent : diagnosticFollowUpRequest;
 import auroraopencode.attachments : attachmentImageForData;
-// experimental: reactive paragraph - a loop that repeats the same click on a
-// frozen frame burns a round and moves nothing, so the reply says when the
-// desktop did not move.
-import auroraopencode.reactiveparagraph : experimentalReactiveParagraphEnabled;
+// experimental: streaming sentence loop - sentence cutting, action readiness and
+// the loop's sentence discipline live in sentenceloop.d; the SSE decoder is the
+// same one the chat transport uses, so the loop reads provider output exactly
+// like the transcript does.
+import auroraopencode.sentenceloop : SentencePace, actionArgumentsReady,
+    millisecondsText, sentenceLoopPrompt, sentencePaceText, takeSentences;
+import auroraopencode.events : OpenCodeEvent, OpenCodeEventKind;
+import auroraopencode.providerstream : ProviderStreamDecoder;
 import std.algorithm : canFind, min;
 import std.array : appender;
 import std.conv : to;
@@ -411,6 +415,27 @@ private void unlockComputerUseProcess()
 /// Execute a `computer` call. The desktop work happens here; registration,
 /// dispatch and UI live in the caller so this module stays the single drop
 /// point. Screenshots come back as image attachments in `images`.
+public ComputerUseResult experimentalComputerUseExecute(string args,
+    string workspace, void delegate(string) observer)
+{
+    // Live sentence lines for the tool row while the loop runs. Computer work is
+    // serialized process-wide, so one sink is never used by two calls at once;
+    // it is restored afterwards so a nested call cannot outlive its owner.
+    const previous = computerUseProgressSink;
+    computerUseProgressSink = observer;
+    scope (exit) computerUseProgressSink = previous;
+    return experimentalComputerUseExecute(args, workspace);
+}
+
+/// Sink the streaming loop writes sentence and action lines to. Null means the
+/// loop only records them in its result text.
+private __gshared void delegate(string) computerUseProgressSink;
+
+private void computerUseProgressLine(string text)
+{
+    if (computerUseProgressSink !is null) computerUseProgressSink(text);
+}
+
 public ComputerUseResult experimentalComputerUseExecute(string args,
     string workspace)
 {
@@ -1959,18 +1984,17 @@ version (Windows)
         // This frame is now the one the model has seen.
         result.images = [attachmentImageForData("image/jpeg", "screen.jpg",
             jpeg)];
-        // experimental: reactive paragraph - unchanged frame, unchanged advice.
-        if (experimentalReactiveParagraphEnabled())
-        {
-            const signature = frameSignature(capture.rgb);
-            if (computerUseHasLastFrame &&
-                signature == computerUseLastFrameSignature)
-                result.output ~= " The screen is unchanged since the previous " ~
-                    "observation: do not repeat the last action; take a " ~
-                    "different one or report where you are stuck.";
-            computerUseLastFrameSignature = signature;
-            computerUseHasLastFrame = true;
-        }
+        // A loop that repeats the same click on a frozen frame burns a round and
+        // moves nothing, so a repeated observation says so instead of letting the
+        // model assume the screen responded.
+        const signature = frameSignature(capture.rgb);
+        if (computerUseHasLastFrame &&
+            signature == computerUseLastFrameSignature)
+            result.output ~= " The screen is unchanged since the previous " ~
+                "observation: do not repeat the last action; take a " ~
+                "different one or report where you are stuck.";
+        computerUseLastFrameSignature = signature;
+        computerUseHasLastFrame = true;
         return result;
     }
 
@@ -3386,6 +3410,79 @@ version (Windows)
 
 
 
+    /// POST a JSON body and hand each response chunk to `onChunk` as it
+    /// arrives, so the loop can decode sentences while the model is still
+    /// writing them. Returns the whole body (the caller needs it only when the
+    /// gateway ignored `stream:true` and answered with one JSON object).
+    private string httpStreamPost(HttpConn conn, string url, string apiKey,
+        string body, void delegate(string chunk) onChunk, out string error)
+    {
+        error = null;
+        const parts = parseUrl(url);
+        if (conn.connect is null)
+        {
+            error = "HTTP connection is not open.";
+            return null;
+        }
+        uint flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE;
+        if (parts.secure) flags |= INTERNET_FLAG_SECURE;
+        auto request = HttpOpenRequestW(conn.connect, toUTF16z("POST"),
+            toUTF16z(parts.path), null, null, null, flags, 0);
+        if (request is null)
+        {
+            error = "could not open the request.";
+            return null;
+        }
+        scope (exit) InternetCloseHandle(request);
+        const headers = "Content-Type: application/json\r\n" ~
+            "Accept: text/event-stream\r\n" ~
+            "Authorization: Bearer " ~ apiKey ~ "\r\n" ~
+            "x-opencode-session: " ~ computerUseRoutingSession() ~ "\r\n";
+        if (!HttpSendRequestW(request, toUTF16z(headers), -1,
+            cast(void*) body.ptr, cast(uint) body.length))
+        {
+            error = "send failed (" ~ to!string(GetLastError()) ~ ").";
+            return null;
+        }
+        uint status;
+        uint statusLength = uint.sizeof;
+        uint statusIndex;
+        if (!HttpQueryInfoW(request, HTTP_QUERY_STATUS_CODE |
+            HTTP_QUERY_FLAG_NUMBER, &status, &statusLength, &statusIndex))
+            status = 0;
+        if (status != 200)
+        {
+            try
+            {
+                import std.file : write;
+                const dir = environment.get("TEMP", ".");
+                write(dir ~ "/aurora-subagent-request.json", body);
+            }
+            catch (Exception) {}
+            error = "HTTP " ~ to!string(status) ~ " (body " ~
+                to!string(body.length) ~ " bytes).";
+            return null;
+        }
+        auto builder = appender!string();
+        ubyte[8192] buffer;
+        while (true)
+        {
+            uint read;
+            if (!InternetReadFile(request, buffer.ptr,
+                cast(uint) buffer.length, &read))
+            {
+                error = "read failed.";
+                return null;
+            }
+            if (read == 0) break;
+            auto chunk = appender!string();
+            foreach (i; 0 .. read) chunk.put(cast(char) buffer[i]);
+            builder.put(chunk.data);
+            if (onChunk !is null) onChunk(chunk.data);
+        }
+        return builder.data;
+    }
+
     /// Nearest-neighbour half-size copy of an RGB frame. The subagent sends one
     /// fresh frame per step; halving it keeps the image small (fewer image
     /// tokens, faster prefill) while staying readable.
@@ -3807,6 +3904,9 @@ version (Windows)
             "the drag: calibrate with one small action and a stationary landmark. For edge panning " ~
             "use mouse_move followed by wait with duration_ms; wait_for_change can end on animation. " ~
             "Stop and report the exact visible state when the goal is achieved or you are stuck.";
+        // The sentence discipline is the loop's contract: frame first, then one
+        // sentence about it, then exactly one action.
+        system ~= " " ~ sentenceLoopPrompt();
         if (computerUseNestedTarget !is null)
             system ~= " This loop is bound to window \"" ~ windowTitleOf(computerUseNestedTarget) ~
                 "\". Remain inside it; desktop-switching shortcuts and other windows are refused.";
@@ -3860,6 +3960,12 @@ version (Windows)
         long modelTotalMs;
         long actionTotalMs;
         long roundTotalMs;
+        // Sentence pace: the cycle the operator feels is sentence to sentence,
+        // and the first sentence of a round is what the provider's latency
+        // actually costs. Both are measured here, never estimated.
+        SentencePace pace;
+        MonoTime firstSentenceAt;
+        bool hasFirstSentenceAt;
         foreach (step; 0 .. maxSteps)
         {
             if (computerUseAbortActive())
@@ -3873,6 +3979,7 @@ version (Windows)
                 break;
             }
             const roundStarted = MonoTime.currTime;
+            ++pace.rounds;
             string screenPart;
             if (computerUseNestedTarget !is null && !virtualPointerActive &&
                 ensureInputTarget(windowTitleOf(computerUseNestedTarget)) is null)
@@ -3882,8 +3989,14 @@ version (Windows)
             Thread.sleep(msecs(300));
             const captureStarted = MonoTime.currTime;
             auto shot = captureScreen();
-            captureTotalMs += (MonoTime.currTime - captureStarted).total!"msecs";
+            const captureMs = (MonoTime.currTime - captureStarted).total!"msecs";
+            captureTotalMs += captureMs;
             if (!shot.ok) return failedResult("Error: nested loop has no current screen. " ~ shot.error);
+            // Visual first: the row shows the frame the next sentence must be
+            // about, so the operator sees the same order the model does.
+            computerUseProgressLine("frame " ~ to!string(shot.width) ~ "x" ~
+                to!string(shot.height) ~ " · " ~ millisecondsText(captureMs) ~
+                " · round " ~ to!string(pace.rounds));
             // Did the previous round's action change anything? A game UI that
             // swallows a click leaves the frame byte-identical; tell the model,
             // which otherwise re-clicks the same dead spot forever.
@@ -4001,39 +4114,147 @@ version (Windows)
                 `],"tools":[` ~
                 toolJson ~ `],"tool_choice":"auto",` ~
                 (reasoningArg == "none" ? `"reasoning_effort":"none",` : ``) ~
-                `"stream":false}`;
+                `"stream":true}`;
             pendingEvidence = "";
             const modelStarted = MonoTime.currTime;
+            // Streaming round: every complete sentence is shown the moment it
+            // decodes, so the loop reads as `frame, sentence, action` live
+            // instead of one silent request per step. The action runs as soon
+            // as the provider closes the message, before the connection is
+            // released and the next frame is captured.
+            bool paceMessages;
+            void showSentence(string sentence)
+            {
+                if (!paceMessages)
+                {
+                    paceMessages = true;
+                    const now = MonoTime.currTime;
+                    pace.firstSentenceMs = (now - modelStarted).total!"msecs";
+                    if (hasFirstSentenceAt)
+                        pace.lastCycleMs = (now - firstSentenceAt).total!"msecs";
+                    firstSentenceAt = now;
+                    hasFirstSentenceAt = true;
+                }
+                ++pace.sentences;
+                // The sentence is the round's visible output: keep it in the
+                // loop's own log so the result reads sentence -> action, and
+                // show it live in the tool row while the round is still open.
+                log_.put("sentence " ~ to!string(pace.rounds) ~ "." ~
+                    to!string(pace.sentences) ~ ": " ~ sentence ~ "\n");
+                computerUseProgressLine("sentence " ~ to!string(pace.rounds) ~
+                    "." ~ to!string(pace.sentences) ~ " · " ~
+                    millisecondsText((MonoTime.currTime - modelStarted).total!"msecs") ~
+                    ": " ~ sentence);
+            }
+            auto decoder = new ProviderStreamDecoder;
+            string pendingText;
+            bool messageFinished;
+            bool sse;
+            string sseTail;
+            decoder.emit = delegate(OpenCodeEvent event)
+            {
+                if (event.kind == OpenCodeEventKind.delta && !event.reasoning)
+                {
+                    pendingText ~= event.text;
+                    foreach (sentence; takeSentences(pendingText))
+                        showSentence(sentence);
+                }
+                else if (event.kind == OpenCodeEventKind.done ||
+                    event.kind == OpenCodeEventKind.toolCalls)
+                    messageFinished = true;
+            };
             string error;
-            const response = httpPostJson(http, endpoint,
-                effectiveComputerApiKey(), body, error);
-            if (error !is null)
+            const read = httpStreamPost(http, endpoint,
+                effectiveComputerApiKey(), body, (string chunk)
+                {
+                    if (!sse)
+                    {
+                        const probe = strip(chunk);
+                        if (probe.length >= 5 && probe[0 .. 5] == "data:")
+                            sse = true;
+                        else
+                        {
+                            // A gateway that ignored `stream:true` sends one
+                            // JSON object; keep it whole and parse it below.
+                            return;
+                        }
+                    }
+                    sseTail = decoder.feed(sseTail ~ chunk);
+                }, error);
+            if (read is null)
                 return failedResult("Error: subagent " ~ error);
-            JSONValue parsed;
-            try parsed = parseJSON(response);
-            catch (Exception)
-                return failedResult("Error: subagent got invalid JSON back: " ~
-                    response[0 .. (response.length > 300 ? 300 :
-                    response.length)]);
-            if (parsed.type != JSONType.object)
-                return failedResult("Error: subagent response was not an " ~
-                    "object (len=" ~ to!string(response.length) ~ ", err=" ~
-                    to!string(GetLastError()) ~ "): " ~
-                    response[0 .. (response.length > 300 ? 300 :
-                    response.length)]);
-            auto choices = "choices" in parsed.object;
-            if (choices is null || choices.type != JSONType.array ||
-                choices.array.length == 0)
-                return failedResult("Error: subagent response had no choices.");
-            auto message = "message" in choices.array[0].object;
-            if (message is null || message.type != JSONType.object)
-                return failedResult("Error: subagent response had no message.");
             string content;
-            if (auto c = "content" in message.object)
-                if (c.type == JSONType.string) content = c.str;
-            auto calls = "tool_calls" in message.object;
-            const hasCalls = calls !is null && calls.type == JSONType.array &&
-                calls.array.length > 0;
+            OpenCodeToolCall[] streamed;
+            if (sse)
+            {
+                foreach (sentence; takeSentences(pendingText, true))
+                    showSentence(sentence);
+                decoder.finish();
+                if (decoder._streamError.length)
+                    return failedResult("Error: subagent " ~ decoder._streamError);
+                content = decoder._streamContent;
+                streamed = decoder._streamToolCalls.dup;
+            }
+            else
+            {
+                JSONValue parsed;
+                try parsed = parseJSON(read);
+                catch (Exception)
+                    return failedResult("Error: subagent got invalid JSON back: " ~
+                        read[0 .. (read.length > 300 ? 300 : read.length)]);
+                if (parsed.type != JSONType.object)
+                    return failedResult("Error: subagent response was not an " ~
+                        "object (len=" ~ to!string(read.length) ~ ", err=" ~
+                        to!string(GetLastError()) ~ "): " ~
+                        read[0 .. (read.length > 300 ? 300 : read.length)]);
+                auto choices = "choices" in parsed.object;
+                if (choices is null || choices.type != JSONType.array ||
+                    choices.array.length == 0)
+                    return failedResult("Error: subagent response had no choices.");
+                auto message = "message" in choices.array[0].object;
+                if (message is null || message.type != JSONType.object)
+                    return failedResult("Error: subagent response had no message.");
+                if (auto c = "content" in message.object)
+                    if (c.type == JSONType.string) content = c.str;
+                if (content.length)
+                    showSentence(content);
+                if (auto list = "tool_calls" in message.object)
+                    if (list.type == JSONType.array)
+                        foreach (entry; list.array)
+                        {
+                            OpenCodeToolCall single;
+                            if (auto id = "id" in entry.object)
+                                if (id.type == JSONType.string) single.id = id.str;
+                            if (auto fn = "function" in entry.object)
+                            {
+                                if (auto nm = "name" in fn.object)
+                                    if (nm.type == JSONType.string)
+                                        single.name = nm.str;
+                                if (auto ar = "arguments" in fn.object)
+                                    if (ar.type == JSONType.string)
+                                        single.arguments = ar.str;
+                            }
+                            streamed ~= single;
+                        }
+            }
+            // Appending to `.array` needs an array-typed value, not the default
+            // `null` JSONValue.
+            JSONValue calls = JSONValue.emptyArray;
+            foreach (streamedCall; streamed)
+            {
+                JSONValue entry;
+                entry["id"] = streamedCall.id;
+                entry["type"] = "function";
+                JSONValue fn;
+                fn["name"] = streamedCall.name;
+                fn["arguments"] = streamedCall.arguments;
+                entry["function"] = fn;
+                calls.array ~= entry;
+            }
+            const hasCalls = calls.array.length > 0;
+            // A streamed call may be cut off by a dropped connection; only a
+            // complete argument object from a closed message may run.
+            const messageClosed = !sse || messageFinished;
             ++steps;
             modelTotalMs += (MonoTime.currTime - modelStarted).total!"msecs";
             if (!hasCalls)
@@ -4071,7 +4292,14 @@ version (Windows)
                     jsonQuote(name) ~ `,"arguments":` ~ jsonQuote(argsJson) ~
                     `}}`);
                 ComputerUseResult result;
-                if (name == "computer")
+                if (!actionArgumentsReady(argsJson, messageClosed))
+                    // Streamed arguments that never completed are not a call:
+                    // running the fragment would click whatever the truncated
+                    // JSON happened to contain.
+                    result = failedResult("Rejected: this call's streamed " ~
+                        "arguments never completed, so nothing was executed. " ~
+                        "Re-issue the action.");
+                else if (name == "computer")
                 {
                     // A `screen` call is redundant (a fresh frame is attached to
                     // every message) and its full-frame result would flood the
@@ -4181,13 +4409,15 @@ version (Windows)
         auto finalShot = screenshotResult("Current screen after nested loop");
         if (finalShot.failed) out_.failed = true;
         out_.images = finalShot.images;
-        out_.output = "Subagent model=" ~ loopModel ~ ", input_mode=" ~ loopMode ~
+        out_.output = "Streaming loop model=" ~ loopModel ~ ", input_mode=" ~ loopMode ~
             ", target=" ~ (computerUseNestedTarget !is null ? windowTitleOf(computerUseNestedTarget) : "desktop") ~
             " (" ~ to!string(steps) ~ " step(s), avg " ~
             to!string(avgRound) ~ " ms/round = awareness " ~
             to!string(avgAwareness) ~ " ms (capture " ~ to!string(avgCapture) ~
             " + model " ~ to!string(avgModel) ~ ") + response " ~
-            to!string(avgAction) ~ " ms): " ~
+            to!string(avgAction) ~ " ms; " ~
+            (pace.sentences > 0 ? sentencePaceText(pace) : "no sentences streamed") ~
+            "): " ~
             (answer.length ? answer : "Stopped at loop limit without verified completion.") ~ "\n" ~ log_.data;
         out_.output ~= finalShot.output;
         return out_;

@@ -1,4 +1,9 @@
-"""Test real nested dispatch against a local scripted provider and disposable windows."""
+"""Test the streaming loop against a local scripted provider and disposable windows.
+
+The provider speaks SSE (`data: ...` frames) exactly like a real gateway, so the
+test proves the loop decodes sentences while the round is open, then runs the
+action the sentence asked for.
+"""
 import base64
 import ctypes
 import io
@@ -56,16 +61,26 @@ with tempfile.TemporaryDirectory(prefix='aurora-nested-test-') as temporary:
                 request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 requests.append(request)
                 response = responses[len(requests) - 1]
-                message = {'role': 'assistant', 'content': response if isinstance(response, str) else None}
-                if isinstance(response, dict):
-                    message['tool_calls'] = [{'id': f'local-{len(requests)}', 'type': 'function',
-                        'function': {'name': 'computer', 'arguments': json.dumps(response)}}]
-                body = json.dumps({'choices': [{'message': message}]}).encode()
+                events = []
+                if isinstance(response, str):
+                    events.append({'choices': [{'delta': {'content': response}}]})
+                    events.append({'choices': [{'delta': {}, 'finish_reason': 'stop'}]})
+                else:
+                    events.append({'choices': [{'delta': {
+                        'content': 'Fixture screen read; acting now.'}}]})
+                    events.append({'choices': [{'delta': {'tool_calls': [
+                        {'index': 0, 'id': f'local-{len(requests)}', 'type': 'function',
+                         'function': {'name': 'computer',
+                                      'arguments': json.dumps(response)}}]}}]})
+                    events.append({'choices': [{'delta': {}, 'finish_reason': 'tool_calls'}]})
+                body = ''.join('data: ' + json.dumps(event) + '\n\n'
+                    for event in events) + 'data: [DONE]\n\n'
+                encoded = body.encode()
                 self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(body)))
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Content-Length', str(len(encoded)))
                 self.end_headers()
-                self.wfile.write(body)
+                self.wfile.write(encoded)
         server = ThreadingHTTPServer(('127.0.0.1', 0), Provider)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         cases = [
@@ -81,7 +96,8 @@ with tempfile.TemporaryDirectory(prefix='aurora-nested-test-') as temporary:
         scenario.write_text(json.dumps(cases), encoding='utf-8')
         run = subprocess.run([str(driver), str(scenario), str(directory),
             f'http://127.0.0.1:{server.server_port}/v1'], cwd=directory,
-            capture_output=True, text=True, encoding='utf-8', timeout=30, check=True)
+            capture_output=True, text=True, encoding='utf-8', timeout=30)
+        assert run.returncode == 0, (run.returncode, run.stdout, run.stderr)
         rows = [json.loads(line) for line in run.stdout.splitlines()]
         assert not rows[0]['failed'] and rows[1]['failed'] and rows[2]['failed'], rows
         assert all(r['images'] == 1 for r in rows), 'Loop exit omitted current evidence'
@@ -92,6 +108,13 @@ with tempfile.TemporaryDirectory(prefix='aurora-nested-test-') as temporary:
         assert 'input cannot leave' in rows[1]['output']
         assert 'without verified completion' in rows[2]['output']
         assert len(requests) == 8
+        assert all(r.get('stream') is True for r in requests), 'Loop did not request a streamed reply'
+        system = requests[0]['messages'][0]['content']
+        assert 'ONE short sentence' in system and 'exactly one action' in system, system[:200]
+        output = rows[0]['output']
+        assert 'sentence 1.1:' in output, output[:400]
+        assert output.index('sentence 1.1:') < output.index('step 1 computer:'), \
+            'The sentence did not reach the loop before its action'
         assert all(r['model'] == 'deepseek-v4.1-flash' for r in requests[:5] + requests[7:])
         assert all(r['model'] == 'fixture-explicit-override' for r in requests[5:7])
         def images(request):
@@ -106,7 +129,8 @@ with tempfile.TemporaryDirectory(prefix='aurora-nested-test-') as temporary:
         assert len(images(requests[4])) == 1, 'Crop accumulated in later model requests'
         assert 'act-now' not in rows[0]['output']
         state = json.loads((directory / 'state.json').read_text(encoding='utf-8'))
-        assert state['A']['text'] == 'N' and state['B']['text'] == '', state
+        assert state['A']['text'] == 'N' and state['B']['text'] == '', \
+            (state, rows[0]['output'])
         print('PASS: eight local provider rounds; selected/explicit models, native inheritance, target/shortcut refusals, scaled crop delivered once, truthful limit failure, actual fixture typing')
     finally:
         if server:

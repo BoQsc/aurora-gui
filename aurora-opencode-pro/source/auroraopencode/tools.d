@@ -7070,7 +7070,7 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
         case "computer":
         {
             auto control = experimentalComputerUseExecute(call.arguments,
-                workspace);
+                workspace, observer);
             auto result = ToolExecution("computer", control.output,
                 control.failed);
             result.images = control.images;
