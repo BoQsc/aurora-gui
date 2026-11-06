@@ -1383,6 +1383,32 @@ private final class MessageBubble : Widget
     /// Test-only: the tool's wall-clock duration in milliseconds (0 when none).
     public long toolElapsedMsForTesting() const { return _toolElapsedMs; }
 
+    /// Open a patch card that changes more than one file. A single-file patch
+    /// keeps the compact closed header; a multi-file one opens so its per-file
+    /// rows (what changed in each patch) are visible instead of being hidden
+    /// behind one aggregate "+N -M" header.
+    void expandMultiFilePatch()
+    {
+        import std.string : splitLines;
+
+        if (_collapsed && patchSectionCount(_diffText) > 1) setCollapsed(false);
+    }
+
+    /// Test-only: one entry per patched file in the rendered body, e.g.
+    /// `sub/new.txt added +2 -0`.
+    public string[] patchSectionRowsForTesting()
+    {
+        ensureToolLines(maxInt(1, bounds().width));
+        string[] rows;
+        foreach (line; _toolLines)
+        {
+            if (line.kind != ToolLineKind.section) continue;
+            rows ~= line.body ~ " " ~ line.action ~ " +" ~
+                to!string(line.additions) ~ " -" ~ to!string(line.deletions);
+        }
+        return rows;
+    }
+
     /// Test-only: the tool header's compact argument text, without the
     /// `⚙ name`/toggle prefix. Used to prove arrays render as a command line
     /// rather than the opaque `args=[…]`.
@@ -3076,6 +3102,14 @@ private final class MessageBubble : Widget
                 canvas.fillRect(Rect(padH, y, fullW, rowH), opencodeDiffDeleteBg);
             else if (line.kind == ToolLineKind.hunk)
                 canvas.fillRect(Rect(padH, y, fullW, rowH), diffHunkBand);
+            else if (line.kind == ToolLineKind.section)
+            {
+                // Each patched file gets its own banded row, divided from the
+                // previous file's hunks so the list of patches stays legible.
+                canvas.fillRect(Rect(padH, y, fullW, 1), diffCardBorder);
+                canvas.fillRect(Rect(padH, y + 1, fullW, maxInt(0, rowH - 1)),
+                    diffHunkBand);
+            }
             // A left accent bar reinforces the kind at a glance.
             if (line.kind == ToolLineKind.add)
                 canvas.fillRect(Rect(padH, y, accentW, rowH), opencodeDiffAdd);
@@ -3086,7 +3120,14 @@ private final class MessageBubble : Widget
                 line.bodyLayout = shapeMonoLine(toUTF32(
                     line.body.length > 0 ? line.body : " "));
             if (line.bodyLayout.lines.length == 0) continue;
-            if (line.kind == ToolLineKind.hunk)
+            if (line.kind == ToolLineKind.section)
+            {
+                const sectionX = padH + padX + accentW + 4;
+                const sectionW = maxInt(1, padH + fullW - padX - sectionX);
+                _selSegments ~= SelectSegment(line.bodyLayout, sectionX, y,
+                    sectionW, rowH);
+            }
+            else if (line.kind == ToolLineKind.hunk)
             {
                 const hunkX = padH + padX + accentW + 4;
                 const hunkW = maxInt(1, padH + fullW - padX - hunkX);
@@ -3110,6 +3151,12 @@ private final class MessageBubble : Widget
         {
             auto line = &_toolLines[cast(size_t) i];
             const y = top + i * rowH;
+
+            if (line.kind == ToolLineKind.section)
+            {
+                drawPatchSectionRow(canvas, *line, y, fullW, rowH);
+                continue;
+            }
 
             if (line.kind == ToolLineKind.hunk)
             {
@@ -3142,6 +3189,45 @@ private final class MessageBubble : Widget
             clipped.drawLayout(Point(bodyX, y), line.bodyLayout, opencodeText);
         }
         return bodyH;
+    }
+
+    /// Paint one `apply_patch` file section: the patched path, what happened to
+    /// it and that file's own `+N -M`, so a multi-file patch lists every file
+    /// instead of pouring all hunks into one undifferentiated body.
+    private void drawPatchSectionRow(ref Canvas canvas, ref ToolLine line, int y,
+        int fullW, int rowH)
+    {
+        const padX = 8;
+        const accentW = 3;
+        const sectionX = padH + padX + accentW + 4;
+        const sectionW = maxInt(1, padH + fullW - padX - sectionX);
+        auto clipped = canvas.clipped(Rect(sectionX, y, sectionW, rowH));
+        if (line.bodyLayout !is null)
+            clipped.drawLayout(Point(sectionX, y), line.bodyLayout, opencodeText);
+        int x = sectionX + (line.bodyLayout is null ? 0
+            : cast(int) line.bodyLayout.width) + 10;
+        if (line.action.length > 0)
+        {
+            if (line.actionLayout is null)
+                line.actionLayout = shapeMonoLine(toUTF32(line.action));
+            clipped.drawLayout(Point(x, y), line.actionLayout, opencodeMuted);
+            x += cast(int) line.actionLayout.width + 10;
+        }
+        if (line.additions > 0)
+        {
+            if (line.addLayout is null)
+                line.addLayout = shapeMonoLine(toUTF32("+" ~
+                    to!string(line.additions)));
+            clipped.drawLayout(Point(x, y), line.addLayout, opencodeDiffAdd);
+            x += cast(int) line.addLayout.width + 8;
+        }
+        if (line.deletions > 0)
+        {
+            if (line.delLayout is null)
+                line.delLayout = shapeMonoLine(toUTF32("-" ~
+                    to!string(line.deletions)));
+            clipped.drawLayout(Point(x, y), line.delLayout, opencodeDiffDelete);
+        }
     }
 
     /// Compose the Thinking header line: `▸ Thinking`, the live/final token
@@ -4759,6 +4845,19 @@ private int patchFileCount(string patch)
     return countOccurrences(patch, "*** Add File:") +
         countOccurrences(patch, "*** Update File:") +
         countOccurrences(patch, "*** Delete File:");
+}
+
+/// Number of file sections in a stored `apply_patch` diff. Used to decide
+/// whether the patch card must open so its per-file rows are visible.
+private int patchSectionCount(string diff)
+{
+    int count;
+    foreach (line; splitLines(diff))
+    {
+        string action, path;
+        if (patchDiffSection(line, action, path)) ++count;
+    }
+    return count;
 }
 
 /// Basenames of the files a Codex-format patch touches, in patch order and
