@@ -4500,6 +4500,60 @@ private enum applyPatchFormatHint =
     "plus an optional context label, and every body line starts with ' ', '+', or '-'. " ~
     "Unified-diff headers such as `@@ -1,2 +1,2 @@` and unprefixed context lines are rejected.";
 
+/// File-section markers inside the diff an `apply_patch` result stores. One
+/// line names each patched file and what happened to it; the transcript renders
+/// them as separate rows (`appui.d`). Without them every file's hunks arrived
+/// as one blob under a single "Patch" header, so a multi-file patch never said
+/// which file a hunk belonged to.
+public enum string patchDiffAddPrefix = "*** Add File:";
+public enum string patchDiffUpdatePrefix = "*** Update File:";
+public enum string patchDiffDeletePrefix = "*** Delete File:";
+public enum string patchDiffMovePrefix = "*** Move File:";
+
+/// Split one stored patch-diff section marker into its action word and path.
+/// Returns false for an ordinary diff line, so a caller can walk a diff and
+/// treat only real section headers as file boundaries.
+public bool patchDiffSection(string line, out string action, out string path)
+{
+    action = "";
+    path = "";
+    const text = strip(line);
+    foreach (prefix, verb; [
+        patchDiffAddPrefix: "added",
+        patchDiffUpdatePrefix: "updated",
+        patchDiffDeletePrefix: "deleted",
+        patchDiffMovePrefix: "moved",
+    ])
+    {
+        if (!text.startsWith(prefix)) continue;
+        const rest = text[prefix.length .. $];
+        // Require the separator the writer emitted: a path may itself contain
+        // a colon, so only a space or tab terminates the marker.
+        if (rest.length == 0 || (rest[0] != ' ' && rest[0] != '\t')) continue;
+        path = strip(rest);
+        if (path.length == 0) return false;
+        action = verb;
+        return true;
+    }
+    return false;
+}
+
+unittest
+{
+    string action, path;
+    assert(patchDiffSection("*** Add File: sub/new.txt", action, path) &&
+        action == "added" && path == "sub/new.txt");
+    assert(patchDiffSection("*** Update File: source/app.d", action, path) &&
+        action == "updated" && path == "source/app.d");
+    assert(patchDiffSection("*** Delete File: old.txt", action, path) &&
+        action == "deleted" && path == "old.txt");
+    assert(patchDiffSection("*** Move File: moved/target.txt", action, path) &&
+        action == "moved" && path == "moved/target.txt");
+    assert(!patchDiffSection("*** Add File:no-separator", action, path));
+    assert(!patchDiffSection("+added line", action, path));
+    assert(!patchDiffSection("@@ -1,1 +1,1 @@", action, path));
+}
+
 private ToolExecution runApplyPatch(string args, string workspace)
 {
     import std.string : splitLines;
@@ -4515,6 +4569,7 @@ private ToolExecution runApplyPatch(string args, string workspace)
         bool includeInDiff;
         string diffBefore;
         string diffAfter;
+        string sectionPrefix;
     }
 
     JSONValue value;
@@ -4602,6 +4657,9 @@ private ToolExecution runApplyPatch(string args, string workspace)
         change.includeInDiff = includeInDiff;
         change.diffBefore = diffBefore is null ? before : diffBefore;
         change.diffAfter = diffAfter is null ? after : diffAfter;
+        change.sectionPrefix = !beforeExists && afterExists ? patchDiffAddPrefix :
+            beforeExists && afterExists ? patchDiffUpdatePrefix :
+            patchDiffDeletePrefix;
         changes ~= change;
     }
 
@@ -4884,6 +4942,7 @@ private ToolExecution runApplyPatch(string args, string workspace)
                 stageChange(rel, path, true, original, false, "", false);
                 stageChange(moveRel, movePath, false, "", true, content, true,
                     original, content);
+                changes[$ - 1].sectionPrefix = patchDiffMovePrefix;
             }
             continue;
         }
@@ -4917,7 +4976,11 @@ private ToolExecution runApplyPatch(string args, string workspace)
         auto diff = computeTextDiff(change.diffBefore, change.diffAfter);
         totalAdditions += diff.additions;
         totalDeletions += diff.deletions;
-        combinedDiff ~= diff.unified ~ "\n";
+        // Name the file before its hunks so the transcript can list one entry
+        // per patched file with what changed, instead of one undifferentiated
+        // run of hunks under the call's single header.
+        combinedDiff ~= change.sectionPrefix ~ " " ~ change.relativePath ~ "\n";
+        combinedDiff ~= diff.unified;
     }
 
     bool stateMatches(ref PatchChange change)
