@@ -19,11 +19,23 @@ public ubyte[] pngScreenshotToJpeg(const(ubyte)[] png)
 public ubyte[] encodeScreenshotJpeg(int width, int height,
     const(ubyte)[] rgb)
 {
+    return encodeScreenshotJpeg(width, height, rgb, 85);
+}
+
+/// Encode at an explicit quality. The streaming loop trades some fidelity for a
+/// much smaller request body: the same 960x540 frame at q72 is roughly half the
+/// bytes of q85, and the loop only has to answer "what does this frame show",
+/// not read fine print. Body size - not model speed - is what makes an upload
+/// stall on a mid-band uplink.
+public ubyte[] encodeScreenshotJpeg(int width, int height,
+    const(ubyte)[] rgb, int quality)
+{
     if (width <= 0 || height <= 0 || width > 32768 || height > 32768 ||
         cast(size_t) width * height * 3 != rgb.length)
         throw new Exception("Invalid screenshot pixels.");
     // Centralized in aurora.platform.gdiplus (throws when unavailable).
-    return encodeJpegRgb(rgb, width, height, 85);
+    return encodeJpegRgb(rgb, width, height,
+        quality < 40 ? 40 : quality > 95 ? 95 : quality);
 }
 
 /// Longest edge Aurora sends inline. Vision models downscale to roughly this

@@ -390,8 +390,23 @@ private string toolPolicySection(in SystemPromptContext ctx)
             "assuming an interactive step is enabled; a squad/status marker is not a " ~
             "mouse cursor. A withheld click or drag requires new evidence or a different action, " ~
             "not slightly changed coordinates. Use native input from the outset for games and Windows " ~
-            "Start/Search controls, which can ignore posted window messages. Batch only " ~
-            "steps whose focus and controls are already established. Report a block " ~
+             "Start/Search controls, which can ignore posted window messages. Batch only " ~
+             "steps whose focus and controls are already established. An app that pauses " ~
+             "itself when it loses focus (most games) shows its pause overlay whenever you " ~
+             "regain control, because the operator glanced away - that overlay is not the " ~
+             "task. Do not spend a turn merely dismissing it and stopping: resume and carry " ~
+             "out the real work in the same long `subagent` run with a generous step budget, " ~
+             "so one call yields many actions. Equally, do not send lone clicks or short " ~
+             "batches to such an app: they land on the paused overlay and change nothing. " ~
+             "In games, an objective arrow at a screen edge marks the camera PAN " ~
+             "direction for an off-screen target: pan that way until the arrow sits " ~
+             "over the object itself, and only then treat it as a target. A skewed or " ~
+             "rotated view destroys the minimap-to-screen mapping every click depends " ~
+             "on, so reset the camera to a known state before aiming (Company of " ~
+             "Heroes: press Backspace twice). When an objective's wording is " ~
+             "ambiguous, establish what actually satisfies it before spending actions " ~
+             "on guesses - clicking blindly is not progress. " ~
+             "Report a block " ~
             "when the latest evidence does not support continuing. Camera motion may be opposite " ~
             "to a drag: calibrate against a stationary landmark. Use mouse_move then wait with " ~
             "duration_ms for edge-pan dwell; wait_for_change may end on animation. A nested " ~

@@ -158,8 +158,10 @@ string sentenceLoopPrompt()
         "shows or which control you will use, and send exactly one action " ~
         "call for it. Do not describe a plan, do not restate the task, and do " ~
         "not claim an outcome you have not seen in a frame. A sentence " ~
-        "without an action, or an action without a sentence, is a mistake; " ~
-        "when the task is finished, reply with one sentence and no action.";
+        "without an action, or an action without a sentence, is a mistake. " ~
+        "Write in the language the task itself is written in, and do not " ~
+        "switch language part-way through a run. " ~
+        "When the task is finished, reply with one sentence and no action.";
 }
 
 private __gshared bool _enabled;

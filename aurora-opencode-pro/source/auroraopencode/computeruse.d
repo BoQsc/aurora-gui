@@ -356,11 +356,13 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "`type` text may " ~
             "contain a literal newline for Enter " ~
             "and a tab character. `screen` accepts a `region` {x,y,w,h} for a " ~
-            "zoomed-in crop of one area. Every call costs a full model turn, so " ~
-            "prefer one `steps` batch (click a field, type a line, press enter) " ~
-            "over a see -> act -> see round trip per action. For a longer " ~
-            "sequence whose next move depends on what the screen shows, use the " ~
-            "loop action (`subagent`) with a `task` (optionally `window`, " ~
+             "zoomed-in crop of one area. Every plain action costs a full model " ~
+             "turn, so drive any multi-step desktop task with the `loop` action " ~
+             "(`subagent`) rather than issuing one click per call: a single call " ~
+             "covers the whole sequence and streams a sentence per frame. Plain " ~
+             "actions are for a single decisive input, a deliberate `screen` " ~
+             "crop, or a `steps` batch whose controls are already known. The " ~
+             "loop takes a `task` (optionally `window`, " ~
             "`frame`, `reasoning`, `max_steps`, `seconds`); it is an " ~
             "experimental streaming " ~
             "sentence loop - every round attaches the current frame, the model " ~
@@ -1182,6 +1184,7 @@ version (Windows)
         int SetCursorPos(int x, int y);
         uint SendInput(uint cInputs, INPUT* pInputs, int cbSize);
         int GetSystemMetrics(int index);
+        int GetWindowRect(void* hwnd, RECT* rect);
         void* GetDC(void* hwnd);
         int ReleaseDC(void* hwnd, void* hdc);
         void* CreateCompatibleDC(void* hdc);
@@ -3836,6 +3839,108 @@ version (Windows)
             "key_up", "focus", "mouse_move", "scroll", "macro", "loop"].canFind(action);
     }
 
+    /// JPEG quality for the loop's per-round frame. The loop answers "what does
+    /// this frame show", which survives q72 as well as q85, and the body halves -
+    /// and body size, not model speed, is what makes an upload stall on a
+    /// mid-band uplink. Override per call with `frame`; this is only the encode
+    /// quality, so click coordinates and the pixel space are unchanged.
+    private enum int loopJpegQuality = 72;
+
+    /// First click-like point in a nested call's arguments, already in screen
+    /// pixels (the caller passes scaled args). Returns false for calls that
+    /// carry no click - keys, waits, scrolls - which must not be judged as if
+    /// they aimed at a target.
+    private bool firstClickPoint(string argsJson, out int x, out int y)
+    {
+        x = -1;
+        y = -1;
+        JSONValue parsed;
+        try parsed = parseJSON(argsJson);
+        catch (Exception) return false;
+        if (parsed.type != JSONType.object) return false;
+        if (auto batch = "steps" in parsed.object)
+            if (batch.type == JSONType.array)
+                foreach (stepVal; batch.array)
+                    if (firstClickPoint(stepVal.toString(), x, y)) return true;
+        const action = jsonString(parsed, "action");
+        if (action != "click" && action != "right_click" &&
+            action != "double_click" && action != "drag") return false;
+        x = cast(int) jsonInt(parsed, "x", -1);
+        y = cast(int) jsonInt(parsed, "y", -1);
+        return x >= 0 && y >= 0;
+    }
+
+    /// Whether two points sit inside the same small box. Used to treat a click on
+    /// a dead point's neighbourhood as the same dead click, so nudging a few
+    /// pixels is not a new attempt.
+    private bool withinBox(int ax, int ay, int bx, int by, int radius)
+    {
+        const dx = ax > bx ? ax - bx : bx - ax;
+        const dy = ay > by ? ay - by : by - ay;
+        return dx <= radius && dy <= radius;
+    }
+
+    /// The bound window's own rectangle in screen pixels. The loop captures this
+    /// instead of the whole desktop, so the frame cannot show a different app
+    /// than the one the actions target - the defect that made the loop describe a
+    /// browser while its clicks went to the game.
+    private bool windowRectOf(void* hwnd, out int x, out int y, out int w,
+        out int h)
+    {
+        x = 0;
+        y = 0;
+        w = 0;
+        h = 0;
+        if (hwnd is null) return false;
+        RECT rect;
+        if (GetWindowRect(hwnd, &rect) == 0) return false;
+        x = cast(int) rect.left;
+        y = cast(int) rect.top;
+        w = cast(int) (rect.right - rect.left);
+        h = cast(int) (rect.bottom - rect.top);
+        // A minimised or degenerate window is not a usable frame.
+        return w >= 64 && h >= 64;
+    }
+
+    /// Add a window origin to a nested call's coordinates: the model reads a
+    /// frame-relative point, but the pointer has to reach the screen point.
+    private string offsetComputerArgs(string argsJson, int dx, int dy)
+    {
+        if ((dx == 0 && dy == 0) || argsJson.length == 0) return argsJson;
+        JSONValue parsed;
+        try parsed = parseJSON(argsJson);
+        catch (Exception) return argsJson;
+        if (parsed.type != JSONType.object) return argsJson;
+        void shiftOne(ref JSONValue node)
+        {
+            if (node.type != JSONType.object) return;
+            foreach (key; ["x", "x2"])
+                if (auto field = key in node.object)
+                    if (field.type == JSONType.integer)
+                        (*field).integer = (*field).integer + dx;
+            foreach (key; ["y", "y2"])
+                if (auto field = key in node.object)
+                    if (field.type == JSONType.integer)
+                        (*field).integer = (*field).integer + dy;
+            if (auto region = "region" in node.object)
+                if (region.type == JSONType.object)
+                {
+                    if (auto fx = "x" in region.object)
+                        if (fx.type == JSONType.integer)
+                            fx.integer = fx.integer + dx;
+                    if (auto fy = "y" in region.object)
+                        if (fy.type == JSONType.integer)
+                            fy.integer = fy.integer + dy;
+                }
+            if (auto batch = "steps" in node.object)
+                if (batch.type == JSONType.array)
+                    foreach (ref stepVal; batch.array) shiftOne(stepVal);
+        }
+        shiftOne(parsed);
+        try return toJSON(parsed);
+        catch (Exception) return argsJson;
+    }
+
     private ComputerUseResult runSubAgent(JSONValue value, string workspace)
     {
         const task = jsonString(value, "task");
@@ -3856,12 +3961,30 @@ version (Windows)
             return failedResult("Error: subagent has no provider configured.");
         int maxSteps = cast(int) jsonInt(value, "max_steps", 4);
         if (maxSteps < 1) maxSteps = 1;
-        if (maxSteps > 16) maxSteps = 16;
+        // A run is the only stretch in which the desktop is driven without
+        // yielding the foreground, so its step budget is what bounds sustained
+        // competence: at ~1.5 s per round a cap of 16 ended every burst after
+        // roughly 24 s. 48 rounds keeps a single run productive for over a
+        // minute without letting a stuck loop spin indefinitely.
+        if (maxSteps > 48) maxSteps = 48;
         // `frame` trades image detail for latency: full / half / quarter. A
         // downscaled frame is not 1:1 with click coordinates, so the model's
         // pixel readings are scaled back up before we execute (see frameFactor).
         string frameScale = normalizeFrameScale(jsonString(value, "frame"));
-        const frameFactor = frameFactorOf(frameScale);
+        int frameFactor = frameFactorOf(frameScale);
+        // A frame wider than this is downscaled again before the model reads it,
+        // which silently breaks the 1:1 click contract: the same button measured
+        // at native y=789 in one delivered frame read back as y=717 in another,
+        // so every aim landed near-but-off its control. Cap the declared frame
+        // instead, so the image the model reads is always the exact coordinate
+        // space the caption describes.
+        if (frameFactor < 2 && computerUseNestedTarget !is null)
+        {
+            int probeX, probeY, probeW, probeH;
+            if (windowRectOf(computerUseNestedTarget, probeX, probeY, probeW,
+                probeH) && probeW > 1280)
+                frameFactor = 2;
+        }
         string loopModel = jsonString(value, "model");
         if (loopModel.length == 0) loopModel = effectiveComputerModel();
         auto previousTarget = computerUseNestedTarget;
@@ -3908,8 +4031,12 @@ version (Windows)
             "screenshot before each decision. Read coordinates in the main image's pixel space; " ~
             "the tool scales them. Native detail crops report desktop origins: add their origin, " ~
             "then divide by the main frame scale for subsequent actions. You may inspect a crop " ~
-            "without sending input. Batch only actions whose controls and targets are already " ~
-            "established. Verify the visible instruction or control actually advanced before " ~
+            "without sending input. A text label or tooltip is not a control: hover an " ~
+            "unfamiliar control with mouse_move first and confirm the frame changes before " ~
+            "clicking it. Batch only actions whose controls and targets are already " ~
+            "established; when the next two to four actions are already determined, send " ~
+            "them as one `steps` batch, because every round costs a full model call. Verify " ~
+            "the visible instruction or control actually advanced before " ~
             "claiming progress; motion, queued input and pixel changes are not goal verification. " ~
             "After two ineffective attempts, inspect a crop or change approach; report a blocker " ~
             "rather than repeat guessed actions. Camera dragging may move the view opposite to " ~
@@ -3953,16 +4080,43 @@ version (Windows)
         // task) and only the newest exchanges, so a long session stays small and
         // fast instead of re-prefilling a growing history every round.
         const prefixText = messages.data;
-        enum size_t trimCap = 16000;
+        // Longer runs need a longer memory: with 48 rounds available, keeping
+        // only six exchanges meant the loop re-derived the situation from
+        // scratch every few steps and drifted off the mission. Twelve exchanges
+        // is still a small prefix but enough to carry the plan across a run.
+        enum size_t trimCap = 32000;
         string[] recentSegments;
         auto log_ = appender!string();
         string answer;
         size_t steps;
+        // A capture order needs the squad to stand still for roughly 20 seconds,
+        // but this loop acts about every 1.7 s. Without a cooldown every new
+        // right-click cancelled the order before it, so squads walked in circles
+        // and no point was ever captured ("only walking around"). After a ground
+        // order, refuse further orders for a few rounds and make it wait instead.
+        int holdRoundsRemaining;
         // `diff` mode needs the previous frame to compute what changed.
         ubyte[] previousFrame;
         int previousWidth;
         bool havePreviousFrame;
         bool previousRoundHadAction;
+        // Where the last click landed, in screen pixels, and what it was. The
+        // round judges THAT spot: a whole-frame "something moved" is satisfied
+        // by any animation (walking soldiers, a blinking HUD), which is how four
+        // near-identical right-clicks in a row counted as progress.
+        int lastActionX = -1;
+        int lastActionY = -1;
+        string lastActionWhat;
+        // Points that produced no visible change, remembered for the whole run.
+        // Re-clicking a dead point - or its neighbour - is the observed failure:
+        // two identical clicks on the "Tactical Map" helptext label.
+        int[] deadX;
+        int[] deadY;
+        // Consecutive clicks that changed nothing in their own area. Scattered
+        // blind clicking walks straight past a point-distance rule (observed:
+        // three dead clicks at 1540,440 / 1600,800 / 1580,580), so the streak,
+        // not the location, is what has to stop the run.
+        int deadClickStreak;
         bool lastRoundFailed;
         string pendingEvidence;
         // Latency accounting for the "how many seconds per reaction" goal.
@@ -3992,6 +4146,7 @@ version (Windows)
             }
             const roundStarted = MonoTime.currTime;
             ++pace.rounds;
+            if (holdRoundsRemaining > 0) --holdRoundsRemaining;
             string screenPart;
             if (computerUseNestedTarget !is null && !virtualPointerActive &&
                 ensureInputTarget(windowTitleOf(computerUseNestedTarget)) is null)
@@ -3999,8 +4154,46 @@ version (Windows)
             // Let the UI settle so this frame reflects the previous action
             // rather than the state before it.
             Thread.sleep(msecs(300));
+            // The frame and the actions must describe the same window. The
+            // capture below is the whole desktop, so if another app still holds
+            // the foreground after the raise, the sentence would reason about
+            // that app while the clicks land in ours. Re-assert once more and
+            // otherwise refuse with the reason instead of driving blind.
+            if (computerUseNestedTarget !is null && !virtualPointerActive)
+            {
+                auto fg = GetForegroundWindow();
+                if (fg !is computerUseNestedTarget &&
+                    GetAncestor(fg, 2) !is computerUseNestedTarget)
+                {
+                    forceForeground(computerUseNestedTarget);
+                    Thread.sleep(msecs(200));
+                    fg = GetForegroundWindow();
+                    if (fg !is computerUseNestedTarget &&
+                        GetAncestor(fg, 2) !is computerUseNestedTarget)
+                        return failedResult("Error: the nested loop's target window \"" ~
+                            windowTitleOf(computerUseNestedTarget) ~ "\" is not in " ~
+                            "front, so the captured frame would show a different " ~
+                            "window than the one its actions target. Raise that " ~
+                            "window and retry.");
+                }
+            }
+            // Frame from the bound window's own rectangle rather than the whole
+            // desktop: a desktop frame can show another app whenever z-order
+            // shifts, which is what produced sentences about a browser while the
+            // actions went to the game. The origin is added back to every nested
+            // click so frame-relative points still land correctly on screen.
+            int frameOffX;
+            int frameOffY;
+            int frameOffW;
+            int frameOffH;
+            bool haveWindowFrame;
+            if (computerUseNestedTarget !is null && !virtualPointerActive)
+                haveWindowFrame = windowRectOf(computerUseNestedTarget,
+                    frameOffX, frameOffY, frameOffW, frameOffH);
             const captureStarted = MonoTime.currTime;
-            auto shot = captureScreen();
+            auto shot = haveWindowFrame
+                ? captureScreen(frameOffX, frameOffY, frameOffW, frameOffH)
+                : captureScreen();
             const captureMs = (MonoTime.currTime - captureStarted).total!"msecs";
             captureTotalMs += captureMs;
             if (!shot.ok) return failedResult("Error: nested loop has no current screen. " ~ shot.error);
@@ -4009,6 +4202,23 @@ version (Windows)
             computerUseProgressLine("frame " ~ to!string(shot.width) ~ "x" ~
                 to!string(shot.height) ~ " · " ~ millisecondsText(captureMs) ~
                 " · round " ~ to!string(pace.rounds));
+            // Keep the bound window in front for the whole round. A game that
+            // pauses itself on focus loss would otherwise freeze during the
+            // model call - Aurora's own progress update can take the foreground -
+            // and every action would land on that pause overlay instead of the
+            // battlefield.
+            // Only step in when the target actually lost the foreground:
+            // forcing a foreground switch every round is itself a focus change,
+            // and an app that pauses on focus loss reacts to it, so the round's
+            // action lands on the pause overlay. Nothing to fix when it is
+            // already in front.
+            if (computerUseNestedTarget !is null && !virtualPointerActive)
+            {
+                auto nowForeground = GetForegroundWindow();
+                if (nowForeground !is computerUseNestedTarget &&
+                    GetAncestor(nowForeground, 2) !is computerUseNestedTarget)
+                    forceForeground(computerUseNestedTarget);
+            }
             // Did the previous round's action change anything? A game UI that
             // swallows a click leaves the frame byte-identical; tell the model,
             // which otherwise re-clicks the same dead spot forever.
@@ -4020,6 +4230,23 @@ version (Windows)
                     previousFrame.length == shot.rgb.length &&
                     frameChangeCount(shot.width, shot.height, shot.rgb,
                         previousFrame) < frameChangeThreshold;
+                // Local judgement: did the box around the click respond?
+                size_t localChanged = size_t.max;
+                if (previousRoundHadAction && lastActionX >= 0 &&
+                    havePreviousFrame && previousWidth == shot.width &&
+                    previousFrame.length == shot.rgb.length)
+                {
+                    enum int boxHalf = 110;
+                    int bx = lastActionX - frameOffX - boxHalf;
+                    int by = lastActionY - frameOffY - boxHalf;
+                    if (bx < 0) bx = 0;
+                    if (by < 0) by = 0;
+                    const bw = min(220, shot.width - bx);
+                    const bh = min(220, shot.height - by);
+                    if (bw > 0 && bh > 0)
+                        localChanged = tileChangeCount(shot.width, bx, by,
+                            bw, bh, shot.rgb, previousFrame);
+                }
                 if (unchanged && previousRoundHadAction)
                 {
                     correctionPart = textPart("Note: the screen did NOT change " ~
@@ -4029,6 +4256,29 @@ version (Windows)
                         "same click.");
                     log_.put("note: injected identical-frame correction\n");
                 }
+                else if (localChanged != size_t.max && localChanged < 300)
+                {
+                    deadX ~= lastActionX;
+                    deadY ~= lastActionY;
+                    correctionPart = textPart("Note: your last " ~
+                        lastActionWhat ~ " at screen (" ~
+                        to!string(lastActionX) ~ "," ~ to!string(lastActionY) ~
+                        ") changed nothing in that area. That spot did not " ~
+                        "respond: do NOT click it, or a point next to it, a " ~
+                        "second time. Read THIS frame and choose a visibly " ~
+                        "different target, or report the blocker.");
+                    log_.put("note: dead-click correction at " ~
+                        to!string(lastActionX) ~ "," ~ to!string(lastActionY) ~
+                        " (" ~ to!string(localChanged) ~ " px changed)\n");
+                }
+                if (localChanged != size_t.max)
+                {
+                    if (localChanged < 300) ++deadClickStreak;
+                    else deadClickStreak = 0;
+                }
+                lastActionX = -1;
+                lastActionY = -1;
+                lastActionWhat = "";
                 havePreviousFrame = true;
             }
             if (shot.ok)
@@ -4036,10 +4286,10 @@ version (Windows)
                 if (frameScale == "diff")
                 {
                     if (previousFrame.length != shot.rgb.length)
-                        screenPart = imagePart("Full screen (first look; " ~
-                            "coordinates are in this image's pixels):",
-                            encodeScreenshotJpeg(shot.width, shot.height,
-                            shot.rgb));
+                    screenPart = imagePart("Full screen (first look; " ~
+                        "coordinates are in this image's pixels):",
+                        encodeScreenshotJpeg(shot.width, shot.height,
+                            shot.rgb, loopJpegQuality));
                     else
                     {
                         enum int tileW = 240;
@@ -4102,8 +4352,16 @@ version (Windows)
                 for (int f = frameFactor; f > 1; f /= 2)
                     frame = halfRgb(frameWidth, frameHeight, frame,
                         frameWidth, frameHeight);
-                auto jpeg = encodeScreenshotJpeg(frameWidth, frameHeight, frame);
-                const caption = frameScale == "full"
+                auto jpeg = encodeScreenshotJpeg(frameWidth, frameHeight,
+                    frame, loopJpegQuality);
+                // Surface the body size the link actually has to carry: with the
+                // frame this small the upload stops being the visible cost, and
+                // an operator can see that instead of inferring it from stalls.
+                computerUseProgressLine("image " ~
+                    to!string(jpeg.length / 1024) ~ " KB · " ~
+                    to!string(frameWidth) ~ "x" ~ to!string(frameHeight) ~
+                    " · q" ~ to!string(loopJpegQuality));
+                const caption = frameFactor == 1
                     ? "Current screen (same pixel space as click coordinates):"
                     : "Current screen: this image is " ~
                       to!string(frameWidth) ~ "x" ~ to!string(frameHeight) ~
@@ -4169,6 +4427,17 @@ version (Windows)
                     "." ~ to!string(pace.sentences) ~ " · " ~
                     millisecondsText((MonoTime.currTime - modelStarted).total!"msecs") ~
                     ": " ~ sentence);
+                // Showing the sentence can take the foreground, and this game
+                // pauses itself the instant it loses focus - which left the round's
+                // action landing on a pause overlay instead of the battlefield.
+                // Put the bound window back in front before the action runs.
+                if (computerUseNestedTarget !is null && !virtualPointerActive)
+                {
+                    auto actionForeground = GetForegroundWindow();
+                    if (actionForeground !is computerUseNestedTarget &&
+                        GetAncestor(actionForeground, 2) !is computerUseNestedTarget)
+                        forceForeground(computerUseNestedTarget);
+                }
             }
             auto decoder = new ProviderStreamDecoder;
             string pendingText;
@@ -4368,8 +4637,91 @@ version (Windows)
                             int stripped;
                             const filtered = stripNestedScreens(argsJson,
                                 stripped);
-                            result = experimentalComputerUseExecute(
-                                nestedCallArgs(scaleComputerArgs(filtered, frameFactor), loopMode), workspace);
+                            const scaledArgs = nestedCallArgs(
+                                offsetComputerArgs(
+                                    scaleComputerArgs(filtered, frameFactor),
+                                    frameOffX, frameOffY),
+                                loopMode);
+                            int clickedX;
+                            int clickedY;
+                            const aims = firstClickPoint(scaledArgs, clickedX,
+                                clickedY);
+                            bool deadRepeat;
+                            if (aims)
+                                foreach (i; 0 .. deadX.length)
+                                    if (withinBox(clickedX, clickedY, deadX[i],
+                                        deadY[i], 60))
+                                    {
+                                        deadRepeat = true;
+                                        break;
+                                    }
+                            // After two dead clicks, stop the FAILING AREA, not the
+                            // whole run: the model must still be able to reach a
+                            // genuinely different control (it was blocked from
+                            // clicking RESUME after missing the Continue button).
+                            bool nearDeadArea;
+                            if (aims)
+                                foreach (i; 0 .. deadX.length)
+                                    if (withinBox(clickedX, clickedY, deadX[i],
+                                        deadY[i], 400))
+                                    {
+                                        nearDeadArea = true;
+                                        break;
+                                    }
+                            if (aims && deadClickStreak >= 2 && nearDeadArea)
+                            {
+                                result = failedResult("Refused: clicking near " ~
+                                    "this area has changed nothing, so it is not " ~
+                                    "working. Choose a control well away from it " ~
+                                    "(a different button or panel), take a " ~
+                                    "non-click action, or report where you are " ~
+                                    "stuck.");
+                                log_.put("note: refused a click near a dead area\n");
+                            }
+                            else if (deadRepeat)
+                            {
+                                result = failedResult("Refused: that area did " ~
+                                    "not respond to your earlier click, so it is " ~
+                                    "not a control. Do not click it again - choose " ~
+                                    "a different target or report the blocker.");
+                                log_.put("note: refused a repeat click at " ~
+                                    to!string(clickedX) ~ "," ~
+                                    to!string(clickedY) ~ "\n");
+                            }
+                            else
+                            {
+                                const actionKind = computerActionOf(scaledArgs);
+                                if (actionKind == "right_click" && holdRoundsRemaining > 0)
+                                {
+                                    result = failedResult("Refused: you gave a " ~
+                                        "move or capture order a moment ago. A " ~
+                                        "capture needs the squad to stand still " ~
+                                        "for about 20 seconds, and a new " ~
+                                        "right-click cancels the order that was " ~
+                                        "already running. Wait instead - do not " ~
+                                        "right-click the ground until the capture " ~
+                                        "completes.");
+                                    log_.put("note: refused a move order during " ~
+                                        "capture hold\n");
+                                }
+                                else
+                                {
+                                    result = experimentalComputerUseExecute(
+                                        scaledArgs, workspace);
+                                    if (!result.failed && aims)
+                                    {
+                                        lastActionX = clickedX;
+                                        lastActionY = clickedY;
+                                        lastActionWhat = actionKind;
+                                        previousRoundHadAction = true;
+                                        // Give the order time to pay off: about
+                                        // ten seconds of standing still, which
+                                        // is what a capture actually needs.
+                                        if (actionKind == "right_click")
+                                            holdRoundsRemaining = 6;
+                                    }
+                                }
+                            }
                             if (stripped > 0)
                                 result.output = "Skipped " ~
                                     to!string(stripped) ~ " redundant " ~
@@ -4402,8 +4754,8 @@ version (Windows)
             recentSegments ~= messages.data[segStart .. $];
             if (messages.data.length > trimCap)
             {
-                const keep = recentSegments.length > 6 ?
-                    recentSegments[$ - 6 .. $] : recentSegments;
+                const keep = recentSegments.length > 12 ?
+                    recentSegments[$ - 12 .. $] : recentSegments;
                 auto rebuilt = appender!string();
                 rebuilt.put(prefixText);
                 foreach (s; keep) rebuilt.put(s);
