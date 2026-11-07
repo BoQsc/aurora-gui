@@ -148,3 +148,16 @@ rather than claiming the change works.
   not self-explanatory.
 - Prefer small, targeted edits over whole-file rewrites.
 - Keep the user's existing changes intact; do not revert unrelated edits.
+
+## Driving a real desktop (games, GUI-only apps)
+
+Rules that cost hours to rediscover live in
+[docs/computer-use-game-testing.md](docs/computer-use-game-testing.md): native
+input for games, coordinates only from native-resolution frames, one focused
+batch per step because a fullscreen game pauses itself when it loses foreground,
+and verification against the application's own confirmation text rather than a
+changed picture.
+
+This file is loaded into every prompt as the project-instructions section (see
+[docs/project-instructions.md](docs/project-instructions.md)). Durable knowledge
+belongs here or in `docs/`, not in a conversation that ends.

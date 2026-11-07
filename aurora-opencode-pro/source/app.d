@@ -155,6 +155,40 @@ private int runScreenshot(string path, bool withChat, string message)
     return 0;
 }
 
+/// Render the app's own "System prompt" viewer for the active project and save
+/// it. The dialog is the same one the Settings button opens, so the image shows
+/// exactly what the next request would send, including project instructions.
+private int runScreenshotPrompt(string path)
+{
+    import aurora.widgets.scrollbar : Scrollbar;
+    import aurora.widgets.texteditor : TextArea;
+    import std.string : indexOf;
+    auto ui = openOffscreen("Aurora OpenCode", RendererPreference.automatic);
+    const text = ui.root.systemPromptViewerTextForTesting();
+    stderr.writeln("system prompt: ", text.length, " bytes");
+    // The viewer follows the caret, which sits at the end of the prompt, so a
+    // plain capture shows the dynamic tail. Paint once (that is what publishes
+    // the scroll range), then park the scrollbar on the project rules so the
+    // saved image shows the section a user is looking for.
+    ui.driver.paint();
+    if (auto viewer = cast(TextArea) findById(ui.root, "oc-system-prompt"))
+    {
+        const header = text.indexOf("# Project instructions");
+        if (header >= 0)
+        {
+            size_t line;
+            foreach (char ch; text[0 .. header])
+                if (ch == '\n') ++line;
+            foreach (child; viewer.children())
+                if (auto bar = cast(Scrollbar) child)
+                    bar.setValue(cast(int) line, true);
+            ui.driver.paint();
+        }
+    }
+    finishOffscreen(ui, path);
+    return 0;
+}
+
 /// The exe links as a console-subsystem binary, so a shell launch already owns
 /// the invoking cmd window and CLI output (`--headless`, usage, errors) lands
 /// there. Before the first write, join the console the exe was launched from
@@ -262,6 +296,9 @@ private int printUsage()
     writeln("                                           at once; see --session-server --help");
     writeln("  aurora-opencode-pro --screenshot <path>");
     writeln(`  aurora-opencode-pro --screenshot-chat <path> "prompt"`);
+    writeln("  aurora-opencode-pro --screenshot-prompt <path>");
+    writeln("                                           save the system message the");
+    writeln("                                           next request would send");
     writeln("  aurora-opencode-pro --software-renderer  draw with the CPU; kept for");
     writeln("                                           later starts (GPU recovery)");
     writeln("  aurora-opencode-pro --renderer=<mode>    auto, software or vulkan for");
@@ -560,6 +597,14 @@ private int runApp(string[] args)
     {
         attachCliConsole();
         return runScreenshot(args[2], true, args[3]);
+    }
+    // The exact system message the next request would send, as the real viewer
+    // dialog, saved to an image. Lets a rule change be inspected without asking
+    // the model what it thinks its instructions are.
+    if (arg1 == "--screenshot-prompt" && args.length >= 3)
+    {
+        attachCliConsole();
+        return runScreenshotPrompt(args[2]);
     }
     if (arg1 == "--headless")
     {

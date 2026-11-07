@@ -5,6 +5,7 @@ import std.array : appender;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 // experimental: computer use - delete with source/auroraopencode/computeruse.d
 import auroraopencode.computeruse : experimentalComputerUseEnabled;
+import auroraopencode.projectinstructions : projectInstructionsSection;
 
 /// Everything a module may need when rendering its own section. Values are
 /// resolved once, before any module runs, so modules stay pure and cheap.
@@ -176,6 +177,10 @@ public SystemPromptModule[] builtinModules()
             (in SystemPromptContext ctx) => communicationSection(ctx)),
         SystemPromptModule("verbosity",
             (in SystemPromptContext ctx) => verbositySection(ctx)),
+        // Project house rules (AGENTS.md / AURORA.md). Renders nothing when the
+        // project has none, so the stock prompt stays byte-identical.
+        SystemPromptModule("projectInstructions",
+            (in SystemPromptContext ctx) => projectInstructionsSection(ctx.workspace)),
         SystemPromptModule("environment",
             (in SystemPromptContext ctx) => environmentSection(ctx)),
     ];

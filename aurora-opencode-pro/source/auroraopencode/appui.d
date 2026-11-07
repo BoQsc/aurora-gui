@@ -73,6 +73,7 @@ import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
 import auroraopencode.systemprompt : promptVerbosityDirective,
     promptVerbosityLabel, promptVerbosityNames, rebuildModule, responsePlanReviewPrompt,
     setSystemPromptModules, systemPromptGeneration;
+import auroraopencode.projectinstructions : projectInstructionsSignature;
 // experimental: computer use - delete with source/auroraopencode/computeruse.d
 import auroraopencode.computeruse :
     experimentalComputerUseEnabled, experimentalImageHistoryLimit,
@@ -24882,6 +24883,11 @@ private void pollButtonSuggestionRequest()
         key.put(experimentalWebSearchEnabled() ? "|web" : "|no-web");
         key.put(experimentalComputerUseEnabled() ? "|computer" : "|no-computer");
         key.put(experimentalStrictPlanEnabled() ? "|plan" : "|no-plan");
+        // Project rules are files on disk: key on their size and modification
+        // time so writing or editing AGENTS.md refreshes the cached prompt
+        // instead of leaving the session on a stale one.
+        key.put('|');
+        key.put(projectInstructionsSignature(workspace));
         if (_systemPromptCache.length > 0 && key.data == _systemPromptCacheKey)
             return _systemPromptCache;
         auto rendered = buildSystemPrompt(nativeOnly, workspace, platform,

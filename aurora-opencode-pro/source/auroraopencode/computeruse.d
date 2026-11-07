@@ -1053,6 +1053,7 @@ version (Windows)
 
     private enum INPUT_MOUSE = 0;
     private enum INPUT_KEYBOARD = 1;
+    private enum MOUSEEVENTF_MOVE = 0x0001;
     private enum MOUSEEVENTF_LEFTDOWN = 0x0002;
     private enum MOUSEEVENTF_LEFTUP = 0x0004;
     private enum MOUSEEVENTF_RIGHTDOWN = 0x0008;
@@ -1061,7 +1062,32 @@ version (Windows)
     private enum MOUSEEVENTF_MIDDLEUP = 0x0040;
     private enum MOUSEEVENTF_WHEEL = 0x0800;
     private enum KEYEVENTF_KEYUP = 0x0002;
+    private enum KEYEVENTF_EXTENDEDKEY = 0x0001;
     private enum KEYEVENTF_UNICODE = 0x0004;
+
+    /// Navigation and editing keys live in the "extended" part of the keyboard.
+    /// Injected without KEYEVENTF_EXTENDEDKEY they arrive as their numpad twins
+    /// (Page Down as numpad 3, arrows as numpad digits), so a game that binds
+    /// camera zoom to Page Up/Page Down never sees the press at all.
+    private bool isExtendedKey(ushort vk)
+    {
+        switch (vk)
+        {
+            case 0x21: // page up
+            case 0x22: // page down
+            case 0x23: // end
+            case 0x24: // home
+            case 0x25: // left
+            case 0x26: // up
+            case 0x27: // right
+            case 0x28: // down
+            case 0x2D: // insert
+            case 0x2E: // delete
+                return true;
+            default:
+                return false;
+        }
+    }
 
     private struct MOUSEINPUT
     {
@@ -2020,7 +2046,12 @@ version (Windows)
         INPUT[1] inputs;
         inputs[0].type = INPUT_MOUSE;
         inputs[0].mi.dwFlags = flags;
-        inputs[0].mi.mouseData = cast(DWORD) data;
+        // MOUSEEVENTF_WHEEL carries a SIGNED delta in the HIGH word of
+        // mouseData. Writing it low (the obvious cast) makes the system read 0,
+        // so the wheel never turned - which is why a game would not zoom out.
+        inputs[0].mi.mouseData = flags == MOUSEEVENTF_WHEEL
+            ? cast(DWORD) (cast(ushort) (cast(short) data)) << 16
+            : cast(DWORD) data;
         const accepted = SendInput(1, inputs.ptr, INPUT.sizeof) == 1;
         if (!accepted) computerUseInputError = "Error: Windows refused native mouse input. The action is unverified.";
         return accepted;
@@ -2221,7 +2252,31 @@ version (Windows)
         else if (realY > height - 1) realY = height - 1;
         const moved = SetCursorPos(cast(int) realX, cast(int) realY) != 0;
         if (!moved) computerUseInputError = "Error: Windows refused to move the pointer. No click was sent.";
+        else injectRelativeMove(cast(int) realX, cast(int) realY);
         return moved;
+    }
+
+    /// SetCursorPos repositions the Windows cursor but emits no motion packet, so
+    /// a game that reads the mouse through DirectInput keeps its own cursor and
+    /// never sees the move: hover highlights and edge-pan stay dead even though
+    /// clicks (which arrive as button messages) work. Drive that cursor with real
+    /// relative motion: sweep it into its top-left clamp with one large negative
+    /// delta, then move it by exactly the target offset, which lands it on the
+    /// requested pixel whatever it was doing before. The hardware cursor is
+    /// restored to the same pixel so the reported coordinate stays authoritative.
+    private void injectRelativeMove(int x, int y)
+    {
+        INPUT[2] inputs;
+        inputs[0].type = INPUT_MOUSE;
+        inputs[0].mi.dx = -4000;
+        inputs[0].mi.dy = -4000;
+        inputs[0].mi.dwFlags = MOUSEEVENTF_MOVE;
+        inputs[1].type = INPUT_MOUSE;
+        inputs[1].mi.dx = x;
+        inputs[1].mi.dy = y;
+        inputs[1].mi.dwFlags = MOUSEEVENTF_MOVE;
+        SendInput(2, inputs.ptr, INPUT.sizeof);
+        SetCursorPos(x, y);
     }
 
     /// Click at a screenshot-space point. The window under the point becomes the
@@ -2277,7 +2332,8 @@ version (Windows)
         INPUT[1] inputs;
         inputs[0].type = INPUT_KEYBOARD;
         inputs[0].ki.wVk = vk;
-        inputs[0].ki.dwFlags = up ? KEYEVENTF_KEYUP : 0;
+        inputs[0].ki.dwFlags = (up ? KEYEVENTF_KEYUP : 0) |
+            (isExtendedKey(vk) ? KEYEVENTF_EXTENDEDKEY : 0);
         const accepted = SendInput(1, inputs.ptr, INPUT.sizeof) == 1;
         if (!accepted) computerUseInputError = "Error: Windows refused native keyboard input.";
         return accepted;
@@ -4069,7 +4125,19 @@ version (Windows)
                 `,"messages":` ~ messages.data ~ correctionPart ~ screenPart ~ pendingEvidence ~
                 `],"tools":[` ~
                 toolJson ~ `],"tool_choice":"auto",` ~
-                (reasoningArg == "none" ? `"reasoning_effort":"none",` : ``) ~
+                // This loop builds its own payload, so it must not invent
+                // fields the chat path refuses to send. appui.d's
+                // effectiveThinkingForRoute documents that a DeepSeek 4.1
+                // Flash route resolves its own reasoning default instead of
+                // being sent none/off, and that route rejects this value
+                // outright (HTTP 400 before the stream ever opens), which made
+                // the whole prototype unusable. Forward only an explicitly
+                // chosen standard effort; otherwise omit the field and let the
+                // route use its own default.
+                (reasoningArg == "low" || reasoningArg == "medium" ||
+                    reasoningArg == "high"
+                    ? `"reasoning_effort":` ~ jsonQuote(reasoningArg) ~ `,`
+                    : ``) ~
                 `"stream":true}`;
             pendingEvidence = "";
             const modelStarted = MonoTime.currTime;
