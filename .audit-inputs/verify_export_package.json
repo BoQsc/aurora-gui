@@ -1,0 +1,29 @@
+{
+  "inputs": [
+    "TerraForest/addons/player_runtime/bullet_holes.gd",
+    "TerraForest/addons/player_runtime/combat_world.gd",
+    "TerraForest/addons/audio_runtime/world_audio.gd",
+    "TerraForest/addons/player_runtime/world_attack.gd",
+    "TerraForest/tools/check_export_package.py"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-u", "-B", "tools/check_export_package.py", "dist/TerraForest.pck", "bullet_holes.gd", "world.break.dirt", "world.break.vegetation", "world.break.wood", "world.break.metal", "world.break.stone"],
+        "workdir": "TerraForest",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-u", "-B", "tools/check_export_package.py", "TerraForest.exe", "bullet_holes.gd", "world.break.dirt", "world.break.vegetation", "world.break.wood", "world.break.metal", "world.break.stone"],
+        "workdir": "TerraForest",
+        "timeout": 300000
+      }
+    }
+  ]
+}

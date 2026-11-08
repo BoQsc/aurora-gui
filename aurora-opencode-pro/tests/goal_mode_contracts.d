@@ -11,6 +11,8 @@ import auroraopencode.tools : builtinToolDefinitions, executeTool,
     nativeOnlyToolDefinitions;
 import auroraopencode.core : OpenCodeToolCall, loadSettings,
     setOpencodeStateDirectoryForTesting;
+import auroraopencode.opencode_client : OpenCodeEvent;
+import auroraopencode.toolsettlement : ToolResultPolicy, settleToolResult;
 import std.file : mkdirRecurse, rmdirRecurse, tempDir, write;
 import std.path : buildPath;
 import std.stdio : writeln;
@@ -120,6 +122,78 @@ int main()
         "completion with outstanding verification was accepted");
     session.verificationStatus = "not_required";
     writeln("PASS goal completion requires evidence and finished checks");
+
+    // Completion must also audit the prose that declares the result. A final
+    // answer that names remaining work, a limitation or a follow-up cannot be
+    // followed by goal_complete: the checklist may be complete while the agent
+    // itself is still reporting unfinished outcomes.
+    ChatSession limited;
+    limited.goal = "Fix the parser crash";
+    limited.goalStatus = "active";
+    limited.objective = limited.goal;
+    limited.contract.id = "task-limited";
+    limited.contract.intent = "implementation";
+    limited.contract.currentIntent = "implementation";
+    limited.taskSteps =
+        [TaskStep("Fix the parser crash", "completed", "fix", "", "Parser tests pass", [])];
+    limited.messages ~= msg("user", "Fix the parser crash");
+    auto fix = msg("tool", "Patched the parser");
+    fix.toolName = "edit";
+    fix.toolCallId = "call-fix";
+    fix.workspaceChanged = true;
+    limited.messages ~= fix;
+    limited.messages ~= msg("assistant",
+        "Result: patched.\nRemaining: the suite is unverified.");
+    limited.messages ~= msg("user", goalCompletionAuditMarker ~ limited.goal, true);
+    ensureMessageGraph(limited);
+    require(goalCompletionError(limited,
+        `{"summary":"Patched the parser","evidence":["call-fix"]}`)
+        .indexOf("unresolved work") >= 0,
+        "completion was accepted while its answer declared remaining work");
+    require(goalCompletionError(limited,
+        `{"summary":"Patched the parser.\nLimitations: the GUI is still unverified.","evidence":["call-fix"]}`)
+        .length > 0,
+        "completion was accepted with a limitation in its summary");
+    require(goalCompletionError(limited,
+        `{"summary":"Patched the parser.\nFollow-up: run the full suite.","evidence":["call-fix"]}`)
+        .length > 0,
+        "completion was accepted with a follow-up in its summary");
+    OpenCodeEvent completion;
+    completion.toolName = "goal_complete";
+    completion.toolCallId = "call-done";
+    ToolResultPolicy completionPolicy;
+    auto settledRejection = settleToolResult(limited, completion,
+        `{"summary":"Patched the parser","evidence":["call-fix"]}`, completionPolicy);
+    require(settledRejection.message.failed &&
+        settledRejection.message.content.indexOf("unresolved work") >= 0,
+        "the completion tool accepted an answer that declared remaining work");
+    // A later successful result ends the stale prose interval: work happened
+    // after the declaration, so the plan and receipts decide completion.
+    auto rerunCall = msg("assistant", "");
+    rerunCall.id = "rerun-call";
+    rerunCall.parentId = limited.activeLeafId;
+    rerunCall.toolCalls = [OpenCodeToolCall("call-rerun", "write",
+        `{"filePath":"parser.d","content":"fix"}`)];
+    limited.messages ~= rerunCall;
+    limited.activeLeafId = rerunCall.id;
+    auto rerun = msg("tool", "Ran the parser suite");
+    rerun.id = "rerun-result";
+    rerun.parentId = rerunCall.id;
+    rerun.toolName = "write";
+    rerun.toolCallId = "call-rerun";
+    limited.messages ~= rerun;
+    limited.activeLeafId = rerun.id;
+    ensureMessageGraph(limited);
+    const emptyRemaining = goalCompletionError(limited,
+        `{"summary":"Patched the parser.\nRemaining: none.","evidence":["call-fix"]}`);
+    require(emptyRemaining.length == 0,
+        "a completion whose remaining section is explicitly empty was rejected: " ~
+        emptyRemaining);
+    require(goalCompletionError(limited,
+        `{"summary":"Patched the parser and reran the suite.","evidence":["call-fix"]}`)
+        .length == 0,
+        "completion after acting on the declared work was rejected");
+    writeln("PASS goal completion refuses answers that declare unfinished work");
 
     // An answer-only goal is proved by its answer. No receipt is required for a
     // question that never needed tool work.

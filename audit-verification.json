@@ -1,0 +1,32 @@
+{
+  "inputs": [
+    ".audit-inputs/check_installation.py",
+    ".audit-inputs/check_export_package.py",
+    ".audit-inputs/verify_installation.json",
+    ".audit-inputs/verify_export_package.json",
+    ".audit-inputs/world_attack.gd",
+    ".audit-inputs/world_audio.gd",
+    ".audit-inputs/bullet_holes.gd",
+    ".audit-inputs/combat_world.gd"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-u", "-B", "tools/check_installation.py"],
+        "workdir": "C:\\Users\\windows10\\Documents\\ChatGPT\\Godot Terrain\\TerraForest",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Users\\windows10\\Documents\\ChatGPT\\Godot Terrain\\TerraForest\\TerraForest.exe",
+        "args": ["--headless", "--path", "C:\\Users\\windows10\\Documents\\ChatGPT\\Godot Terrain\\TerraForest", "--quit"],
+        "workdir": "C:\\Users\\windows10\\Documents\\ChatGPT\\Godot Terrain\\TerraForest",
+        "timeout": 180000
+      }
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/appui.d",
+    "aurora-opencode-pro/source/auroraopencode/restorestore.d",
+    "aurora-opencode-pro/tests/goal_rebuild_contracts.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i", "-verrors=20",
+          "-Isource", "-Ishared", "-Itests",
+          "-I..\\aurora-opencode-core\\source",
+          "-I..\\vendor\\aurora-d-0.4.5\\source",
+          "-Jassets",
+          "-ofbuild\\verify-goal-rebuild\\goal_rebuild_contracts.exe",
+          "tests\\goal_rebuild_contracts.d",
+          "user32.lib", "gdi32.lib", "shell32.lib", "wininet.lib", "winmm.lib"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\build\\verify-goal-rebuild\\goal_rebuild_contracts.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 600000
+      }
+    }
+  ]
+}

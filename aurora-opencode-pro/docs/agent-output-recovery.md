@@ -42,6 +42,23 @@ explicit goal start also clears the hold. The hold is evaluated against the
 current interval, so a later turn that recorded useful tool evidence continues
 normally rather than being vetoed by an earlier episode.
 
+A prose-only reply to a goal continuation is repaired before it counts as a
+stall. The model may have finished the goal without recording it, and stopping
+there left goals partially completed behind an answer that listed its own
+limitations and remaining work. Aurora appends one `Persistent goal completion
+audit:` turn that requires either `goal_complete` with summary and evidence, or
+further tool work on the remaining plan; the goal stays active, and the audit
+does not set the hold. Only a second prose-only reply ends the goal with the
+pause above. A useful tool result or a new human message starts a fresh interval
+with a fresh audit.
+
+`goal_complete` also audits the prose it is completing. When the completion
+summary or the final answer explicitly labels remaining work, a limitation or a
+follow-up as still outstanding, completion is refused until the agent finishes
+it or records it as a plan outcome and completes it with evidence. An explicit
+"none" remains a valid completion statement; a later successful tool result ends
+the stale-prose interval so the plan and its receipts decide completion.
+
 Provider outage recovery and terminal resend now share typed policy decisions.
 The configured outage budget also bounds backoff; an exhausted provider attempt
 cannot restart through UI resend. Explicit reset-time waits and manual Retry

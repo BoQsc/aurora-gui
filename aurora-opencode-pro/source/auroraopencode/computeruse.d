@@ -173,6 +173,21 @@ public void clearComputerUseAbort()
     computerUseAbortFlag = false;
 }
 
+/// Why a running computer call must stop at its next step, or null while it may
+/// continue. The Settings switch is read live, so turning computer use off while
+/// a call is already driving the desktop stops its input exactly like the kill
+/// switch - the call cannot keep controlling the machine until its own time
+/// budget runs out. Unlike the kill-switch latch this check needs no new user
+/// message to recover: turning the switch back on is enough.
+private string computerUseStopReason()
+{
+    if (computerUseAbortActive())
+        return "the kill switch (" ~ computerUseKillSwitchChord ~ ")";
+    if (!experimentalComputerUseEnabled())
+        return "computer use being switched off in Settings";
+    return null;
+}
+
 private __gshared bool computerUseExplanationOnly;
 private __gshared uint computerUseRequestGeneration;
 private __gshared uint computerUseObservedGeneration;
@@ -490,6 +505,13 @@ private ComputerUseResult experimentalComputerUseExecuteLocked(string args,
         return failedResult("Error: computer use was stopped by the kill switch (" ~
             computerUseKillSwitchChord ~ "). Send a new message to re-enable it.");
 
+    // The switch gates every call, not only the tool list: a turn that already
+    // holds the `computer` tool can still emit calls after the human turned it
+    // off, and those must never reach the desktop.
+    if (!experimentalComputerUseEnabled())
+        return failedResult("Error: computer use is turned off in Settings " ~
+            "(\"Experimental computer use\"). Nothing was sent to the desktop.");
+
     JSONValue value;
     try value = parseJSON(args);
     catch (Exception) value = JSONValue.init;
@@ -543,7 +565,7 @@ private ComputerUseResult experimentalComputerUseExecuteLocked(string args,
                     action != "subagent"));
         // Failed input is precisely when the next decision needs fresh evidence.
         if (result.failed && result.images.length == 0 && screenshotFlag != 0 &&
-            !computerUseAbortActive())
+            computerUseStopReason() is null)
         {
             auto shot = screenshotResult("Screen after the failed action");
             result.output ~= " " ~ shot.output;
@@ -1755,7 +1777,7 @@ version (Windows)
         bool complete = true;
         foreach (i; 1 .. steps + 1)
         {
-            if (computerUseAbortActive()) { complete = false; break; }
+            if (computerUseStopReason() !is null) { complete = false; break; }
             const t = cast(double) i / steps;
             virtualMoveTo(cast(int) (x1 + (x2 - x1) * t),
                 cast(int) (y1 + (y2 - y1) * t));
@@ -2451,7 +2473,7 @@ version (Windows)
         if (steps > 150) steps = 150;
         foreach (i; 1 .. steps + 1)
         {
-            if (computerUseAbortActive()) break;
+            if (computerUseStopReason() !is null) break;
             const t = cast(double) i / steps;
             moveCursor(cast(int) (x1 + (x2 - x1) * t),
                 cast(int) (y1 + (y2 - y1) * t));
@@ -2771,7 +2793,8 @@ version (Windows)
         const deadline = MonoTime.currTime + msecs(durationMs);
         while (MonoTime.currTime < deadline)
         {
-            if (computerUseAbortActive()) return failedResult("Stopped by the kill switch during timed wait.");
+            if (auto why = computerUseStopReason())
+                return failedResult("Stopped by " ~ why ~ " during timed wait.");
             const remaining = (deadline - MonoTime.currTime).total!"msecs";
             if (remaining > 0) Thread.sleep(msecs(min(50L, remaining)));
         }
@@ -3202,10 +3225,9 @@ version (Windows)
         auto builder = appender!string();
         foreach (iteration; 0 .. repeat)
         {
-            if (computerUseAbortActive())
+            if (auto why = computerUseStopReason())
             {
-                builder.put("stopped by the kill switch (" ~
-                    computerUseKillSwitchChord ~ ")\n");
+                builder.put("stopped by " ~ why ~ "\n");
                 return failedResult(builder.data);
             }
             auto result = runWindowsSteps(steps, false);
@@ -3250,10 +3272,9 @@ version (Windows)
         size_t runs;
         while (MonoTime.currTime < deadline)
         {
-            if (computerUseAbortActive())
-                return failedResult("Loop \"" ~ name ~ "\" stopped by the " ~
-                    "kill switch (" ~ computerUseKillSwitchChord ~ ") after " ~
-                    to!string(runs) ~ " run(s).");
+            if (auto why = computerUseStopReason())
+                return failedResult("Loop \"" ~ name ~ "\" stopped by " ~ why ~
+                    " after " ~ to!string(runs) ~ " run(s).");
             auto result = runWindowsSteps(steps, false);
             ++runs;
             if (result.failed)
@@ -4134,9 +4155,9 @@ version (Windows)
         bool hasFirstSentenceAt;
         foreach (step; 0 .. maxSteps)
         {
-            if (computerUseAbortActive())
+            if (auto why = computerUseStopReason())
             {
-                log_.put("stopped by the kill switch\n");
+                log_.put("stopped by " ~ why ~ "\n");
                 break;
             }
             if (MonoTime.currTime >= deadline)
@@ -4781,7 +4802,8 @@ version (Windows)
         const avgAction = rounds > 0 ? actionTotalMs / rounds : 0;
         const avgRound = rounds > 0 ? roundTotalMs / rounds : 0;
         ComputerUseResult out_;
-        out_.failed = answer.length == 0 || lastRoundFailed || computerUseAbortActive();
+        out_.failed = answer.length == 0 || lastRoundFailed ||
+            computerUseStopReason() !is null;
         auto finalShot = screenshotResult("Current screen after nested loop");
         if (finalShot.failed) out_.failed = true;
         out_.images = finalShot.images;
@@ -4825,10 +4847,9 @@ version (Windows)
                 break;
             }
             const action = strip(toLower(jsonString(step, "action")));
-            if (computerUseAbortActive())
+            if (auto why = computerUseStopReason())
             {
-                builder.put(label ~ ": stopped by the kill switch (" ~
-                    computerUseKillSwitchChord ~ ").\n");
+                builder.put(label ~ ": stopped by " ~ why ~ ".\n");
                 lastStep = ComputerUseResult.init;
                 failed = true;
                 break;
@@ -4861,7 +4882,7 @@ version (Windows)
             result.images = lastStep.images;
             return result;
         }
-        if (screenshot && !computerUseAbortActive())
+        if (screenshot && computerUseStopReason() is null)
         {
             auto shot = screenshotResult("Screen after the batch");
             if (shot.failed)
@@ -4896,9 +4917,8 @@ version (Windows)
         bool changed;
         while (MonoTime.currTime < deadline)
         {
-            if (computerUseAbortActive())
-                return failedResult("Stopped by the kill switch (" ~
-                    computerUseKillSwitchChord ~ ").");
+            if (auto why = computerUseStopReason())
+                return failedResult("Stopped by " ~ why ~ ".");
             Thread.sleep(msecs(intervalMs));
             auto now = captureScreen();
             if (!now.ok) return failedResult(now.error);

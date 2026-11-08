@@ -111,7 +111,8 @@ import auroraopencode.worktracking : normalizedWorkItems, requiredWorkRemaining,
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction,
     taskBlockerError, taskInputError, taskAwaitingInput, unfinishedTask;
 import auroraopencode.goalmode : GoalCommand, GoalCommandKind, goalActive,
-    clampGoalText, goalCompletionError, goalContinuationInstruction,
+    clampGoalText, goalCompletionError, goalCompletionAuditInstruction,
+    goalContinuationInstruction,
     goalNeedsHumanInput, automaticGoalRequest, goalPromptBlock, maxGoalLength,
     parseGoalCommand,
     recordGoalOutcome, recordGoalSet, syncGoalHistory;
@@ -131,7 +132,7 @@ import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker,
     outputIssueDescription;
 import auroraopencode.outputrecovery : answerReplayed, outputRecoveryCount,
     maxOutputRecoveries, goalAuditStalled, taskAuditStalled, auditStallIssue,
-    outputRecoveryAllowed, suppressAuditContinuation;
+    outputRecoveryAllowed, suppressAuditContinuation, goalCompletionAuditNeeded;
 import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow,
     transcriptVirtualThreshold;
 import auroraopencode.turnsummary : TurnWorkSummary;
@@ -10196,20 +10197,26 @@ private final class ChatSendButton : Button
         const palette = theme();
         const rect = Rect(0, 0, bounds().width, bounds().height);
         const stopping = text() == "Stop"d;
-        const background = stopping
-            ? (pressed() ? palette.buttonPressed :
-                (hovered() ? palette.buttonHover : palette.border))
-            : (pressed() ? palette.accentPressed :
-                (hovered() ? palette.accentHover : palette.accent));
+        // A disabled Send has nothing to dispatch: draw it muted so an empty
+        // composer never shows an affordance that looks active but does nothing.
+        const idle = !enabled();
+        const background = idle
+            ? palette.fieldBackground
+            : stopping
+                ? (pressed() ? palette.buttonPressed :
+                    (hovered() ? palette.buttonHover : palette.border))
+                : (pressed() ? palette.accentPressed :
+                    (hovered() ? palette.accentHover : palette.accent));
         canvas.drawRoundedRect(rect, maxInt(6, palette.cornerRadius - 2),
             background, background.darker(20), 1);
         const white = Color.rgb(255, 255, 255);
+        const foreground = idle ? palette.textMuted : white;
         if (stopping)
             canvas.fillRect(Rect((bounds().width - 10) / 2,
-                (bounds().height - 10) / 2, 10, 10), white);
+                (bounds().height - 10) / 2, 10, 10), foreground);
         else
             drawIcon(canvas, IconKind.up, Rect((bounds().width - 16) / 2,
-                (bounds().height - 16) / 2, 16, 16), white);
+                (bounds().height - 16) / 2, 16, 16), foreground);
     }
 }
 
@@ -13825,7 +13832,41 @@ private string _suggestExcludeId;
     {
         foreach (i, session; _sessions)
             if (session.turnStatus == "running")
-                ensureThreadLoaded(cast(int) i);
+                loadThreadHistoryNow(cast(int) i);
+    }
+
+    /// Materialize a conversation's saved messages for a restart decision.
+    ///
+    /// `ensureThreadLoaded` only *requests* a background read, so a chat that is
+    /// not the restored selection still has an empty `messages` array on the
+    /// tick startup resolves the restart. The scans below read that array as
+    /// evidence ("no transcript, nothing to continue"), so a background chat
+    /// that asked for the rebuild was dropped: its note was consumed and the
+    /// chat stayed idle until the user typed again. Read the few conversations
+    /// the decision needs now - one file each - instead of trusting the empty
+    /// placeholder the on-demand index leaves behind.
+    private bool loadThreadHistoryNow(int index)
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return false;
+        const id = _sessions[cast(size_t) index].id;
+        if (id.length == 0) return false;
+        if (ensureThreadLoaded(index))
+            return _sessions[cast(size_t) index].messages.length > 0;
+        auto history = readThreadHistory(opencodeStateDirectory(), id);
+        if (history.error.length)
+        {
+            _threadLoadErrors[id] = history.error;
+            logInfo("restart resume could not read conversation history: " ~ id ~
+                ": " ~ history.error);
+            return _sessions[cast(size_t) index].messages.length > 0;
+        }
+        auto session = &_sessions[cast(size_t) index];
+        if (!session.messages.length) session.messages = history.messages;
+        _threadLoaded[id] = true;
+        _restoreBundle.histories.remove(id);
+        ensureMessageGraph(*session);
+        initializeLegacyTask(*session);
+        return session.messages.length > 0;
     }
 
     /// Flag conversations left `running` by a process that is gone. A fresh
@@ -13905,6 +13946,7 @@ private string _suggestExcludeId;
         string cause;
         string reason;
         string noteSession;
+        bool noteTurnInFlight;
         try
         {
             auto value = parseJSON(readText(path));
@@ -13914,6 +13956,11 @@ private string _suggestExcludeId;
                 reason = field.str;
             if (auto field = "session" in value.object)
                 noteSession = field.str;
+            // The rebuild records whether it cut short a running turn. That is
+            // the note's evidence that the saved goal state is a shutdown
+            // artifact, not a decision the user made.
+            if (auto field = "turn" in value.object)
+                noteTurnInFlight = field.str == "running";
         }
         catch (Exception error)
             logError("resume note unreadable: " ~ error.msg);
@@ -14000,7 +14047,7 @@ private string _suggestExcludeId;
         // stopped because those are explicit user-owned states.
         const rebuildNoteContinuation = cause == "rebuild" && target >= 0 &&
             noteSession.length > 0 && _sessions[target].id == noteSession &&
-            rebuildNoteContinues(target);
+            rebuildNoteContinues(target, noteTurnInFlight);
         _resumeNoteAlreadyHandled = target >= 0 &&
             _sessions[target].turnStatus != "running" &&
             !resumeGoalWorkRemaining(target) &&
@@ -14118,7 +14165,7 @@ private string _suggestExcludeId;
         // The evidence-backed unfinished check needs the transcript, which the
         // lazy per-thread store leaves on disk for a conversation that was not
         // the running one at shutdown.
-        if (session.messages.length == 0) ensureThreadLoaded(index);
+        if (session.messages.length == 0) loadThreadHistoryNow(index);
         return unfinishedTask(session);
     }
 
@@ -14129,16 +14176,29 @@ private string _suggestExcludeId;
     /// saved `interrupted` - or even `completed` when the shutdown processed the
     /// cancellation before the snapshot - is a shutdown artifact, not the
     /// agent's verdict that the work ended. Continue that chat unless the user
-    /// explicitly stopped it (a paused goal) or it is waiting for a required
-    /// answer. A chat with no transcript left nothing to continue.
-    private bool rebuildNoteContinues(int index)
+    /// explicitly stopped it (a paused goal with no interrupted turn) or it is
+    /// waiting for a required answer. A chat with no transcript left nothing to
+    /// continue.
+    ///
+    /// `turnInFlight` is the note's own record that the shutdown cut off a turn
+    /// that was running. A stop pauses the goal *and* ends its turn, so a paused
+    /// goal can coexist with a running turn only when the user started that turn
+    /// themselves after pausing. Such a turn is the work the rebuild interrupted,
+    /// and honouring the pause only forbids *automatic* continuation - dropping
+    /// the note silently discarded the chat the user was working in (the
+    /// reported "the chat did not continue after rebuild" when the goal had been
+    /// stopped earlier in the same conversation).
+    private bool rebuildNoteContinues(int index, bool turnInFlight)
     {
         if (index < 0 || index >= cast(int) _sessions.length) return false;
+        // A chat saved by the on-demand store has no messages in memory until
+        // its file is read; treating that placeholder as "empty chat" is what
+        // dropped the rebuild's own conversation.
         if (_sessions[cast(size_t) index].messages.length == 0)
-            ensureThreadLoaded(index);
+            loadThreadHistoryNow(index);
         const ref session = _sessions[cast(size_t) index];
         if (session.messages.length == 0) return false;
-        if (session.goalStatus == "paused") return false;
+        if (session.goalStatus == "paused" && !turnInFlight) return false;
         if (session.taskStatus == "waiting_input" && taskAwaitingInput(session))
             return false;
         return true;
@@ -14601,6 +14661,15 @@ private string _suggestExcludeId;
         recoverInvalidInputPause();
     }
 
+    /// Test-only: the exact note body a rebuild leaves for the next launch, so a
+    /// test can prove the interrupted-turn record the resume decision reads is
+    /// written by the same rule it is judged by.
+    public static string rebuildResumeNoteForTesting(string reason,
+        string sessionId, bool turnInFlight)
+    {
+        return rebuildResumeNote(reason, sessionId, turnInFlight);
+    }
+
     /// Test-only: drop any pending startup-resume request, so a test that
     /// exercises resume resolution does not also fire the follow-up request.
     public void clearPendingResumeForTesting()
@@ -14823,7 +14892,9 @@ private string _suggestExcludeId;
                 settingsWriter.flushChecked();
                 projectsWriter.flushChecked();
                 if (resumeSession.length && !exists(buildPath(stateDirectory, "restart-resume.json")))
-                    writeResumeNoteForRebuild("the application restarted while this turn was running", resumeSession);
+                    writeResumeNoteForRebuild(
+                        "the application restarted while this turn was running",
+                        resumeSession, true);
                 if (afterSave !is null) afterSave();
             });
         return true;
@@ -15587,9 +15658,21 @@ private string _suggestExcludeId;
         string sessionId = _agentRebuildOwnerId;
         _agentRebuildOwnerId = "";
         if (!sessionIdKnown(sessionId)) sessionId = resumeOwnerSessionId();
-        writeResumeNoteForRebuild(reason, sessionId);
+        writeResumeNoteForRebuild(reason, sessionId, sessionTurnInFlight(sessionId));
         if (sessionId.length > 0) setTurnActiveMarker(true, sessionId);
         if (!performRebuild(reason)) removeResumeNoteForRebuild();
+    }
+
+    /// Whether `id` currently owns a real in-flight turn, so the note can record
+    /// that the rebuild is cutting off live work rather than a stopped chat.
+    private bool sessionTurnInFlight(string id)
+    {
+        if (id.length == 0) return false;
+        foreach (i, session; _sessions)
+            if (session.id == id)
+                return session.turnStatus == "running" ||
+                    sessionIsBusy(cast(int) i);
+        return false;
     }
 
     /// Whether `id` names a conversation that still exists, so the resume note
@@ -15639,18 +15722,34 @@ private string _suggestExcludeId;
     /// Leave a resume request the next launch consumes, so a deliberate rebuild
     /// reopens the requesting conversation with a "rebuilt" note rather than
     /// looking like a crash.
-    private static void writeResumeNoteForRebuild(string reason, string sessionId)
+    ///
+    /// `turnInFlight` records that the shutdown cut short a turn that was
+    /// actually running in this conversation. It is the resume decision's
+    /// evidence that the saved `paused` goal - which is what Stop, and the
+    /// shutdown's own cancellation path, leave behind - must not veto
+    /// continuation: the user's turn was in flight, not stopped.
+    private static void writeResumeNoteForRebuild(string reason, string sessionId,
+        bool turnInFlight)
     {
         const path = buildPath(opencodeStateDirectory(), "restart-resume.json");
+        try write(path, rebuildResumeNote(reason, sessionId, turnInFlight));
+        catch (Exception error)
+            logError("could not write the rebuild resume note: " ~ error.msg);
+    }
+
+    /// The note a rebuild leaves for the next launch, as JSON text. Pure so the
+    /// writer and the resume reader can be checked against each other.
+    static string rebuildResumeNote(string reason, string sessionId,
+        bool turnInFlight)
+    {
         string json;
         json ~= "{\n";
         json ~= "  \"cause\": \"rebuild\",\n";
         json ~= "  \"reason\": " ~ resumeNoteJsonString(reason) ~ ",\n";
-        json ~= "  \"session\": " ~ resumeNoteJsonString(sessionId) ~ "\n";
+        json ~= "  \"session\": " ~ resumeNoteJsonString(sessionId) ~ ",\n";
+        json ~= "  \"turn\": " ~ (turnInFlight ? `"running"` : `"idle"`) ~ "\n";
         json ~= "}\n";
-        try write(path, json);
-        catch (Exception error)
-            logError("could not write the rebuild resume note: " ~ error.msg);
+        return json;
     }
 
     /// Leave a resume request for a deliberate rebuild that interrupts a
@@ -15668,7 +15767,8 @@ private string _suggestExcludeId;
         const sessionId = resumeOwnerSessionId();
         if (sessionId.length > 0) setTurnActiveMarker(true, sessionId);
         writeResumeNoteForRebuild(
-            "the rebuild was requested while this turn was running", sessionId);
+            "the rebuild was requested while this turn was running", sessionId,
+            true);
     }
 
     /// Drop the resume request when the rebuild could not actually start.
@@ -16476,6 +16576,7 @@ private string _suggestExcludeId;
         _input.onChanged = delegate()
         {
             syncIntroSelection();
+            updateSendButton();
             if (!_startupLoadPending)
             {
                 syncComposerDraft();
@@ -16496,7 +16597,10 @@ private string _suggestExcludeId;
             // only when submitted with Enter; it must never turn a Stop click
             // into a hidden "keep going" operation.
             if (turnIsBusy()) stopActiveTurn();
-            else sendMessage();
+            // An empty composer has nothing to send. Never let that click reach
+            // the send path, where it could be read as a request to extend the
+            // chat instead of as a no-op.
+            else if (hasSendableInput()) sendMessage();
         };
         // The tooltip follows the label (Send / Stop) and opens above the
         // button, which sits on the window's bottom edge.
@@ -21715,6 +21819,39 @@ private void pollButtonSuggestionRequest()
         const auditStall = auditStallIssue(event.outputIssue);
         if (auditStall)
         {
+            // A goal continuation answered with prose only is not yet proof of
+            // a stall: the model may have finished the goal without recording
+            // it, which paused a partly finished goal behind a summary of its
+            // own limitations and remaining work. Ask once for `goal_complete`
+            // or real tool work before stopping; a repeated reply still stops.
+            if (event.outputIssue == "goal_audit_stalled" &&
+                goalCompletionAuditNeeded(*session) && !_toolContinuationPaused)
+            {
+                _suppressDoneStatus = true;
+                finishAssistantMessage(false);
+                dropAutoResendSchedule();
+                _autoContinuePendingSession = -1;
+                _autoContinueRetries = 0;
+                _activeRequestId = 0;
+                _activeRequestSession = -1;
+                logInfo("agent-output request=" ~ to!string(event.requestId) ~
+                    " thread=" ~ session.id ~
+                    " issue=" ~ event.outputIssue ~ " recovery=goal completion audit");
+                ChatMessage audit;
+                audit.role = "user";
+                audit.internal = true;
+                audit.time = currentTimestamp();
+                audit.content = goalCompletionAuditInstruction(*session);
+                appendMessage(*session, audit);
+                session.turnStatus = "running";
+                session.taskStatus = "active";
+                publishThreadUpdated(*session);
+                markDirty();
+                rebuildMessageColumn();
+                updateStatus("Auditing the goal result…");
+                if (!_toolContinuationPaused) startChatRequest(sessionIndex);
+                return;
+            }
             // A no-action automatic continuation is a stop boundary, not a
             // provider-format error. Re-sending the same history only produces
             // more prose and nested recovery requests.
@@ -23974,6 +24111,7 @@ private void pollButtonSuggestionRequest()
             _attachmentStrip.setAttachments(_pendingAttachments);
         syncComposerHeight();
         if (_composer !is null) _composer.invalidate();
+        updateSendButton();
         markDirty();
     }
 
@@ -28652,6 +28790,7 @@ private void pollButtonSuggestionRequest()
 
     private void updateSendButton()
     {
+        if (_sendButton is null || _input is null) return;
         // The button must reflect the whole turn, not just an in-flight
         // request: between tool rounds no request is streaming, so keying on
         // the client alone flips "Stop" back to "Send" while the agent is
@@ -28659,7 +28798,8 @@ private void pollButtonSuggestionRequest()
         const busy = turnIsBusy();
         _sendButton.setText(_stopPending ? "Stopping…" : busy ? "Stop" : "Send");
         _sendButton.setEnabled(!_startupLoadPending && !_stopPending &&
-            !threadLoadPending(_current) && !threadHistoryUnavailable(_current));
+            !threadLoadPending(_current) && !threadHistoryUnavailable(_current) &&
+            (busy || hasSendableInput()));
         _sendButton.setAccent(!busy);
         if (_composerWasBusy != busy)
         {
@@ -28668,6 +28808,28 @@ private void pollButtonSuggestionRequest()
                 ? "Guide this task…  Enter applies at the next step · Alt+Enter queues a follow-up"
                 : "Ask anything…  @file · /goal · /btw · /review");
         }
+    }
+
+    /// Whether the composer holds something the Send button can dispatch.
+    /// Attachments count even without text (they become the message), while
+    /// whitespace alone does not. An empty composer has nothing to send, so its
+    /// Send affordance must stay inert rather than start or extend a turn.
+    private bool hasSendableInput() const
+    {
+        if (_pendingAttachments.length > 0) return true;
+        if (_input is null) return false;
+        // This runs on every frame to keep the button honest, and `textUtf8()`
+        // allocates the whole prompt. Read the internal buffer instead and test
+        // the same ASCII whitespace `std.string.strip` removes.
+        foreach (ch; _input.textView())
+            switch (ch)
+            {
+                case ' ': case '\t': case '\n': case '\r': case '\v': case '\f':
+                    break;
+                default:
+                    return true;
+            }
+        return false;
     }
 
     // -- context usage meter ---------------------------------------------
@@ -34402,6 +34564,20 @@ private void pollButtonSuggestionRequest()
         event.outputIssue = issue;
         event.requestId = _activeRequestId;
         handleOutputFailure(event);
+    }
+
+    /// Test-only: append a hidden control turn exactly as a continuation does,
+    /// so an audit interval can be set up without a provider request.
+    public void addInternalNoteForTesting(string content)
+    {
+        if (_current < 0 || _current >= cast(int) _sessions.length) return;
+        ChatMessage note;
+        note.role = "user";
+        note.internal = true;
+        note.time = currentTimestamp();
+        note.content = content;
+        appendMessage(_sessions[_current], note);
+        rebuildMessageColumn();
     }
 
     /// Test-only: failed messages saved in the current session.

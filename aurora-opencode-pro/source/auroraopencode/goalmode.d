@@ -5,7 +5,7 @@ import auroraopencode.requestintent : answerOnlyRequest, requestIntent,
     RequestIntent;
 import std.array : appender, join, split;
 import std.json : JSONType, JSONValue, parseJSON;
-import std.string : indexOf, startsWith, strip, toLower;
+import std.string : indexOf, replace, splitLines, startsWith, strip, toLower;
 import std.utf : toUTF32, toUTF8;
 
 /// Claude Code caps a goal condition at 4,000 characters. Keep the same bound
@@ -276,6 +276,137 @@ public string goalContinuationInstruction(const ref ChatSession session)
         "The user can pause this goal at any time.";
 }
 
+/// A goal continuation answered with prose only is ambiguous: the model either
+/// finished the work without recording it or stopped early. This marker bounds
+/// the repair to one extra turn that must call `goal_complete` or resume tool
+/// work, so a partly finished goal is not paused on the strength of a summary
+/// that lists its own limitations and remaining work.
+public enum goalCompletionAuditMarker = "Persistent goal completion audit:\n";
+
+public string goalCompletionAuditInstruction(const ref ChatSession session)
+{
+    const answerGoal = goalIsAnswerOnly(session.goal);
+    return goalCompletionAuditMarker ~ session.goal ~ "\n" ~
+        "The last turn replied with prose but neither called `goal_complete` nor " ~
+        "advanced the recorded plan with a tool. Do one of those now. " ~
+        (answerGoal ? "" :
+            "If the previous reply named remaining work, limitations or follow-ups, " ~
+            "finish them with tools or record them as plan outcomes; do not call " ~
+            "`goal_complete` while they remain. ") ~
+        (answerGoal
+            ? "This goal's completion condition is its answer: call `goal_complete` with a concise summary now that the answer is delivered. "
+            : "If the completion condition is demonstrably true, call `goal_complete` with a concise summary and the toolCallId of each successful recorded result that proves it. ") ~
+        "Otherwise keep working the unfinished plan outcomes with tools; do not restate " ~
+        "limitations or remaining work instead of acting on them. A second prose-only " ~
+        "reply ends automatic continuation and pauses the goal, so do not answer the " ~
+        "same way twice.";
+}
+
+/// Labels a completion answer uses to declare work it has not finished. Only an
+/// explicit label counts: discussing a limitation of the code is not a claim
+/// that the goal still has an unaddressed outcome.
+private enum unfinishedWorkLabels = [
+    "remaining work", "remaining limitations", "remaining issues",
+    "known limitations", "known issues", "outstanding work", "unfinished work",
+    "next steps", "follow-ups", "follow ups", "followup", "followups",
+    "follow-up", "follow up", "limitations", "limitation",
+    "remaining", "outstanding", "unfinished", "not done", "todo", "to-do",
+];
+
+private bool statesNoOutstandingWork(string body)
+{
+    auto text = body.strip.toLower;
+    while (text.length && ",.;:!-".indexOf(text[$ - 1]) >= 0)
+        text = text[0 .. $ - 1].strip;
+    if (!text.length) return true;
+    foreach (negative; ["none", "nothing", "n/a", "na", "not applicable",
+            "no further work", "no remaining work", "no known issues",
+            "no known limitations", "no outstanding work", "no limitations",
+            "no follow-up", "no follow-ups", "no open work",
+            "all done", "all complete", "all addressed",
+            "complete", "completed", "done", "resolved", "none recorded",
+            "none remaining"])
+        if (text == negative) return true;
+    foreach (negative; ["none ", "none;", "none,", "nothing ",
+            "no further ", "no remaining ", "no known ", "not applicable"])
+        if (text.startsWith(negative)) return true;
+    return false;
+}
+
+/// The completion summary or final answer can describe work as still
+/// outstanding. Completing then records a goal the agent itself says is not
+/// finished, so this returns that declaration for a refusal.
+private string declaredUnfinishedWork(string text)
+{
+    string label, body, fence;
+    bool found;
+    string declared;
+    foreach (raw; text.splitLines())
+    {
+        auto line = raw.strip;
+        if (line.startsWith("```") || line.startsWith("~~~"))
+        {
+            if (!fence.length) fence = line[0 .. 3];
+            else if (line.startsWith(fence)) fence = "";
+            continue;
+        }
+        if (fence.length || line.startsWith(">")) continue;
+        line = line.replace("**", "");
+        while (line.length && "#*-_+ ".indexOf(line[0]) >= 0)
+            line = line[1 .. $].strip;
+        size_t digits;
+        while (digits < line.length && line[digits] >= '0' && line[digits] <= '9') ++digits;
+        if (digits && digits + 1 < line.length &&
+            (line[digits] == '.' || line[digits] == ')') && line[digits + 1] == ' ')
+            line = line[digits + 2 .. $].strip;
+        const lower = line.toLower;
+        string matched;
+        foreach (name; unfinishedWorkLabels)
+            if (lower == name || lower.startsWith(name ~ ":"))
+            {
+                matched = name;
+                break;
+            }
+        if (matched.length)
+        {
+            if (label.length && !statesNoOutstandingWork(body))
+            {
+                declared = label ~ ": " ~ body.strip;
+                found = true;
+                break;
+            }
+            label = matched;
+            body = lower.length > matched.length ? line[matched.length + 1 .. $] : "";
+            continue;
+        }
+        if (label.length && line.length)
+            body ~= (body.length ? " " : "") ~ line;
+    }
+    if (!found && label.length && !statesNoOutstandingWork(body))
+        declared = label ~ ": " ~ body.strip;
+    if (!declared.length) return "";
+    import auroraopencode.taskcontext : taskExcerpt;
+    return taskExcerpt(declared.replace("\n", " ").replace("\r", " "), 180);
+}
+
+/// The final prose answer at the end of the current no-action interval. Once a
+/// tool has produced a result, the plan and its receipts decide completion;
+/// stale prose from before that work must not veto it.
+private string currentAnswerProse(const ref ChatSession session)
+{
+    foreach_reverse (index; activeMessagePath(session))
+    {
+        const ref message = session.messages[index];
+        if (message.role == "tool") break;
+        if (message.role == "assistant" && message.failed) break;
+        if (message.role == "user" && !message.internal) break;
+        if (message.role == "assistant" && !message.internal &&
+            !message.toolCalls.length && message.content.strip.length)
+            return message.content;
+    }
+    return "";
+}
+
 /// Validate a model's `goal_complete` request. Completion is refused while the
 /// user's goal is paused/completed, while verification is outstanding, or while
 /// the durable checklist still has unfinished outcomes.
@@ -298,9 +429,10 @@ public string goalCompletionError(const ref ChatSession session, string argument
     }
     if (!field("summary").length)
         return "goal_complete requires a concise summary of the verified result.";
+    const answerGoal = goalIsAnswerOnly(session.goal);
     // An answer-only goal is proved by the answer itself. Action goals still
     // need real receipts so prose cannot stand in for completed work.
-    if (!goalIsAnswerOnly(session.goal))
+    if (!answerGoal)
     {
         auto evidence = "evidence" in value.object;
         if (evidence is null || evidence.type != JSONType.array || !evidence.array.length)
@@ -335,5 +467,15 @@ public string goalCompletionError(const ref ChatSession session, string argument
     foreach (item; session.contract.workItems)
         if (item.required && item.step.status != "completed")
             return "Required work remains open. Finish it before completing the goal.";
+    if (!answerGoal)
+    {
+        string declared = declaredUnfinishedWork(field("summary"));
+        if (!declared.length)
+            declared = declaredUnfinishedWork(currentAnswerProse(session));
+        if (declared.length)
+            return "goal_complete still names unresolved work (" ~ declared ~ "). " ~
+                "Finish it with tools or record it as an outcome with update_plan and " ~
+                "complete it with evidence, then call goal_complete again.";
+    }
     return "";
 }

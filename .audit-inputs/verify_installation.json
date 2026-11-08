@@ -1,0 +1,25 @@
+{
+  "inputs": [
+    "TerraForest/tools/check_installation.py"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "TerraForest.exe",
+        "args": ["--headless", "--path", "C:\\Users\\windows10\\Documents\\ChatGPT\\Godot Terrain\\TerraForest", "--quit"],
+        "workdir": "TerraForest",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-u", "-B", "tools/check_installation.py"],
+        "workdir": "TerraForest",
+        "timeout": 120000
+      }
+    }
+  ]
+}

@@ -5,9 +5,22 @@ import auroraopencode.outputrecovery;
 import auroraopencode.outputguard : outputFailurePrefix, outputIssueDescription,
     outputRecoveryMarker;
 import auroraopencode.taskcontinuation : taskContinuationMarker;
+import auroraopencode.goalmode : goalCompletionAuditMarker;
 import std.stdio : writeln;
 import std.conv : to;
 import std.string : indexOf;
+
+void push(ref ChatSession session, string role, string content, bool internal = false,
+    string tool = "")
+{
+    ChatMessage message;
+    message.role = role; message.content = content;
+    message.internal = internal; message.toolName = tool;
+    message.id = "p" ~ to!string(session.messages.length);
+    message.parentId = session.activeLeafId;
+    session.activeLeafId = message.id;
+    session.messages ~= message;
+}
 
 int main()
 {
@@ -114,6 +127,43 @@ int main()
     session.taskStatus="waiting_input";
     add("assistant","What billing rate applies?");
     assert(!taskAuditStalled(session) && !goalAuditStalled(session),"A validated input wait inherited an earlier prose-stall counter");
+
+    // A goal continuation answered with prose only may be a goal the model
+    // finished without recording. The app must offer one completion audit -
+    // call goal_complete or keep working with tools - before pausing the goal on
+    // a summary that lists its own limitations and remaining work.
+    {
+        ChatSession goalSession;
+        goalSession.goal = "Write and verify the requested artifact";
+        goalSession.goalStatus = "active";
+        push(goalSession, "user", goalSession.goal);
+        push(goalSession, "tool", "Plan recorded", false, "update_plan");
+        push(goalSession, "user", "Persistent goal continuation: " ~ goalSession.goal, true);
+        push(goalSession, "assistant",
+            "Result: the artifact is written.\nRemaining: verification is still running.");
+        assert(goalAuditStalled(goalSession),
+            "a prose-only goal continuation was not detected as a stall");
+        assert(goalCompletionAuditNeeded(goalSession),
+            "the goal was stopped without offering its completion audit");
+        push(goalSession, "user", goalCompletionAuditMarker ~ goalSession.goal, true);
+        assert(goalCompletionAuditPending(goalSession) &&
+            !goalCompletionAuditNeeded(goalSession),
+            "the bounded completion audit was offered twice");
+        assert(goalAuditStalled(goalSession),
+            "a repeated prose-only reply must still end the goal");
+        push(goalSession, "assistant", "Result: written.\nRemaining: verification.");
+        assert(!goalCompletionAuditNeeded(goalSession),
+            "a second prose-only reply earned another audit turn");
+        push(goalSession, "tool", "Applied the fix", false, "apply_patch");
+        assert(!goalAuditStalled(goalSession) && !goalCompletionAuditPending(goalSession),
+            "recorded tool work did not end the goal audit interval");
+        // A real user message starts a new interval with a fresh audit.
+        push(goalSession, "user", "Continue the goal");
+        push(goalSession, "user", "Persistent goal continuation: " ~ goalSession.goal, true);
+        push(goalSession, "assistant", "Result: written.\nRemaining: verification.");
+        assert(goalCompletionAuditNeeded(goalSession),
+            "a new user request did not reset the completion-audit budget");
+    }
     writeln("PASS bounded unusable output, varied goal chatter, useful long-horizon work and new-user boundaries");
     return 0;
 }

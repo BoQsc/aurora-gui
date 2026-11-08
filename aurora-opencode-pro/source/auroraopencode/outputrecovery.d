@@ -2,7 +2,7 @@ module auroraopencode.outputrecovery;
 
 import auroraopencode.core : ChatMessage, ChatSession, activeMessagePath;
 import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker;
-import auroraopencode.goalmode : goalActive;
+import auroraopencode.goalmode : goalActive, goalCompletionAuditMarker;
 import auroraopencode.taskcontinuation : taskContinuationMarker, taskAwaitingInput;
 import std.string : startsWith, strip;
 
@@ -100,6 +100,32 @@ bool goalAuditStalled(const ref ChatSession session)
         if (message.internal && message.content.startsWith("Persistent goal continuation:")) ++audits;
     }
     return audits >= 1;
+}
+
+/// A completion audit already sent in the current interval. It keeps the
+/// repair to one turn: reporting the same prose again is a real stall.
+bool goalCompletionAuditPending(const ref ChatSession session)
+{
+    foreach_reverse (index; activeMessagePath(session))
+    {
+        const ref message = session.messages[index];
+        if (endsAuditInterval(message)) break;
+        if ((message.role == "user" && !message.internal) ||
+            (message.role == "tool" && usefulTool(message.toolName) &&
+                !message.content.startsWith("Tool call skipped:"))) break;
+        if (message.internal && message.content.startsWith(goalCompletionAuditMarker))
+            return true;
+    }
+    return false;
+}
+
+/// A goal continuation that returned prose only is repaired by one completion
+/// audit turn first: the goal may already be finished and merely unrecorded, and
+/// pausing it there is the "partially completed with limitations and remaining
+/// work" state users report. Only a second prose-only reply ends the goal.
+bool goalCompletionAuditNeeded(const ref ChatSession session)
+{
+    return goalAuditStalled(session) && !goalCompletionAuditPending(session);
 }
 
 /// Bound consecutive no-action continuations, including short or varied prose.

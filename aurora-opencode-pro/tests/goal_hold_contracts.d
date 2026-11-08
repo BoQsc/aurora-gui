@@ -66,6 +66,40 @@ int main()
         root.injectOutputFailureForTesting(issue);
     }
 
+    // A prose-only goal continuation is first repaired, not stopped: the goal
+    // may already be finished and merely unrecorded, and pausing it there is the
+    // "goal is partially completed with limitations and remaining work" state.
+    // One completion audit turn must ask for `goal_complete` or further work.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user", "assistant"],
+            ["fix the parser crash", "Result: patched.\nRemaining: the suite is unverified."]);
+        root.setGoalForTesting("fix the parser crash", "active");
+        root.setTaskStateForTesting("fix the parser crash", "active", "not_required");
+        root.applyPlanForTesting(
+            `{"plan":[{"step":"Fix the parser crash","status":"in_progress"}]}`);
+        root.addInternalNoteForTesting("Persistent goal continuation: fix the parser crash");
+        root.startTurnClockForTesting();
+        root.injectOutputFailureForTesting("goal_audit_stalled");
+        bool audit;
+        foreach (i; 0 .. root.totalMessageCountForTesting())
+            if (root.messageContentForTesting(i).indexOf(
+                "Persistent goal completion audit:") >= 0) audit = true;
+        assert(audit, "a prose-only goal continuation was stopped without its completion audit");
+        assert(root.goalStatusForTesting() == "active",
+            "the completion audit paused the goal it was still repairing: "
+            ~ root.goalStatusForTesting());
+        assert(root.goalHistoryOutcomesForTesting()[$ - 1] == "active",
+            "the completion audit recorded a settled outcome while the goal kept working");
+        assert(!root.auditHoldForTesting(),
+            "the completion audit held automatic continuation immediately");
+        assert(root.failedMessageCountForTesting() == 0,
+            "the completion audit surfaced a failure row");
+        root.stopActiveTurnForTesting();
+        pump();
+        writeln("PASS a prose-only goal continuation gets one completion audit, not a pause");
+    }
+
     // The hold itself: hidden, no recovery round, unfinished work kept, and the
     // goal paused so the bar never claims an active goal that is not running.
     foreach (issue; ["goal_audit_stalled", "task_audit_stalled"])
@@ -106,6 +140,7 @@ int main()
         pump();
     }
     writeln("PASS an audit hold pauses the active goal, keeps the work and Start continues it");
+
 
     // Whatever the hold does later, a settle must never leave the conversation
     // in the reported state: goal active with nothing running.

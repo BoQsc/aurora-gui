@@ -1,0 +1,11 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/computeruse.d",
+    "aurora-opencode-pro/tests/computer_toggle_stop_test.d",
+    "aurora-opencode-pro/tests/test_computer_toggle_stop.py"
+  ],
+  "steps": [
+    {"kind":"compile","command":{"program":"dmd","args":["-i","-Isource","-I../aurora-opencode-core/source","-I../vendor/aurora-d-0.4.5/source","-of=build/computer_toggle_stop_check.exe","tests/computer_toggle_stop_test.d","user32.lib","gdi32.lib","shell32.lib","wininet.lib"],"workdir":"aurora-opencode-pro","timeout":900000}},
+    {"kind":"tests","command":{"program":"build/computer_toggle_stop_check.exe","args":[],"workdir":"aurora-opencode-pro","timeout":120000}}
+  ]
+}

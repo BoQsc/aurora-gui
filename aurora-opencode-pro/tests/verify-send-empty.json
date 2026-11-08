@@ -1,0 +1,51 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/appui.d",
+    "aurora-opencode-pro/tests/goal_ui_smoke.d",
+    "aurora-opencode-pro/tests/test_goal_send_contracts.py"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-verrors=20",
+          "-Isource",
+          "-Ishared",
+          "-I../aurora-opencode-core/source",
+          "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets",
+          "tests/goal_ui_smoke.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib",
+          "-ofC:/Users/windows10/AppData/Local/Temp/aurora-send-empty-verify/goal_ui_smoke.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 900000
+      }
+    },
+    {
+      "kind": "interaction",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-send-empty-verify/goal_ui_smoke.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 180000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-B", "tests/test_goal_send_contracts.py"],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 120000
+      }
+    }
+  ]
+}

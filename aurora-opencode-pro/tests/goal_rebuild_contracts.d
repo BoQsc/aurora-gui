@@ -4,9 +4,10 @@ module goal_rebuild_contracts;
 // is written for the requesting conversation, and the shutdown then cancels the
 // turn; the saved status is therefore `interrupted` (or `completed` when the
 // cancellation was processed before the snapshot), not proof the agent finished.
-// The note must continue its chat unless the user paused the goal or the task is
-// waiting for a required answer. Before this, a settled or cancelled turn was
-// reopened and dropped ("the chat did not continue after rebuild").
+// The note must continue its chat unless the user stopped it and no turn was
+// running, or the task is waiting for a required answer. Before this, a settled
+// or cancelled turn was reopened and dropped ("the chat did not continue after
+// rebuild").
 
 import aurora;
 import auroraopencode.appui : OpenCodeRoot;
@@ -92,7 +93,8 @@ int main()
     pump();
     writeln("PASS a rebuild continues an active goal whose turn had settled");
 
-    // A paused goal stays paused: only the user resumes it.
+    // A paused goal stays paused: only the user resumes it. This note does not
+    // record an interrupted turn, so nothing was cut short.
     settleIdleGoal("paused");
     noteForCurrent("apply the fix");
     const pausedBefore = root.totalMessageCountForTesting();
@@ -103,6 +105,46 @@ int main()
     assert(root.goalStatusForTesting() == "paused",
         "the resume reactivated a paused goal");
     writeln("PASS a rebuild leaves a paused goal stopped");
+
+    // The live failure: the goal was stopped earlier in this conversation, and
+    // the user then started a turn of their own that the rebuild cut off. The
+    // note records that interrupted turn, so the chat continues; the pause keeps
+    // its meaning (no automatic goal continuation) and is never cleared here.
+    settleIdleGoal("paused");
+    {
+        const id = root.sessionIdForTesting(root.currentSessionForTesting());
+        write(buildPath(state, "restart-resume.json"),
+            root.rebuildResumeNoteForTesting("apply the fix", id, true));
+    }
+    const runningBefore = root.totalMessageCountForTesting();
+    root.prepareResumeForTesting();
+    pump();
+    assert(root.totalMessageCountForTesting() > runningBefore,
+        "a rebuild dropped the chat whose interrupted turn was running while its goal was paused");
+    assert(root.turnBusyForTesting(),
+        "the interrupted turn of a paused-goal chat did not continue");
+    assert(root.goalStatusForTesting() == "paused",
+        "continuing an interrupted turn resurrected the paused goal");
+    root.stopActiveTurnForTesting();
+    pump();
+    writeln("PASS a rebuild continues an interrupted turn whose goal was paused");
+
+    // The same chat, with a note that records no interrupted turn: the pause is
+    // still authoritative, so the writer and the resume reader stay in step.
+    settleIdleGoal("paused");
+    {
+        const id = root.sessionIdForTesting(root.currentSessionForTesting());
+        write(buildPath(state, "restart-resume.json"),
+            root.rebuildResumeNoteForTesting("apply the fix", id, false));
+    }
+    const idleBefore = root.totalMessageCountForTesting();
+    root.prepareResumeForTesting();
+    pump();
+    assert(root.totalMessageCountForTesting() == idleBefore,
+        "a rebuild note without an interrupted turn resumed a paused goal");
+    assert(root.goalStatusForTesting() == "paused",
+        "the resume reactivated a paused goal with no interrupted turn");
+    writeln("PASS a rebuild note without an interrupted turn leaves a paused goal stopped");
 
     // The live failure: the shutdown cancelled the turn, so it is saved as
     // `interrupted` while the durable checklist has nothing pending. The chat
@@ -140,6 +182,49 @@ int main()
     root.stopActiveTurnForTesting();
     pump();
     writeln("PASS a rebuild continues the requesting chat after its goal completed");
+
+    // The requesting chat is not the restored selection and its messages are
+    // only on disk: the on-demand thread store keeps every other conversation's
+    // transcript out of memory. A restart decision that reads that empty
+    // placeholder as "this chat was never used" consumes the note and leaves the
+    // rebuild's own conversation idle - the reported "the chat did not continue
+    // after rebuild". The decision must read the saved history first.
+    {
+        root.newChatForTesting();
+        const background = root.currentSessionForTesting();
+        root.addConversationForTesting(["user"], ["Rebuild this app after the fix."]);
+        root.setGoalForTesting("Rebuild this app after the fix.", "completed");
+        root.setTaskStateForTesting("Rebuild this app after the fix.", "completed",
+            "not_required");
+        root.setSessionTurnStatusForTesting(background, "interrupted");
+        // The user watches another chat while the rebuild runs, so that chat is
+        // the restored selection on the next launch.
+        root.newChatForTesting();
+        const viewer = root.currentSessionForTesting();
+        root.addConversationForTesting(["user"], ["opened while the rebuild ran"]);
+        assert(viewer != background,
+            "the viewer chat is not distinct from the rebuild owner");
+        root.selectSessionForTesting(viewer);
+        root.persistForTesting();
+        root.reloadSessionsForTesting();
+        assert(root.currentSessionForTesting() == viewer,
+            "the restored selection is not the chat the user was viewing");
+        assert(root.sessionMessageCountForTesting(background) == 0,
+            "the fixture kept the background transcript in memory, so it does not exercise the on-demand store");
+        write(buildPath(state, "restart-resume.json"),
+            `{"cause":"rebuild","reason":"apply the fix","session":"` ~
+            root.sessionIdForTesting(background) ~ `"}`);
+        const onDiskBefore = root.sessionMessageCountForTesting(background);
+        root.prepareResumeForTesting();
+        pump();
+        assert(root.sessionMessageCountForTesting(background) > onDiskBefore,
+            "a rebuild dropped the requesting chat whose transcript was only on disk");
+        assert(root.sessionTurnBusyForTesting(background),
+            "the requesting chat whose transcript was only on disk did not continue");
+        root.stopActiveTurnForTesting();
+        pump();
+        writeln("PASS a rebuild continues a requesting chat whose transcript is only on disk");
+    }
 
     // Without a note (a plain relaunch) nothing is replayed.
     settleIdleGoal("active");

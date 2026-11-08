@@ -64,6 +64,10 @@ string answerContract(string request, string verbosity)
 {
     auto result = "# Current answer contract\n" ~
         "Answer the latest user request, preserving its scope and format. Earlier assistant claims are not evidence. " ~
+        "Before acting, name the user-visible outcome and the evidence that will prove it; do not " ~
+        "substitute a benchmark, model comparison or tool success for the requested outcome. " ~
+        "When the user says the work is off-target, that correction is authoritative: state the exact " ~
+        "delta and replace the rejected plan; do not defend or repeat it. " ~
         "State the supported conclusion first; include only the reasons, checks or caveats needed to use it. " ~
         "Do not add speculative defects, future redesigns or unrelated improvements. " ~
         "For claims about existing code, distinguish the source, actual execution and the desired behavior. " ~

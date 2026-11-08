@@ -1,0 +1,32 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/systemprompt.d",
+    "aurora-opencode-pro/tests/repair_discipline_contracts.d"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-Isource",
+          "-Ishared",
+          "-Itests",
+          "-I../aurora-opencode-core/source",
+          "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lwininet.lib",
+          "-Lwinmm.lib",
+          "-run",
+          "tests/repair_discipline_contracts.d"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 600000
+      }
+    }
+  ]
+}

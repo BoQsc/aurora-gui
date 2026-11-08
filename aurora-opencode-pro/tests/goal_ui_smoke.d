@@ -71,6 +71,24 @@ int main()
     assert(!root.startupPendingForTesting(), "Conversation startup did not settle");
     root.newChatForTesting();
     root.tickTree(0.02);
+    // Nothing supplied: the Send button must be inert. It stays disabled while
+    // the composer is empty, and even a direct activation cannot start a turn.
+    assert(!root.sendEnabledForTesting(),
+        "empty composer left the Send button enabled");
+    const emptyMessages = root.messageCountForTesting();
+    root.clickSendButtonForTesting();
+    root.tickTree(0.02);
+    assert(root.messageCountForTesting() == emptyMessages &&
+        !root.turnBusyForTesting(),
+        "an empty Send started or extended the chat");
+    root.setInputForTesting("typed prompt");
+    root.tickTree(0.02);
+    assert(root.sendEnabledForTesting(),
+        "typing did not enable the Send button");
+    root.setInputForTesting("");
+    root.tickTree(0.02);
+    assert(!root.sendEnabledForTesting(),
+        "clearing the composer left the Send button enabled");
     auto driver = new UiTestDriver(window);
     assert(driver.paint(), "initial goal-bar paint failed");
     assert(driver.paint(), "second goal-bar layout failed");
