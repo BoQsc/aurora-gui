@@ -1,0 +1,43 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/systemprompt.d",
+    "aurora-opencode-pro/source/auroraopencode/answercontract.d",
+    "aurora-opencode-pro/source/auroraopencode/appui.d",
+    "aurora-opencode-pro/tests/problem_framing_contracts.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-Iaurora-opencode-pro/source",
+          "-Iaurora-opencode-pro/shared",
+          "-Iaurora-opencode-core/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-Jaurora-opencode-pro/assets",
+          "-odC:/Users/windows10/AppData/Local/Temp/aurora-sharpness/verify-obj",
+          "-ofC:/Users/windows10/AppData/Local/Temp/aurora-sharpness/framing-verify.exe",
+          "aurora-opencode-pro/tests/problem_framing_contracts.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib"
+        ],
+        "workdir": "C:/Users/windows10/Documents/github_repositories/aurora-gui",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-sharpness/framing-verify.exe",
+        "args": [],
+        "workdir": "C:/Users/windows10/Documents/github_repositories/aurora-gui",
+        "timeout": 120000
+      }
+    }
+  ]
+}

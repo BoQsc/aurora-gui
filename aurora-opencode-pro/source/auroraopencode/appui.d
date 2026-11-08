@@ -4,6 +4,7 @@ import toolProgressPolicy = auroraopencode.toolprogresspolicy;
 
 import conversationEncoding = auroraopencode.conversationencode;
 import goalMutation = auroraopencode.goalmutation;
+import auroraopencode.answercontract : framedOutcomeText, openEndedFramingRequest;
 
 import auroraopencode.turnpolicy : TurnPolicy, TurnAction, decideTurn, hasIncompleteTaskSteps;
 import auroraopencode.requestpolicy : RequestPolicy, prepareAgentRequest;
@@ -12912,6 +12913,9 @@ private string _suggestExcludeId;
     // Strict mode additionally checks before the first mutation. Normal mode
     // only warns (see queueStalePlanGuidance) and never blocks the batch.
     private bool[string] _planGateFired;
+    // One deferred batch asks an open-ended improvement request for its
+    // user-visible outcome before the model maps source or measures a proxy.
+    private bool[string] _framingGateFired;
     // Plan upkeep enforcement: the tool-result position of the last deferred
     // batch and how many deferrals this request received, so a checklist that
     // stays stale is reconciled once per window instead of on every batch or
@@ -21663,6 +21667,19 @@ private void pollButtonSuggestionRequest()
             name == "dshell";
     }
 
+    private static bool assistantFramedThisTurn(const ref ChatSession session)
+    {
+        foreach_reverse (index; activeMessagePath(session))
+        {
+            const ref message = session.messages[index];
+            if (message.role == "assistant" && !message.internal &&
+                message.content.strip.length > 0)
+                return framedOutcomeText(message.content);
+            if (message.role == "user" && !message.internal) return false;
+        }
+        return false;
+    }
+
     private static bool isCommentOnlyChangedLine(string body)
     {
         return toolProgressPolicy.isCommentOnlyChangedLine(body);
@@ -22345,6 +22362,36 @@ private void pollButtonSuggestionRequest()
         // actions and a plan that already tracks unfinished outcomes proceed.
         const planFirstMissing = (explorationExhausted || substantialMutation) &&
             !hasIncompleteTaskSteps(*session) && !planRecordedThisTurn(*session);
+        // An open-ended improvement request has no measurable outcome yet.
+        // Defer one batch so the model states the outcome (or asks) instead of
+        // starting with a source map, a model comparison or another proxy.
+        bool framingFired;
+        if (auto flag = session.id in _framingGateFired) framingFired = *flag;
+        if (!framingFired && openEndedFramingRequest(latestActualUserRequest(*session)) &&
+            !assistantFramedThisTurn(*session))
+        {
+            _framingGateFired[session.id] = true;
+            appendSkippedToolResults(*session, calls,
+                "Tool call deferred for problem framing. No command ran or failed. " ~
+                "State the user-visible outcome and its proof first, or ask one focused question.");
+            ChatMessage framing;
+            framing.role = "user";
+            framing.internal = true;
+            framing.content = "Problem-framing gate: this request is open-ended. Before any tool call, " ~
+                "state in one sentence the user-visible outcome and the evidence that will prove it. " ~
+                "If the requested outcome is not yet knowable, ask one focused question instead of " ~
+                "starting work. Do not start by mapping the source, comparing models, or measuring a " ~
+                "proxy. Then continue with the tools.";
+            appendMessage(*session, framing);
+            session.turnStatus = "running";
+            session.taskStatus = "active";
+            publishThreadUpdated(*session);
+            markDirty();
+            if (_current == sessionIndex) rebuildMessageColumn();
+            updateStatus("Framing the requested outcome…");
+            if (!_toolContinuationPaused) startChatRequest(sessionIndex, false);
+            return;
+        }
         const planGateKey = session.id ~ ":" ~ session.contract.id;
         if ((goalAcceptanceMissing || planFirstMissing) && !recordingPlan &&
             !(planGateKey in _planGateFired ? _planGateFired[planGateKey] : false))
@@ -25061,6 +25108,7 @@ private void pollButtonSuggestionRequest()
         {
             // A fresh user request clears the once-per-turn plan-first nudge.
             _planGateFired[_sessions[sessionIndex].id] = false;
+            _framingGateFired.remove(_sessions[sessionIndex].id);
             _planUpkeepGatedAt.remove(_sessions[sessionIndex].id);
             _planUpkeepGates.remove(_sessions[sessionIndex].id);
         }

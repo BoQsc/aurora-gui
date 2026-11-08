@@ -1,5 +1,6 @@
 module auroraopencode.answercontract;
 
+import std.algorithm : canFind;
 import std.string : toLower, indexOf, strip;
 import std.regex : matchFirst;
 import std.json : parseJSON;
@@ -12,6 +13,41 @@ bool jsonOnlyRequest(string request)
         `(?:^|[.!?:;\n]\s*|\bthen\s+|\band\s+)(?:please\s+)?(?:return|respond|reply|output)\s+(?:(?:only|exactly|just|one|a|an|single|valid|in|with|as)\s+)*json\b`);
     return requested && lower.indexOf("followed by") < 0 && lower.indexOf("and explain") < 0 &&
         lower.indexOf("with an explanation") < 0 && lower.indexOf("and an explanation") < 0;
+}
+
+/// True when a request asks for an open-ended improvement but names no
+/// measurable outcome yet. Those requests must be framed before the first tool
+/// batch: a source map, a model comparison or a settings recommendation is a
+/// proxy until the user-visible outcome and its proof are named. A concrete
+/// file, a percentage target or a specific instruction is already measurable.
+public bool openEndedFramingRequest(string request)
+{
+    const lower = request.toLower;
+    bool abstract_;
+    foreach (word; ["maximize", "maximise", "improve", "enhance", "sharpen",
+            "sharpness", "intelligence", "smart", "smarter", "quality",
+            "better", "optimi", "faster", "slower", "cleaner", "robust"])
+        if (lower.canFind(word)) { abstract_ = true; break; }
+    if (!abstract_) return false;
+    // A measured target or a named source file already constrains the work.
+    if (lower.canFind("%")) return false;
+    foreach (extension; [".d", ".py", ".json", ".md", ".txt", ".html",
+            ".css", ".js", ".ts"])
+        if (lower.canFind(extension)) return false;
+    return true;
+}
+
+/// True when prose names a user-visible outcome or asks a focused question.
+/// An action announcement ("I'll inspect the source...") is not framing: it
+/// says what the agent will do, not what the user will get or how it is proved.
+public bool framedOutcomeText(string text)
+{
+    if (text.canFind("?")) return true;
+    const lower = text.toLower;
+    foreach (phrase; ["outcome", "what do you mean", "acceptance", "prove it",
+            "measure", "success criterion", "so that", "deliver"])
+        if (lower.canFind(phrase)) return true;
+    return false;
 }
 
 /// Remove presentation wrappers only when there is exactly one complete JSON
