@@ -1,4 +1,4 @@
-"""Collect an Aurora chat for diagnosis; Python standard library only.
+"""Collect an Aurora chat for diagnosis; Python standard library plus Aurora native archives.
 
 Run: python collect-latest-chat-diagnostics.py
 Optional: --list, --chat "chat title or id", --project-index 2 --pinned-index 1,
@@ -23,7 +23,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import zipfile
 
 
 MIB = 1024 * 1024
@@ -842,7 +841,7 @@ def diagnostics_text(report):
 
 
 def write_problem_collector(output):
-    """Portable artifact derived from this maintained script; no companion files."""
+    """Portable collector using the installed Aurora shared archive backend."""
     source = Path(__file__).read_text(encoding="utf-8-sig")
     source = re.sub(r"^Run: python collect-latest-chat-diagnostics\.py$",
         "Run: python collect-problem-chat-diagnostics.py\n"
@@ -870,6 +869,8 @@ def main(argv=None, default_project_index=None, default_pinned_index=None,
     parser.add_argument("--pinned-index", type=int, default=default_pinned_index, help="Pinned chat position within that project, starting at 1")
     parser.add_argument("--list", action="store_true", help="List projects, pinned chat positions and recent chat IDs without exporting")
     parser.add_argument("--output", help="ZIP output path")
+    parser.add_argument("--archiver", type=Path, default=os.environ.get("AURORA_NATIVE_ARCHIVER"),
+                        help="Aurora executable providing shared native archives (or AURORA_NATIVE_ARCHIVER)")
     parser.add_argument("--write-problem-collector", help="Write a standalone .py collector defaulting to project 2, pinned chat 1 and a 10-second activity sample")
     parser.add_argument("--no-processes", action="store_true", help="Skip process/CPU/I/O inspection")
     parser.add_argument("--max-messages", type=int, default=default_max_messages)
@@ -975,17 +976,43 @@ def main(argv=None, default_project_index=None, default_pinned_index=None,
                 "diagnostics.txt lists gaps; a quiet observation is not proof of a hang.\n"
                 "No application files were changed and nothing was uploaded.\n"}
     contents.update(files)
-    try:
-        with zipfile.ZipFile(output, "x", zipfile.ZIP_DEFLATED) as archive:
-            for member, text in contents.items():
-                archive.writestr(member, text.encode("utf-8"))
-    except PermissionError:
-        if args.output:
-            raise
-        output = Path(tempfile.gettempdir()) / name
-        with zipfile.ZipFile(output, "x", zipfile.ZIP_DEFLATED) as archive:
-            for member, text in contents.items():
-                archive.writestr(member, text.encode("utf-8"))
+    executable_name = "aurora-opencode-pro.exe" if os.name == "nt" else "aurora-opencode-pro"
+    candidates = [args.archiver] if args.archiver else [
+        Path(__file__).resolve().parent / executable_name,
+        Path(__file__).resolve().parents[1] / executable_name,
+        *[Path(row["path"]) for row in report.get("executables", [])
+          if row.get("path") and Path(row["path"]).name.lower() == executable_name],
+        *([Path(shutil.which(executable_name))] if shutil.which(executable_name) else [])]
+    archiver = next((path for path in candidates if path and path.is_file()), None)
+    if archiver is None:
+        raise RuntimeError("Aurora native archiver not found; supply --archiver PATH")
+    with tempfile.TemporaryDirectory(prefix="aurora-diagnostic-archive-") as directory:
+        staging = Path(directory)
+        payload = staging / "contents"
+        payload.mkdir()
+        for member, text in contents.items():
+            target = payload / member
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(text.encode("utf-8"))
+        def pack(destination):
+            request = staging / "request.json"
+            request.write_text(json.dumps({"action": "create", "path": str(destination),
+                                          "root": str(payload), "paths": ["."]}), encoding="utf-8")
+            completed = subprocess.run([str(archiver.resolve()), "--aurora-native-tool", "archive",
+                                        str(request), str(payload)], capture_output=True, text=True,
+                                       encoding="utf-8", errors="replace", timeout=120)
+            if completed.returncode:
+                message = "Native archive failed: " + completed.stdout + completed.stderr
+                if "access is denied" in message.lower() or "permission denied" in message.lower():
+                    raise PermissionError(message)
+                raise RuntimeError(message)
+        try:
+            pack(output)
+        except PermissionError:
+            if args.output:
+                raise
+            output = Path(tempfile.gettempdir()) / name
+            pack(output)
     print("Selected chat:", report["chat"].get("title", "NOT FOUND"), flush=True)
     print("Messages exported:", len(report["messages"]), flush=True)
     print("ZIP saved to:", output, flush=True)

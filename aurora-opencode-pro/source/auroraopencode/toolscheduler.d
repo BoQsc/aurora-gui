@@ -1,6 +1,7 @@
 module auroraopencode.toolscheduler;
 
 import auroraopencode.core : OpenCodeToolCall;
+import auroraopencode.nativetooldefs : nativeOperationReadOnly;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeEventKind;
 import auroraopencode.tools : ToolCancellation, ToolExecution, ChangeContext, executeTool,
     toolStatusHandler, developerToolSourceDirectory, installDeveloperToolSource, restoreDeveloperToolSource;
@@ -108,7 +109,7 @@ public void invalidateToolWorkspace(string workspace) { scheduler().invalidate(w
 
 public bool parallelTool(const ref OpenCodeToolCall call)
 {
-    return call.name == "calculate" || call.name == "read" || call.name == "glob" || call.name == "grep" ||
+    return nativeOperationReadOnly(call.name, call.arguments) || call.name == "calculate" || call.name == "read" || call.name == "glob" || call.name == "grep" ||
         call.name == "dshell" || call.name == "view_image" || call.name == "process" ||
         call.name == "checksum" ||
         // Pure network I/O never touches the workspace, so it must not hold the

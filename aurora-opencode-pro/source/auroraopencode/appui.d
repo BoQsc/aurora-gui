@@ -207,7 +207,7 @@ import std.path : baseName, buildNormalizedPath, buildPath, dirName, extension, 
 import std.process : Config, environment, execute, thisProcessID;
 import std.string : indexOf, replace, split, startsWith, strip, toLower;
 import std.utf : toUTF16z, toUTF32, toUTF8;
-import std.zip : ZipArchive;
+import auroraopencode.archives : extractArchive;
 version (Windows)
 {
     pragma(lib, "user32");
@@ -521,28 +521,10 @@ private bool downloadAuroraSnapshot(string zipPath)
 /// parent-relative entries are skipped so a hostile archive cannot escape.
 private string extractZipSnapshot(string zipPath, string destRoot)
 {
-    auto archive = new ZipArchive(cast(ubyte[]) read(zipPath));
-    string top;
-    foreach (name, member; archive.directory)
-    {
-        auto sub = name.replace('\\', '/');
-        if (sub.length == 0) continue;
-        if (sub[0] == '/' || sub.indexOf("..") >= 0) continue;
-        const parts = sub.split('/');
-        if (parts.length == 0 || parts[0].length == 0) continue;
-        if (top.length == 0) top = parts[0];
-        const target = buildPath(destRoot, sub);
-        if (sub[$ - 1] == '/')
-        {
-            if (!exists(target)) mkdirRecurse(target);
-            continue;
-        }
-        archive.expand(member);
-        const parent = dirName(target);
-        if (parent.length > 0 && !exists(parent)) mkdirRecurse(parent);
-        write(target, member.expandedData);
-    }
-    return top.length > 0 ? buildPath(destRoot, top) : "";
+    const items = extractArchive(zipPath, destRoot, false, null, null, true);
+    if (!items.length) return "";
+    const top = items[0].name.split('/')[0];
+    return buildPath(destRoot, top);
 }
 
 /// Baseline offset of the first shaped line inside a layout box. The stats

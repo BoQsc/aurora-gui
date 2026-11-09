@@ -19,7 +19,7 @@ import std.process : Config, environment, spawnProcess, tryWait, wait, kill,
     thisProcessID, execute;
 import std.stdio : File;
 import std.string : strip, split, replace, indexOf, toLower;
-import std.zip : ZipArchive;
+import auroraopencode.archives : extractArchive;
 import auroraopencode.checkout : CheckoutLease, canonicalPath;
 
 private void removeTemporaryFile(string path)
@@ -180,21 +180,7 @@ public string ensureDeveloperTool(string name, string stateDir,
     auto bytes = cast(ubyte[]) read(archivePath);
     enforce(sha256Of(bytes).toHexString().toLower() == digest[7 .. $].toLower(),
         "Developer tool checksum mismatch.");
-    auto archive = new ZipArchive(bytes);
-    foreach (file, member; archive.directory)
-    {
-        auto relative = file.replace('\\', '/');
-        // gh may include a release directory; MinGit starts at cmd/ and mingw64/.
-        if (name == "gh" && relative.startsWith("gh_"))
-            relative = relative[relative.indexOf('/') + 1 .. $];
-        enforce(!relative.startsWith("/") && relative.indexOf(':') < 0 &&
-            !relative.split('/').canFind(".."), "Invalid developer tool archive path");
-        if (relative.length == 0) continue;
-        const target = buildPath(root, relative);
-        if (relative.endsWith("/")) { mkdirRecurse(target); continue; }
-        mkdirRecurse(dirName(target));
-        write(target, archive.expand(member));
-    }
+    extractArchive(archivePath, root, name == "gh", null, progress, true);
     const ready = findDeveloperTool(name, stateDir);
     enforce(ready.length > 0, "The developer tool archive did not contain " ~ name);
     return ready;

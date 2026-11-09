@@ -53,7 +53,7 @@ public bool isMutatingTool(string name)
 {
     return name == "write" || name == "edit" || name == "apply_patch" ||
         name == "copy" || name == "move" || name == "rename" ||
-        name == "create_folder" || name == "remove" || name == "download";
+        name == "create_folder" || name == "remove" || name == "download" || name == "archive" || name == "data";
 }
 
 public bool isVerificationTool(string name, string arguments)

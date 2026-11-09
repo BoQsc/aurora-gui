@@ -59,6 +59,8 @@ import std.array : appender, array;
 import std.range : take;
 import std.typecons : Tuple;
 import core.sync.mutex : Mutex;
+import core.sync.condition : Condition;
+import auroraopencode.nativetooldefs : archiveToolDefinition, dataToolDefinition, environmentToolDefinition, nativeOperationReadOnly;
 import core.thread : Thread;
 import auroraopencode.workerbudget : WorkerBudget;
 import auroraopencode.developerpolicy : DeveloperToolPolicy, sourceEditBlocked, sourceRebuildBlocked, syncCapturedSource;
@@ -91,6 +93,36 @@ private __gshared WorkerBudget _filesystemHosts;
 shared static this() { _filesystemHosts = new WorkerBudget(4); }
 public enum filesystemHelperFlag = "--aurora-filesystem-tool";
 
+/// The same native tools are available to local Aurora maintenance scripts,
+/// before loading settings, credentials, history or any desktop UI.
+public int runNativeUtilityMode(string[] args)
+{
+    if (args.length < 2 || args[1] != "--aurora-native-tool") return -1;
+    try
+    {
+        import std.file : getcwd;
+        if ((args.length != 4 && args.length != 5) ||
+            (args[2] != "archive" && args[2] != "data" && args[2] != "environment"))
+            throw new Exception("Usage: --aurora-native-tool <archive|data|environment> <request.json> [workspace]");
+        if (getSize(args[3]) > 1024 * 1024) throw new Exception("Native request exceeds 1 MiB.");
+        const workspace = args.length == 5 ? args[4] : getcwd();
+        const result = executeTool(OpenCodeToolCall("native-cli", args[2], readText(args[3])), workspace);
+        JSONValue response;
+        response["failed"] = result.failed;
+        try response["result"] = parseJSON(result.output);
+        catch (Exception) response["error"] = result.output;
+        stdout.writeln(response.toString()); stdout.flush();
+        return result.failed ? 1 : 0;
+    }
+    catch (Exception error)
+    {
+        JSONValue response;
+        response["failed"] = true; response["error"] = error.msg;
+        stdout.writeln(response.toString()); stdout.flush();
+        return 1;
+    }
+}
+
 private bool filesystemTool(string name)
 {
     return name == "read" || name == "glob" || name == "grep" ||
@@ -107,9 +139,9 @@ private bool filesystemTool(string name)
 /// in-process workspace lease and the workspace mutation lock still keep this
 /// process's writers from overlapping an observer, and an observation that races
 /// another process's rewrite is re-runnable.
-private bool checkoutObserver(string name)
+private bool checkoutObserver(string name, string arguments = "")
 {
-    return filesystemTool(name) || name == "calculate" || name == "checksum" ||
+    return nativeOperationReadOnly(name, arguments) || filesystemTool(name) || name == "calculate" || name == "checksum" ||
         name == "webfetch" || name == "websearch";
 }
 
@@ -709,11 +741,11 @@ private OpenCodeToolDef processToolDefinition()
     return OpenCodeToolDef(
         "process",
         "Manage background processes started by `run` or `bash`. List them, " ~
-        "inspect status, read accumulated output, write or close stdin, " ~
+        "inspect status, wait for exit or new output, read incremental output, write or close stdin, " ~
         "request termination, or remove a completed process record. Reuse " ~
-        "the returned processId; " ~
+        "the returned processId. Prefer wait over repeated status polling; timeout returns the same running process, never relaunches it. Reuse " ~
         "do not relaunch a command merely because it is still running.",
-        `{"type":"object","properties":{"action":{"type":"string","enum":["list","status","output","write","kill","remove"],"description":"Operation to perform"},"processId":{"type":"string","description":"Stable id returned by a background run/bash call; required except for list"},"input":{"type":"string","description":"Text to write for the write action"},"closeStdin":{"type":"boolean","description":"Close stdin after writing, or close it without input"}},"required":["action"]}`
+        `{"type":"object","properties":{"action":{"type":"string","enum":["list","status","output","wait","write","kill","remove"]},"processId":{"type":"string","description":"Stable id returned by run/bash; required except list"},"event":{"type":"string","enum":["exit","output"],"description":"For wait: exit (default) or new output/exit"},"timeout":{"type":"integer","minimum":0,"maximum":60000,"description":"For wait: milliseconds, default 30000; deadline leaves process running"},"offset":{"type":"integer","minimum":0,"description":"Output byte cursor; use nextOffset from the preceding result"},"limit":{"type":"integer","minimum":4,"maximum":24000,"description":"Maximum output bytes, default 16000"},"input":{"type":"string"},"closeStdin":{"type":"boolean"}},"required":["action"]}`
     );
 }
 
@@ -846,6 +878,9 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         toolStatusDefinition(),
         verificationToolDefinition(),
         calculateToolDefinition(),
+        archiveToolDefinition(),
+        dataToolDefinition(),
+        environmentToolDefinition(),
         webFetchToolDefinition(),
         downloadToolDefinition(),
         checksumToolDefinition(),
@@ -907,7 +942,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "`-run` to compile and execute in one call; compiler options " ~
             "precede `-run` (example: `-Isource -i -run source/app.d`). " ~
             "Set background=true for work that may run long, " ~
-            "then inspect status and output with the process tool. Foreground commands " ~
+            "then use process action=wait for completion or new output, with incremental offsets. Foreground commands " ~
             "return a processId after 30 seconds if still running; inspect that same " ~
             "process instead of starting it again. Emit flushed progress output " ~
             "(for Python verification use python -u -B -m unittest, or pytest). " ~
@@ -923,6 +958,9 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         toolStatusDefinition(),
         verificationToolDefinition(),
         calculateToolDefinition(),
+        archiveToolDefinition(),
+        dataToolDefinition(),
+        environmentToolDefinition(),
         webFetchToolDefinition(),
         downloadToolDefinition(),
         checksumToolDefinition(),
@@ -1678,7 +1716,15 @@ private string[] mutationTargetPaths(const OpenCodeToolCall call,
     try value = parseJSON(call.arguments);
     catch (Exception) value = JSONValue.init;
     if (value.type != JSONType.object) return result;
-    if (call.name == "write" || call.name == "edit" || call.name == "download")
+    if (call.name == "archive" || call.name == "data")
+    {
+        if (!nativeOperationReadOnly(call.name, call.arguments))
+        {
+            const key = call.name == "archive" && jsonString(value, "action") == "extract" ? "destination" : "path";
+            add(jsonString(value, key));
+        }
+    }
+    else if (call.name == "write" || call.name == "edit" || call.name == "download")
     {
         if (auto field = "filePath" in value.object)
             if (field.type == JSONType.string) add(field.str);
@@ -2914,6 +2960,7 @@ private final class SupervisedProcess
 }
 
 private __gshared Mutex _processMutex;
+private __gshared Condition _processChanged;
 private __gshared SupervisedProcess[string] _processes;
 private __gshared ulong _processCounter;
 private __gshared ulong _processSequence;
@@ -2923,6 +2970,7 @@ private __gshared Mutex[string] _workspaceMutationLocks;
 shared static this()
 {
     _processMutex = new Mutex();
+    _processChanged = new Condition(_processMutex);
     _workspaceLocksMutex = new Mutex();
     _changeJournalMutex = new Mutex();
     _toolOutputMutex = new Mutex();
@@ -3082,6 +3130,7 @@ private void monitorBackgroundProcess(SupervisedProcess process, int timeoutMs)
                 collectException(process.input.close());
                 process.stdinClosed = true;
             }
+            _processChanged.notifyAll();
             _processMutex.unlock();
             return;
         }
@@ -3104,6 +3153,7 @@ private void monitorBackgroundProcess(SupervisedProcess process, int timeoutMs)
             collectException(process.input.close());
             process.stdinClosed = true;
         }
+        _processChanged.notifyAll();
         _processMutex.unlock();
         return;
     }
@@ -3126,7 +3176,7 @@ private string processStatusText(const SupervisedProcess process)
     return result;
 }
 
-private ToolExecution runProcessTool(string args)
+private ToolExecution runProcessTool(string args, ToolCancellation cancellation = null, ToolOutputObserver observer = null)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -3170,6 +3220,78 @@ private ToolExecution runProcessTool(string args)
         _processMutex.unlock();
         return ToolExecution("process",
             "Error: unknown processId '" ~ id ~ "'.", true);
+    }
+    if (action == "wait" || (action == "output" && "offset" in value.object))
+    {
+        _processMutex.unlock();
+        import auroraopencode.nativeio : nativeInteger, nativeString;
+        const offset = nativeInteger(value, "offset", 0);
+        const limit = nativeInteger(value, "limit", 16000);
+        const timeout = nativeInteger(value, "timeout", 30000);
+        const event = nativeString(value, "event", "exit");
+        if (offset < 0 || limit < 4 || limit > 24000 || timeout < 0 || timeout > 60000 ||
+            (event != "exit" && event != "output"))
+            return ToolExecution("process", "Error: invalid cursor, limit, timeout or wait event.", true);
+        const deadline = MonoTime.currTime + timeout.msecs;
+        bool running, failed;
+        int exitCode;
+        string status;
+        ulong available;
+        while (true)
+        {
+            if (cancellation !is null && cancellation.cancelled())
+                return ToolExecution("process", "Stopped: process wait cancelled; process " ~ id ~ " remains supervised.", true);
+            available = exists(process.outputPath) ? getSize(process.outputPath) : 0;
+            _processMutex.lock();
+            running = process.running;
+            exitCode = process.exitCode;
+            failed = !running && (process.timedOut || (exitCode != 0 && !process.killed));
+            status = running ? "running" : process.timedOut ? "timed_out" : process.killed ? "killed" : "exited";
+            if (action == "output" || !running || MonoTime.currTime >= deadline ||
+                (event == "output" && available > offset))
+            {
+                _processMutex.unlock();
+                break;
+            }
+            auto remaining = deadline - MonoTime.currTime;
+            _processChanged.wait(remaining < 200.msecs ? remaining : 200.msecs);
+            _processMutex.unlock();
+        }
+        available = exists(process.outputPath) ? getSize(process.outputPath) : 0;
+        if (offset > available)
+            return ToolExecution("process", "Error: offset exceeds current output size; restart at offset 0.", true);
+        ubyte[] bytes;
+        if (available > offset)
+        {
+            auto file = File(process.outputPath, "rb");
+            file.seek(offset);
+            bytes = new ubyte[cast(size_t)(available - offset < limit ? available - offset : limit)];
+            bytes = file.rawRead(bytes);
+            // Keep an incomplete trailing UTF-8 sequence for the next chunk.
+            if (running || offset + bytes.length < available)
+            {
+                size_t cut = bytes.length;
+                while (cut && bytes.length - cut < 3 && (bytes[cut - 1] & 0xC0) == 0x80) --cut;
+                if (cut)
+                {
+                    const lead = bytes[cut - 1];
+                    const wanted = lead >= 0xF0 && lead <= 0xF4 ? 4 : lead >= 0xE0 && lead <= 0xEF ? 3 : lead >= 0xC2 && lead <= 0xDF ? 2 : 1;
+                    if (bytes.length - cut + 1 < wanted) bytes = bytes[0 .. cut - 1];
+                }
+            }
+        }
+        JSONValue result;
+        result["processId"] = id;
+        result["status"] = status;
+        if (!running) result["exitCode"] = exitCode;
+        result["offset"] = offset;
+        result["nextOffset"] = offset + bytes.length;
+        result["outputBytes"] = available;
+        result["hasMore"] = offset + bytes.length < available;
+        result["deadlineReached"] = action == "wait" && running && MonoTime.currTime >= deadline;
+        result["output"] = decodeBytesLenient(bytes);
+        result["outputPath"] = process.outputPath;
+        return ToolExecution("process", result.toString(), failed);
     }
     if (action == "status")
     {
@@ -3254,7 +3376,7 @@ private ToolExecution runProcessTool(string args)
             ? truncateOutput(output) : "(no output yet)", false);
     }
     return ToolExecution("process",
-        "Error: action must be list, status, output, write, kill, or remove.",
+        "Error: action must be list, status, output, wait, write, kill, or remove.",
         true);
 }
 
@@ -6376,7 +6498,7 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
             {
                 const path = jsonString(input, key);
                 if (path.length && !targets.length && developerSource.length &&
-                    !checkoutObserver(call.name) &&
+                    !checkoutObserver(call.name, call.arguments) &&
                     checkoutIdentity(resolveToolPath(path, workspace)) == checkoutIdentity(developerSource))
                     leasePaths ~= developerSource;
             }
@@ -6384,7 +6506,7 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
         const command = call.name == "run" || call.name == "bash";
         if (!control && (targets.length || command || call.name == "sync" || call.name == "rebuild"))
             leasePaths ~= operationDir;
-        else if (!control && !checkoutObserver(call.name) && developerSource.length &&
+        else if (!control && !checkoutObserver(call.name, call.arguments) && developerSource.length &&
             checkoutIdentity(operationDir) == checkoutIdentity(developerSource))
             leasePaths ~= developerSource;
         if (developerSource.length && (command || call.name == "sync" || call.name == "rebuild"))
@@ -6438,7 +6560,8 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
         if (call.name == "write" || call.name == "edit" ||
             call.name == "apply_patch" || call.name == "copy" ||
             call.name == "move" || call.name == "rename" ||
-            call.name == "create_folder" || call.name == "remove" || call.name == "download")
+            call.name == "create_folder" || call.name == "remove" || call.name == "download" ||
+            ((call.name == "archive" || call.name == "data") && targets.length))
         {
             // Multiple conversations may work in one project. Serialize workspace
             // mutations so two tool workers can never write/delete concurrently;
@@ -6966,6 +7089,23 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             import auroraopencode.calculator : calculateExpressions;
             try return ToolExecution(call.name, calculateExpressions(call.arguments), false);
             catch (Exception error) return ToolExecution(call.name, "Error: " ~ error.msg, true);
+        case "archive":
+        case "data":
+        case "environment":
+        {
+            import auroraopencode.archives : archiveOperation;
+            import auroraopencode.structureddata : structuredDataOperation;
+            import auroraopencode.environmentinspect : environmentInspection;
+            auto cancelled = cancellation is null ? null : &cancellation.cancelled;
+            auto output = call.name == "archive" ? archiveOperation(call.arguments, workspace, cancelled, observer) :
+                call.name == "data" ? structuredDataOperation(call.arguments, workspace, cancelled) :
+                environmentInspection(call.arguments, workspace, cancelled);
+            auto result = ToolExecution(call.name, output.toString(), false);
+            if (call.name == "data")
+                if (auto changed = "changed" in output.object)
+                    result.workspaceUnchanged = changed.type == JSONType.false_;
+            return result;
+        }
         case "verify":
             return runTrackedCheck(call.name, call.arguments, workspace, cancellation, observer);
         case "bash":
@@ -6983,7 +7123,7 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             catch (Exception error) { return ToolExecution("run", "Error: " ~ error.msg, true); }
             return runProgramTool(call.arguments, workspace, cancellation, observer);
         case "process":
-            return runProcessTool(call.arguments);
+            return runProcessTool(call.arguments, cancellation, observer);
         case "download":
         case "checksum":
             return runDownloadOrChecksum(call, workspace, cancellation, observer);

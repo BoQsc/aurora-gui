@@ -499,7 +499,9 @@ private void saveRendererPreference(string value)
 int main(string[] args)
 {
     // Tool hosts dispatch before GUI, settings, restore, or crash supervision.
-    import auroraopencode.tools : runFilesystemHelperMode;
+    import auroraopencode.tools : runFilesystemHelperMode, runNativeUtilityMode;
+    const nativeCode = runNativeUtilityMode(args);
+    if (nativeCode >= 0) return nativeCode;
     const filesystemCode = runFilesystemHelperMode(args);
     if (filesystemCode >= 0) return filesystemCode;
     // The rebuild agent is a detached copy of this binary (see shared/rebuild.d)
