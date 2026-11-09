@@ -271,6 +271,12 @@ private bool writeSystemClipboardText(const(dchar)[] value)
 private bool _clipboardIsolated;
 private string _clipboardBuffer;
 
+// File-reveal launches are suppressed while a headless test drives a menu
+// action, so the action's target can be asserted without opening Explorer on
+// the user's desktop.
+private bool _captureExplorerReveal;
+private string _lastExplorerRevealPath;
+
 private void copyTextToClipboard(string text)
 {
     _clipboardBuffer = text;
@@ -291,6 +297,42 @@ private void openFolderInExplorer(string path)
     // The "explore" verb targets the folder itself, so a click opens the
     // directory in File Explorer instead of running its default handler.
     ShellExecuteW(null, toUTF16z("explore"), toUTF16z(path), null, null, 1);
+}
+
+/// The Explorer command line that reveals `path`: `/select,"<path>"` opens the
+/// containing folder with the file highlighted instead of the folder alone.
+string explorerRevealArguments(string path)
+{
+    return path.length > 0 ? "/select,\"" ~ path ~ "\"" : "";
+}
+
+unittest
+{
+    assert(explorerRevealArguments(`C:\work\src\main.d`) ==
+        `/select,"C:\work\src\main.d"`);
+    assert(explorerRevealArguments("") == "");
+}
+
+version (Windows)
+private void revealPathInExplorer(string path)
+{
+    // "Open folder" for a file means its containing folder with that file
+    // highlighted, which `/select` does. A folder opens itself.
+    if (path.length == 0) return;
+    if (_captureExplorerReveal)
+    {
+        _lastExplorerRevealPath = path;
+        return;
+    }
+    if (isDir(path))
+    {
+        openFolderInExplorer(path);
+        return;
+    }
+    const parameters = explorerRevealArguments(path);
+    if (parameters.length > 0)
+        ShellExecuteW(null, toUTF16z("open"), toUTF16z("explorer.exe"),
+            toUTF16z(parameters), null, 1);
 }
 
 version (Windows)
@@ -4870,8 +4912,9 @@ private static string directoryOf(string path)
     return cut == size_t.max ? "" : path[0 .. cut];
 }
 
-/// Open File Explorer at the folder containing `filePath`, resolving a relative
-/// path against `workspace`.
+/// Open File Explorer at `filePath`, resolving a relative path against
+/// `workspace`. A file is revealed highlighted in its containing folder, a
+/// folder opens itself, and a since-deleted file opens its existing folder.
 private void openFileLocation(string filePath, string workspace)
 {
     version (Windows)
@@ -4879,7 +4922,8 @@ private void openFileLocation(string filePath, string workspace)
         if (filePath.length == 0) return;
         const path = resolveDisplayedPath(filePath, workspace);
         const dir = exists(path) && isDir(path) ? path : directoryOf(path);
-        if (dir.length > 0 && exists(dir)) openFolderInExplorer(dir);
+        if (exists(path)) revealPathInExplorer(path);
+        else if (dir.length > 0 && exists(dir)) openFolderInExplorer(dir);
     }
 }
 
@@ -29950,7 +29994,8 @@ private void pollButtonSuggestionRequest()
         // (a Read's file contents can name unrelated paths). A single
         // unambiguous target, so the reader is never asked to choose. "Open
         // file" runs it with its default handler; "Open folder" reveals the
-        // folder itself, or the folder that held a since-deleted file.
+        // containing folder with a file highlighted, or the folder itself for a
+        // folder target and the folder that held a since-deleted file.
         string localTarget;
         // The path under the pointer wins: right-clicking a path must offer
         // that path, not the first path anywhere in the message.
@@ -30027,7 +30072,13 @@ private void pollButtonSuggestionRequest()
                 items ~= ContextMenuItem.command("Open folder", IconKind.folder,
                     delegate()
                     {
-                        version (Windows) openFolderInExplorer(folder);
+                        version (Windows)
+                        {
+                            if (exists(localTarget) && !isDir(localTarget))
+                                revealPathInExplorer(localTarget);
+                            else
+                                revealPathInExplorer(folder);
+                        }
                     });
         }
         showContextMenu(_messageColumn, globalPosition, items);
@@ -30056,7 +30107,7 @@ private void pollButtonSuggestionRequest()
                 items ~= ContextMenuItem.command("Open folder", IconKind.folder,
                     delegate()
                     {
-                        version (Windows) openFolderInExplorer(folder);
+                        version (Windows) revealPathInExplorer(path);
                     });
         }
         if (items.length == 0)
@@ -34358,6 +34409,31 @@ private void pollButtonSuggestionRequest()
         auto bubble = messageBubbleForTesting(index);
         showMessageContextMenu(bubble is null ? index : bubble.messageIndex(),
             Point(10, 10), bubble);
+    }
+
+    /// Test-only: capture the next file-reveal target instead of launching
+    /// Explorer, so a menu action can be asserted without a desktop side effect.
+    public void captureExplorerRevealForTesting()
+    {
+        _captureExplorerReveal = true;
+        _lastExplorerRevealPath = "";
+    }
+
+    /// Test-only: the path the last captured file-reveal action targeted.
+    public string lastExplorerRevealPathForTesting()
+    {
+        return _lastExplorerRevealPath;
+    }
+
+    /// Test-only: invoke the open context-menu item labeled `label`, exactly as
+    /// a click would, and report whether it ran.
+    public bool invokeOpenContextMenuItemForTesting(string label)
+    {
+        import aurora.widgets.popup : currentTransientPopup;
+        auto menu = cast(ContextMenu) currentTransientPopup(this);
+        if (menu is null) return false;
+        auto items = cast(ContextMenuItem[]) menu.items();
+        return invokeContextMenuItem(items, label);
     }
 
     /// Test-only: select all text in the message bubble at `index`.

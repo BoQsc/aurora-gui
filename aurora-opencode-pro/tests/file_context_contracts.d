@@ -174,8 +174,33 @@ void main()
     assert(root.invokeSessionContextMenuItemForTesting(0, "Copy main folder path"));
     root.openMessageContextMenuForTesting(0);
     assert(driver.paint());
+    root.captureExplorerRevealForTesting();
+    assert(root.invokeOpenContextMenuItemForTesting("Open folder"),
+        "Open folder should be invokable from the message context menu");
+    assert(root.lastExplorerRevealPathForTesting() ==
+        buildPath(first, "source", "app.d"),
+        "Open folder targeted '" ~ root.lastExplorerRevealPathForTesting() ~
+        "' instead of the file");
     window.saveScreenshot(buildPath(state, "smart-file-context-menu.ppm"));
     root.persistForTesting();
+    root.dismissPopupForTesting();
+    // The same action from a prose link in a reply: invoking it must target
+    // the linked file, not the message or the workspace.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["where is it?", "It lives in `source/app.d` right now."]);
+    root.projectTranscriptForTesting();
+    assert(driver.paint());
+    const replyIndex = root.messageCountForTesting() - 1;
+    root.openMessageContextMenuForTesting(replyIndex);
+    assert(driver.paint());
+    root.captureExplorerRevealForTesting();
+    assert(root.invokeOpenContextMenuItemForTesting("Open folder"),
+        "Open folder should be invokable from a reply link's menu");
+    assert(root.lastExplorerRevealPathForTesting() ==
+        buildPath(first, "source", "app.d"),
+        "A reply link's Open folder targeted '" ~
+        root.lastExplorerRevealPathForTesting() ~ "' instead of the file");
     root.dismissPopupForTesting();
     assert(root.toggleSettingsSectionForTesting("oc-settings-options"));
     auto toggle = cast(CheckBox) find(root, "oc-smart-file-context");

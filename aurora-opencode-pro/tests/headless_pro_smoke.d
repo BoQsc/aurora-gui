@@ -4,7 +4,8 @@ import aurora;
 import aurora.render.drawlist : DrawList;
 import aurora.render.software : SoftwareRenderer;
 import aurora.surface : Surface;
-import auroraopencode.appui : OpenCodeRoot, SessionListView;
+import auroraopencode.appui : OpenCodeRoot, SessionListView,
+    explorerRevealArguments;
 import auroraopencode.turnsummary : TurnWorkSummary;
 import auroraopencode.core : ChatMessage, ChatRequestMessage, ChatSession,
     OpenCodeToolCall, Settings, contextBudgetForModel, loadSettings,
@@ -3570,6 +3571,9 @@ int main(string[] args)
         }
         assert(sawOpenFile, "Open file missing for the path in the reply");
         assert(sawOpenFolder, "Open folder missing for the path in the reply");
+        assert(explorerRevealArguments(pathFile) ==
+            `/select,"` ~ pathFile ~ `"`,
+            "Open folder must pass Explorer the file to highlight");
         dismissContextMenus(root);
         root.tickTree(0.02);
         writeln("Path links select normally; the menu offers Open file / " ~
