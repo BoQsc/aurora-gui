@@ -1,5 +1,7 @@
 module auroraopencode.appui;
 
+import auroraopencode.planprogress : planProgress, planNeedsRefresh, planProgressGuidance;
+
 import toolProgressPolicy = auroraopencode.toolprogresspolicy;
 
 import conversationEncoding = auroraopencode.conversationencode;
@@ -12904,14 +12906,8 @@ private string _suggestExcludeId;
     // (tool name + first line of output); when the SAME failure repeats, the
     // model may not be making progress. A success clears it; repeated failures
     // still execute and receive a hidden suggestion to change approach.
-    // Session id -> tool-result count at the last stale-plan reminder, so a
-    // single unrefreshed plan produces a bounded number of nudges instead of
-    // one on every tool round.
-    private int[string] _planNudgedAt;
-    private int[string] _planNudgedPhase;
-    // One deferred batch per user turn asks for an early model-owned plan.
-    // Strict mode additionally checks before the first mutation. Normal mode
-    // only warns (see queueStalePlanGuidance) and never blocks the batch.
+    // Explicit strict mode may defer one batch for an early plan. Default
+    // upkeep is shared with conversation actors and never blocks useful tools.
     private bool[string] _planGateFired;
     // One deferred batch asks an open-ended improvement request for its
     // user-visible outcome before the model maps source or measures a proxy.
@@ -12950,13 +12946,12 @@ private string _suggestExcludeId;
     // of only after the whole investigation budget is spent. The hard gate
     // waits for the full exploration checkpoint; strict plan mode gates at the
     // earlier threshold.
-    private static immutable int planNudgeExplorationCalls = earlyPlanExplorationCalls;
     private static immutable int planGateExplorationCalls = explorationCheckpointCalls;
     // A recorded plan only helps while it stays current. A plan with unfinished
     // steps that runs this many tool results without an update_plan call has
     // drifted from the actual work: the reminder repeats once per window while
     // the drift lasts and the plan card marks the checklist stale. After
-    // planUpkeepGateWindows windows a mutating batch is deferred once per window
+    // in explicit strict mode, planUpkeepGateWindows windows defer a mutating batch once per window
     // until the plan is reconciled, so a long run cannot leave a stale plan on
     // screen for the rest of the turn. The deferral is bounded per request and
     // never blocks inspection, verification or update_plan itself.
@@ -21993,25 +21988,7 @@ private void pollButtonSuggestionRequest()
     /// gone unrefreshed rather than how long the turn has run.
     private static int toolResultsSincePlanUpdate(const ref ChatSession session)
     {
-        int count;
-        foreach (index; activeMessagePath(session))
-        {
-            const message = session.messages[index];
-            if (message.role == "user" && !message.internal)
-            {
-                count = 0;
-                continue;
-            }
-            if (message.role != "tool") continue;
-            if (!message.failed && (message.toolName == "update_plan" ||
-                message.toolName == "update_subplan"))
-            {
-                count = 0;
-                continue;
-            }
-            ++count;
-        }
-        return count;
+        return planProgress(session).results;
     }
 
     /// True when the model recorded a durable plan since the current real user
@@ -22076,94 +22053,21 @@ private void pollButtonSuggestionRequest()
     /// Returns true when a reminder was queued.
     private static bool checklistStale(const ref ChatSession session)
     {
-        if (!session.taskSteps.length || !hasIncompleteTaskSteps(session) || session.taskStatus == "waiting_input" || taskInvestigation(session)) return false;
-        if (toolResultsSincePlanUpdate(session) >= planUpkeepToolResults) return true;
-        return planWorkPositionMissing(session);
-    }
-
-    /// True when the recorded plan does not name a work position that matches
-    /// what the task is currently doing.
-    private static bool planWorkPositionMissing(const ref ChatSession session)
-    {
-        const phase = planWorkPhase(session);
-        if (workTracksPhase(session, phase)) return false;
-        bool active;
-        foreach (step; session.taskSteps)
-            if (step.status == "in_progress")
-            {
-                active = true;
-                if ((phase >= 1 && step.kind != "edit" && step.kind != "verify") ||
-                    (phase >= 2 && step.kind != "verify")) return true;
-            }
-        return !active;
-    }
-
-    private static int planWorkPhase(const ref ChatSession session)
-    {
-        int phase;
-        foreach (index; activeMessagePath(session))
-        {
-            const message = session.messages[index];
-            if (message.role == "user" && !message.internal) { phase = 0; continue; }
-            if (message.role != "tool" || message.failed) continue;
-            if (message.toolName == "update_plan" || message.toolName == "update_subplan") { phase = 0; continue; }
-            if (message.toolName == "verify" || message.verificationCheck.length) phase = 2;
-            if (message.toolName == "edit" || message.toolName == "write" || message.toolName == "apply_patch" ||
-                message.toolName == "remove" || message.toolName == "move" || message.toolName == "rename") phase = maxInt(phase, 1);
-        }
-        return session.taskStatus == "verifying" ? 2 : phase;
+        return planNeedsRefresh(session);
     }
 
     private bool queueStalePlanGuidance(ref ChatSession session)
     {
-        const since = toolResultsSincePlanUpdate(session);
-        const phase = planWorkPhase(session);
-        int lastNudged = session.id in _planNudgedAt ? _planNudgedAt[session.id] : 0;
-        // A refreshed plan drops the tool-result counter below the last nudge
-        // point; only that may re-arm the reminder. Otherwise it repeats once
-        // per upkeep window, which keeps a long run reconciled without
-        // returning to the guidance spam of a per-round reminder.
-        if (since < lastNudged)
-        {
-            _planNudgedAt.remove(session.id);
-            _planNudgedPhase.remove(session.id);
-            lastNudged = 0;
-        }
-        const lastPhase = session.id in _planNudgedPhase ? _planNudgedPhase[session.id] : 0;
-        const refreshDue = checklistStale(session);
-        bool phaseDue;
-        foreach (step; session.taskSteps)
-            if (step.status == "in_progress" && !workTracksPhase(session, phase))
-                phaseDue = (phase >= 1 && step.kind != "edit" && step.kind != "verify") ||
-                    (phase >= 2 && step.kind != "verify");
-        const recordDue = !hasIncompleteTaskSteps(session) &&
-            !planRecordedThisTurn(session) &&
-            readOnlyExplorationCount(session) >= planNudgeExplorationCalls;
-        const firstDue = lastNudged == 0 && (refreshDue || recordDue);
-        const phaseAdvanced = phaseDue && phase > lastPhase;
-        const windowDue = refreshDue && since >= planUpkeepToolResults &&
-            (lastNudged == 0 || since - lastNudged >= planUpkeepToolResults);
-        if (!firstDue && !phaseAdvanced && !windowDue) return false;
-        _planNudgedAt[session.id] = since;
-        _planNudgedPhase[session.id] = phase;
-        if (_pendingProgressGuidance.length == 0)
-            _pendingProgressGuidance = phaseAdvanced
-                ? "Work has moved into editing or verification. Replan now: tick only work proven complete, " ~
-                    "keep unfinished outcomes visible, add newly discovered outcomes, and explain a focus change, " ~
-                    "detour or replaced step. Continue useful work without asking permission."
-                : windowDue
-                ? "Plan upkeep: " ~ to!string(since) ~ " tool results have run since the checklist was last " ~
-                    "refreshed. Check it off now with update_plan: mark every finished outcome completed, " ~
-                    "keep exactly one unfinished outcome in_progress (or record an explained pause), " ~
-                    "add newly discovered outcomes, and explain the change. A checklist that stays stale " ~
-                    "defers further edits until it is refreshed."
-                : refreshDue
-                ? "The plan has unfinished outcomes without a current work position. Update it now with the active " ~
-                    "outcome or an explained pause; keep completed work accurate and continue useful work."
-                : "No durable plan is recorded for this turn after " ~
-                    to!string(readOnlyExplorationCount(session)) ~ " read-only " ~
-                    "inspections. Record a short update_plan now with the goal and the " ~
-                    "remaining outcomes. Planning must not delay useful work or completion.";
+        const guidance = planProgressGuidance(session);
+        if (!guidance.length || _pendingProgressGuidance.length) return false;
+        // Keep the checkpoint marker at the beginning of its own durable note.
+        ChatMessage note;
+        note.role = "user";
+        note.internal = true;
+        note.content = guidance;
+        appendMessage(session, note);
+        publishThreadUpdated(session);
+        markDirty();
         return true;
     }
 
@@ -22393,7 +22297,7 @@ private void pollButtonSuggestionRequest()
             return;
         }
         const planGateKey = session.id ~ ":" ~ session.contract.id;
-        if ((goalAcceptanceMissing || planFirstMissing) && !recordingPlan &&
+        if (experimentalStrictPlanEnabled() && (goalAcceptanceMissing || planFirstMissing) && !recordingPlan &&
             !(planGateKey in _planGateFired ? _planGateFired[planGateKey] : false))
         {
             _planGateFired[planGateKey] = true;
@@ -22453,7 +22357,7 @@ private void pollButtonSuggestionRequest()
         const planSince = toolResultsSincePlanUpdate(*session);
         const upkeepGatedAt = session.id in _planUpkeepGatedAt ? _planUpkeepGatedAt[session.id] : 0;
         const upkeepGates = session.id in _planUpkeepGates ? _planUpkeepGates[session.id] : 0;
-        if (mutatingPending && !recordingPlan && hasIncompleteTaskSteps(*session) &&
+        if (experimentalStrictPlanEnabled() && mutatingPending && !recordingPlan && hasIncompleteTaskSteps(*session) &&
             planSince >= planUpkeepToolResults * planUpkeepGateWindows &&
             (upkeepGatedAt == 0 || planSince >= upkeepGatedAt + planUpkeepToolResults) &&
             upkeepGates < planUpkeepGateLimit)
@@ -22730,8 +22634,6 @@ private void pollButtonSuggestionRequest()
 
         if (!toolFailed && event.toolName == "update_plan")
         {
-            _planNudgedAt.remove(session.id);
-            _planNudgedPhase.remove(session.id);
             _planUpkeepGatedAt.remove(session.id);
             _planUpkeepGates.remove(session.id);
             applyDurablePlan(*session, toolArgs);

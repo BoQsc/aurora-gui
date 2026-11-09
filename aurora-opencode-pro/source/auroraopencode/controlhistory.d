@@ -23,7 +23,8 @@ ControlStateKind controlStateKind(const ref ChatMessage message)
         return ControlStateKind.checkpoint;
     if (message.content.startsWith(taskContinuationMarker))
         return ControlStateKind.continuation;
-    if (message.content.startsWith(progressGuidancePrefix))
+    if (message.content.startsWith(progressGuidancePrefix) ||
+        message.content.startsWith("Plan progress checkpoint: "))
         return ControlStateKind.progress;
     return ControlStateKind.none;
 }

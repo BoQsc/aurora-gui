@@ -107,6 +107,14 @@ class Provider(http.server.BaseHTTPRequestHandler):
                    for m in messages):
                 recovery_requests += 1
             number = len(main_rounds)
+            if actor_mode and number in (2, 3):
+                checkpoints = [m['content'] for m in messages if m.get('role') == 'system'
+                               and isinstance(m.get('content'), str)
+                               and 'Plan progress checkpoint: ' in m['content']]
+                if number == 2 and checkpoints:
+                    failures.append('Actor nudged an editing phase already tracked by the plan')
+                if number == 3 and (not checkpoints or json.loads(checkpoints[-1].rsplit('Plan progress checkpoint: ', 1)[1].split('\n')[0])['phase'] != 2):
+                    failures.append('Actor omitted the verification phase checkpoint')
             if number == 1:
                 test = ("import unittest\nfrom pathlib import Path\n"
                         "class Fixture(unittest.TestCase):\n"

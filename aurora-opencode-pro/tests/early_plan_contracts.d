@@ -117,13 +117,13 @@ int main()
     writeln("PASS seven normal reads execute without synthetic planning results");
 
     fresh(); context(12);
-    assert(root.lastUserMessageForTesting().indexOf("Progress guidance") >= 0 &&
+    assert(root.lastUserMessageForTesting().indexOf("Plan progress checkpoint") >= 0 &&
         root.lastUserMessageForTesting().indexOf("update_plan") >= 0,
         "A long investigation without a plan received no planning reminder: " ~
         root.lastUserMessageForTesting());
     run([readCall()]);
-    assert(root.lastToolResultForTesting().indexOf("deferred for planning") >= 0,
-        "A long unplanned investigation ran another call before the plan was recorded");
+    assert(root.lastToolResultForTesting().indexOf("actual evidence") >= 0,
+        "Advisory planning blocked useful inspection in normal mode");
     record(plan);
     assert(root.taskStepCountForTesting() == 3);
     run([readCall()]);
@@ -290,11 +290,19 @@ int main()
     assert(root.taskStepStatusForTesting(0) == "in_progress");
     writeln("PASS detailed work tracks a phase within a broader outcome without forcing a checklist rewrite");
 
+    // The normal path never rejects useful edits merely to refresh a plan.
+    root.setStrictPlanEnabledForTesting(false);
+    fresh(); record(plan); context(23);
+    const smoothFile = buildPath(state, "normal-stale-plan.md");
+    run([OpenCodeToolCall("normal-stale-write", "write",
+        `{"filePath":` ~ JSONValue(smoothFile).toString ~ `,"content":"useful work"}`)]);
+    assert(exists(smoothFile), "Default upkeep still deferred authorized work");
+    assert(root.taskStepStatusForTesting(0) == "in_progress", "Upkeep fabricated completed research");
     auto prompt = buildSystemPrompt(true, state, "win32");
-    assert(prompt.indexOf("Call update_plan before the first substantive action on every request") >= 0);
-    assert(prompt.indexOf("Check the plan off while you work, not only at the end") >= 0);
-    assert(prompt.indexOf("A checklist that stays stale receives a reminder and then defers further edits") >= 0);
-    assert(prompt.indexOf("Plan upkeep is bounded: a stale checklist is reconciled before further edits") >= 0);
+    assert(prompt.indexOf("Simple edits, quick lookups and direct answers") >= 0);
+    assert(prompt.indexOf("Update during the work, not retrospectively at the end") >= 0);
+    assert(prompt.indexOf("Call update_plan before the first substantive action on every request") < 0);
+    writeln("PASS default stale-plan upkeep permits useful edits and keeps unfinished work honest");
     window.close();
     return 0;
 }

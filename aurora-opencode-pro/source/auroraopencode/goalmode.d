@@ -224,12 +224,12 @@ public string goalPromptBlock(const ref ChatSession session)
                 "completion condition is demonstrably true. Do not ask permission for " ~
                 "routine execution or verification. Treat the goal as the outcome, not " ~
                 "as a fixed step template, and keep it aligned with the current plan. " ~
-                "Record the first plan with update_plan before substantive work and " ~
+                "For substantial work, record a short outcome plan early with update_plan and " ~
                 "revise that plan whenever evidence changes the path; earlier revisions " ~
                 "are retained. When every outcome is complete and " ~
                 "checks pass, call `goal_complete` with a short summary and concrete " ~
                 "evidence (successful tool-call IDs or check receipts). Never call it " ~
-                "for prose, an attempted action, or unfinished work. " ~
+                "for an attempted action or unfinished work. " ~
                 (answerGoal
                     ? "This goal asks for an answer rather than an artifact. Deliver the " ~
                         "accurate answer, then call goal_complete with the summary; tool " ~

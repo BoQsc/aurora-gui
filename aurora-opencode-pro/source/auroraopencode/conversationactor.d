@@ -1,5 +1,7 @@
 module auroraopencode.conversationactor;
 
+import auroraopencode.planprogress : planProgressGuidance;
+
 import auroraopencode.core;
 import auroraopencode.conversationencode;
 import auroraopencode.conversationimages : ConversationImages;
@@ -1229,7 +1231,10 @@ public final class ConversationActor
             internalNote(executionDiagnosisMarker ~ "Repeated tools added no supported outcome. Reject the unsuccessful hypothesis and inspect a reduced failing case or a different source.");
             beginDiagnostic();
         }
-        applySteering(); request();
+        applySteering();
+        const progressGuidance = planProgressGuidance(session);
+        if (progressGuidance.length) internalNote(progressGuidance);
+        request();
     }
     private void applySteering()
     {

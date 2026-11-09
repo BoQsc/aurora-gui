@@ -305,8 +305,8 @@ int main()
     require(!accepted.failed, "valid goal_complete was rejected by the tool");
     auto rejected = executeTool(OpenCodeToolCall("g2", "goal_complete",
         `{"summary":"done"}`), ".");
-    require(rejected.failed, "goal_complete without evidence was accepted");
-    writeln("PASS goal_complete is advertised and validates evidence");
+    require(!rejected.failed, "Session-independent executor blocked answer-only completion before intent validation");
+    writeln("PASS goal_complete is advertised; session settlement owns intent-dependent evidence validation");
 
     AgentRuntimeEvent started;
     started.kind = AgentEventKind.threadStarted;

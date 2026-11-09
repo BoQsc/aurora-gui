@@ -549,10 +549,11 @@ private OpenCodeToolDef goalCompleteToolDefinition()
     return OpenCodeToolDef("goal_complete",
         "Mark the persistent goal complete after auditing the actual result. Use this only " ~
         "when every requested outcome is finished and required checks pass. Provide a concise " ~
-        "summary and concrete evidence: successful tool-call IDs or accepted check receipts. " ~
-        "Prose, attempted actions, open checklist items or outstanding verification are not " ~
+        "summary. Action goals also require concrete evidence: successful tool-call IDs or accepted check receipts. " ~
+        "For an answer-only goal, evidence is optional when no tool work was needed. " ~
+        "Attempted actions, open checklist items or outstanding verification are not " ~
         "completion. This does not finish a paused goal.",
-        `{"type":"object","properties":{"summary":{"type":"string","description":"Concise statement of the verified result"},"evidence":{"type":"array","items":{"type":"string"},"minItems":1,"description":"Successful tool-call IDs or accepted check receipts proving the completion condition"}},"required":["summary","evidence"]}`);
+        `{"type":"object","properties":{"summary":{"type":"string","description":"Concise statement of the verified result"},"evidence":{"type":"array","items":{"type":"string"},"description":"Successful tool-call IDs or accepted check receipts; required for action goals, optional for answer-only goals"}},"required":["summary"]}`);
 }
 
 /// Record the visible plan, with at most one step in progress.
@@ -7019,10 +7020,11 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
                     "Error: goal_complete requires a JSON object.", true);
             const summary = jsonString(value, "summary").strip();
             auto evidence = "evidence" in value.object;
-            if (!summary.length || evidence is null ||
-                evidence.type != JSONType.array || !evidence.array.length)
+            // Goal ownership and evidence requirements depend on session intent
+            // and are validated by settleToolResult before accepting completion.
+            if (!summary.length || (evidence !is null && evidence.type != JSONType.array))
                 return ToolExecution(call.name,
-                    "Error: goal_complete requires a summary and concrete evidence.", true);
+                    "Error: goal_complete requires a summary and an evidence array when supplied.", true);
             return ToolExecution(call.name,
                 "Goal completion recorded: " ~ summary, false);
         }

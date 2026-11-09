@@ -128,8 +128,8 @@ int main()
     auto writes = [OpenCodeToolCall("first", "write", `{"filePath":` ~ JSONValue(first).toString ~ `,"content":"first"}`),
          OpenCodeToolCall("second", "write", `{"filePath":` ~ JSONValue(second).toString ~ `,"content":"second"}`)];
     run(writes);
-    assert(!exists(first) && !exists(second),
-        "Goal mutations ran before the plan was recorded");
+    assert(exists(first) && exists(second),
+        "Default planning deferred authorized multi-file work");
     run([OpenCodeToolCall("plan", "update_plan",
         `{"explanation":"Record the plan before the two-file change.","plan":[` ~
         `{"step":"Write both requested files","status":"in_progress"}]}`)]);
@@ -137,7 +137,7 @@ int main()
          OpenCodeToolCall("second-retry", "write", `{"filePath":` ~ JSONValue(second).toString ~ `,"content":"second"}`)]);
     assert(exists(first) && exists(second), "Planned goal work was deferred again");
     assert(readText(first) == "first" && readText(second) == "second");
-    writeln("PASS a goal records its plan before the first multi-file mutation batch, then executes");
+    writeln("PASS default goal work executes without synthetic planning failures and accepts a subsequent plan");
 
     fresh("Read the requested file.");
     root.setTaskStateForTesting("Read the requested file", "active", "not_required");

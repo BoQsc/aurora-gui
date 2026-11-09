@@ -42,6 +42,8 @@ int main()
     fresh("Write one small note.");
     const simple=buildPath(directory,"simple.txt"); run([writeCall("simple",simple)]);
     assert(exists(simple),"A single small mutation was blocked for planning");
+    root.setStrictPlanEnabledForTesting(true);
+    scope(exit) root.setStrictPlanEnabledForTesting(false);
     fresh("Implement and verify the two-module package.");
     const first=buildPath(directory,"first.txt"), second=buildPath(directory,"second.txt");
     run([writeCall("first",first),writeCall("second",second)]);
