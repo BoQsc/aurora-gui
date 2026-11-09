@@ -912,9 +912,12 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "process instead of starting it again. Emit flushed progress output " ~
             "(for Python verification use python -u -B -m unittest, or pytest). " ~
             "Use finite test deadlines, retain relevant regression tests, and inspect quiet processes. " ~
-            "A processId is not evidence that a check passed. Custom scripts and Blender probes do not automatically " ~
-            "create accepted verification receipts; for final artifact checks, call verify with inline inputs and steps once.",
-            `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the program in the background"}},"required":["program"]}`
+            "A processId is not evidence that a check passed. Conventional direct test scripts and test executables produce receipts automatically. " ~
+            "For a custom final check, add check=tests (or interaction/compile) " ~
+            "and inputs=[actual deliverables, source/checker paths]. This executes once with before/after input hashes and an accepted receipt; " ~
+            "do not run it first and repeat it through verify. If behavioral checks prove the requested outcome already holds, " ~
+            "set no_change_needed=true; an accepted tracked check can finish without unnecessary edits. Use verify for multi-step or pixel-reference checks.",
+            `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the program in the background"},"no_change_needed":{"type":"boolean","description":"Only when behavioral checks prove the requested outcome already holds without an implementation edit"},"check":{"type":"string","enum":["compile","tests","interaction"],"description":"Optional final check; requires inputs and foreground execution"},"inputs":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64,"description":"Actual deliverables and relevant source/checker files for check"}},"required":["program"]}`
         ),
         processToolDefinition(),
         toolStatusDefinition(),
@@ -6326,6 +6329,24 @@ private string[] jsonPathCandidates(JSONValue value)
     return found;
 }
 
+private ToolExecution runTrackedCheck(string name, string arguments, string workspace,
+    ToolCancellation cancellation, ToolOutputObserver observer)
+{
+    import auroraopencode.verificationrecipe : runVerificationRecipe, VerificationRun;
+    auto recipe = runVerificationRecipe(arguments, workspace,
+        (JSONValue command) {
+            const step = runProgramTool(command.toString(), workspace, cancellation, observer, true);
+            return VerificationRun(step.output, step.failed,
+                step.verification.exitCode == int.min,
+                step.verification.workspace.length ? step.verification.check : "");
+        }, cancellation is null ? null : &cancellation.cancelled, observer);
+    auto verified = ToolExecution(name, recipe.output, !recipe.passed);
+    verified.images = recipe.images;
+    verified.verification = VerificationEvidence(recipe.check.length ? recipe.check : "verify:",
+        workspace, 0, recipe.passed, recipe.passed ? 0 : 1);
+    return verified;
+}
+
 public ToolExecution executeTool(const OpenCodeToolCall call,
     string workspace, ToolCancellation cancellation = null,
     ChangeContext changeContext = ChangeContext.init,
@@ -6946,22 +6967,20 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             try return ToolExecution(call.name, calculateExpressions(call.arguments), false);
             catch (Exception error) return ToolExecution(call.name, "Error: " ~ error.msg, true);
         case "verify":
-            import auroraopencode.verificationrecipe : runVerificationRecipe, VerificationRun;
-            auto recipe = runVerificationRecipe(call.arguments, workspace,
-                (JSONValue command) {
-                    const step = runProgramTool(command.toString(), workspace, cancellation, observer, true);
-                    return VerificationRun(step.output, step.failed,
-                        step.verification.exitCode == int.min,
-                        step.verification.workspace.length ? step.verification.check : "");
-                }, cancellation is null ? null : &cancellation.cancelled, observer);
-            auto verified = ToolExecution("verify", recipe.output, !recipe.passed);
-            verified.images = recipe.images;
-            verified.verification = VerificationEvidence(recipe.check.length ? recipe.check : "verify:",
-                workspace, 0, recipe.passed, recipe.passed ? 0 : 1);
-            return verified;
+            return runTrackedCheck(call.name, call.arguments, workspace, cancellation, observer);
         case "bash":
             return runBash(call.arguments, workspace, cancellation, observer);
         case "run":
+            try
+            {
+                const arguments = parseJSON(call.arguments);
+                if (arguments.type == JSONType.object && "check" in arguments.object)
+                {
+                    import auroraopencode.verificationrecipe : checkedRunRecipe;
+                    return runTrackedCheck("run", checkedRunRecipe(arguments).toString(), workspace, cancellation, observer);
+                }
+            }
+            catch (Exception error) { return ToolExecution("run", "Error: " ~ error.msg, true); }
             return runProgramTool(call.arguments, workspace, cancellation, observer);
         case "process":
             return runProcessTool(call.arguments);

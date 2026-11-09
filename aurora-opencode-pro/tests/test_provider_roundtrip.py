@@ -44,8 +44,13 @@ class Provider(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Connection", "close")
         self.end_headers()
-        self.wfile.write(body)
-        self.wfile.flush()
+        if "--stream-tools" in sys.argv and kind == "text/event-stream":
+            for frame in body.split(b"\n\n"):
+                if not frame: continue
+                self.wfile.write(frame+b"\n\n"); self.wfile.flush()
+        else:
+            self.wfile.write(body)
+            self.wfile.flush()
 
     def do_GET(self):
         self.respond(json.dumps({"data": [{"id": "fixture", "owned_by": "fixture"}]}),
@@ -103,7 +108,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
                     results.add(identity)
             main_rounds.append(request)
             if any(isinstance(m.get("content"), str) and
-                   m["content"].startswith("Agent output recovery:")
+                   "Agent output recovery:" in m["content"]
                    for m in messages):
                 recovery_requests += 1
             number = len(main_rounds)
@@ -141,6 +146,24 @@ class Provider(http.server.BaseHTTPRequestHandler):
             else:
                 content = f"READY audit {number}" if audit_stall else "READY"
                 rounds = [{"choices": [{"delta": {"content": content}, "finish_reason": "stop"}]}]
+        if "--stream-tools" in sys.argv:
+            fragmented=[]
+            for frame in rounds:
+                delta = frame["choices"][0].get("delta", {}) if frame.get("choices") else {}
+                if "tool_calls" not in delta:
+                    fragmented.append(frame);continue
+                names=[]
+                for original in delta["tool_calls"]:
+                    names.append({"index":original["index"],"id":original["id"],"type":"function",
+                                  "function":{"name":original["function"]["name"],"arguments":""}})
+                fragmented.append({"choices":[{"delta":{"tool_calls":names},"finish_reason":None}]})
+                for original in delta["tool_calls"]:
+                    arguments=original["function"]["arguments"]
+                    for offset in range(0,len(arguments),8):
+                        piece={"index":original["index"],"function":{"arguments":arguments[offset:offset+8]}}
+                        fragmented.append({"choices":[{"delta":{"tool_calls":[piece]},"finish_reason":None}]})
+                fragmented[-1]["choices"][0]["finish_reason"]=frame["choices"][0]["finish_reason"]
+            rounds=fragmented
         rounds.append({"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}})
         self.respond("".join("data: " + json.dumps(row) + "\n\n" for row in rounds) + "data: [DONE]\n\n",
                      "text/event-stream")
@@ -150,6 +173,8 @@ worker = threading.Thread(target=server.serve_forever, daemon=True)
 worker.start()
 try:
     env = dict(os.environ, AURORA_CONTRACT_PROVIDER_BASE=f"http://127.0.0.1:{server.server_port}/v1")
+    if "--stream-tools" in sys.argv:
+        env["AURORA_CONTRACT_STREAM_TOOLS"] = "1"
     if recipe_mode:
         env["AURORA_CONTRACT_RECIPE"] = "1"
     stalled_goal = "--goal-stall" in sys.argv
@@ -193,11 +218,11 @@ try:
                                  *(["registry_roundtrip", "conversation_registry_contracts", "actor_branch_contracts"] if registry_mode else
                                    ["actor_roundtrip", "actor_mailbox_contracts", "actor_branch_contracts"] if actor_mode else ["provider_roundtrip"])], cwd=package.parent, env=env, timeout=120)
         assert result.returncode == 0, "Desktop round trip failed"
-    expected_rounds = 6 if audit_stall else 8 if stalled_goal else 4
+    expected_rounds = 11 if audit_stall else 8 if stalled_goal else 4
     assert len(main_rounds) == expected_rounds, f"Unexpected continuation count: {len(main_rounds)}"
     assert not failures, failures
     if audit_stall:
-        assert recovery_requests == 0, "An audit stall must not launch recovery requests"
+        assert recovery_requests == 6, "An audit stall did not use the bounded recovery interval"
     if actor_mode:
         assert len(branch_requests) == 7, f"Unexpected branch request count: {len(branch_requests)}"
     if "--production" not in sys.argv and not actor_mode:

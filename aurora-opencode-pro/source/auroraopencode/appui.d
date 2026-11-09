@@ -113,7 +113,7 @@ import auroraopencode.worktracking : normalizedWorkItems, requiredWorkRemaining,
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction,
     taskBlockerError, taskInputError, taskAwaitingInput, unfinishedTask;
 import auroraopencode.goalmode : GoalCommand, GoalCommandKind, goalActive,
-    clampGoalText, goalCompletionError, goalCompletionAuditInstruction,
+    clampGoalText, goalCompletionError,
     goalContinuationInstruction,
     goalNeedsHumanInput, automaticGoalRequest, goalPromptBlock, maxGoalLength,
     parseGoalCommand,
@@ -122,7 +122,7 @@ import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine, RequestPhase;
 import auroraopencode.taskmutation : applyTaskPlan, applyTaskSubplan;
-import auroraopencode.toolsettlement : ToolResultPolicy, settleToolResult;
+import auroraopencode.toolsettlement : ToolResultPolicy, settleToolResult, advanceToolTaskState;
 import auroraopencode.toolprotocol : normalizeToolCalls;
 import auroraopencode.checkpointbarrier : CheckpointBarrier;
 import auroraopencode.agentresult : subagentResult;
@@ -134,7 +134,7 @@ import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker,
     outputIssueDescription;
 import auroraopencode.outputrecovery : answerReplayed, outputRecoveryCount,
     maxOutputRecoveries, goalAuditStalled, taskAuditStalled, auditStallIssue,
-    outputRecoveryAllowed, suppressAuditContinuation, goalCompletionAuditNeeded;
+    outputRecoveryAllowed, unfinishedTaskRecoveryInstruction;
 import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow,
     transcriptVirtualThreshold;
 import auroraopencode.turnsummary : TurnWorkSummary;
@@ -12467,7 +12467,6 @@ public final class OpenCodeRoot : VBox
     // Audit stalls pause automatic continuation until a real user message.
     // Otherwise the same stale continuation prompts can re-trigger the guard
     // after a retry and append another failure row.
-    private bool[string] _auditSuppressed;
     private bool _persistFailed;
     private bool _durabilityBlocked;
     private ulong _storageFailureGeneration;
@@ -12954,15 +12953,6 @@ private string _suggestExcludeId;
     private static immutable int planUpkeepToolResults = 10;
     private static immutable int planUpkeepGateWindows = 2;
     private static immutable int planUpkeepGateLimit = 4;
-    // Adaptive backstop for cross-turn repetition. The consecutive-batch
-    // counter above only sees a run of identical calls: a model can evade it by
-    // alternating calls, and every new user turn resets it. This cap counts how
-    // many times one exact call (name + arguments) has run across the whole
-    // conversation. Once reached, only that repeated request is suppressed;
-    // the task and tool loop remain active so the model can choose another
-    // action. It is set well above the tolerated repeat streak so ordinary
-    // re-reads are unaffected.
-    private static immutable int cumulativeRepeatLimit = 12;
     // Bound read-only fan-out. A model can emit dozens of independent searches;
     // one OS thread per call hurts throughput and responsiveness on laptops.
     private static immutable size_t maxParallelToolWorkers = 4;
@@ -18073,10 +18063,6 @@ private string _suggestExcludeId;
         ChatMessage message)
     {
         if (session.id.length == 0) session.id = newSessionId();
-        // A real user instruction is a fresh boundary; automatic continuation
-        // may resume for the new request.
-        if (message.role == "user" && !message.internal)
-            _auditSuppressed.remove(session.id);
         // Any new message is fresh interaction, so the conversation moves to
         // the top of a recency-ordered sidebar.
         session.updatedAt = Clock.currTime.toUnixTime();
@@ -18100,12 +18086,6 @@ private string _suggestExcludeId;
         // frames as soon as a new image arrives.
         if (session.messages[$ - 1].images.length > 0)
             pruneTranscriptImagePayloads(session);
-    }
-
-    /// Whether an audit stop is pausing automatic continuation for this chat.
-    private bool auditStallSuppressed(string sessionId) const
-    {
-        return (sessionId in _auditSuppressed) !is null;
     }
 
     /// Bound screenshot payloads across active and inactive branches.
@@ -20341,7 +20321,8 @@ private void pollButtonSuggestionRequest()
     /// paths in rebuildMessageColumn.
     private static bool legacyAuditStallFailure(string error)
     {
-        return error.canFind("Agent output stalled:") &&
+        return !error.startsWith(outputFailurePrefix ~ "Recovery exhausted: ") &&
+            error.canFind("Agent output stalled:") &&
             (error.canFind("without advancing the unfinished work") ||
              error.canFind("Saved work is unchanged"));
     }
@@ -21253,15 +21234,6 @@ private void pollButtonSuggestionRequest()
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
         auto session = &_sessions[sessionIndex];
         const decision = decideTurn(*session, turnPolicy(sessionIndex, cancelled));
-        // An audit stop pauses only automatic continuation. Queued guidance is
-        // explicit user intent and still applies.
-        // The hold is judged against the CURRENT interval: a turn that recorded
-        // new useful tool evidence has already left the stalled interval, so its
-        // continuation must run even though an earlier episode set the hold.
-        const suppressContinue = suppressAuditContinuation(
-            auditStallSuppressed(session.id) &&
-                (goalAuditStalled(*session) || taskAuditStalled(*session)),
-            decision.action == TurnAction.request);
         if (decision.recordedSummary.length)
         {
             ChatMessage summary;
@@ -21283,7 +21255,7 @@ private void pollButtonSuggestionRequest()
         }
         if (decision.clearBlocker) session.contract.blocker = "";
         if (decision.advanceGoal) ++session.goalTurns;
-        if (decision.guidance.length && !suppressContinue)
+        if (decision.guidance.length)
         {
             ChatMessage guidance;
             guidance.role = "user"; guidance.internal = true;
@@ -21299,45 +21271,16 @@ private void pollButtonSuggestionRequest()
         // pause the goal so its work is kept and Start resumes it.
         if (decision.settleGoal == "completed")
             applyGoalCompletion(*session, "");
-        else if (decision.settleGoal == "paused" && !suppressContinue)
+        else if (decision.settleGoal == "paused")
         {
             pauseActiveGoal(*session);
             updateGoalBar();
         }
         string statusText = decision.status;
-        if (decision.settleGoal == "paused" && !suppressContinue)
+        if (decision.settleGoal == "paused")
             statusText = (statusText.length ? statusText ~ " " : "") ~
                 "Goal paused — press Start to continue it.";
         if (statusText.length) updateStatus(statusText);
-        if (suppressContinue)
-        {
-            session.turnStatus = "completed";
-            session.taskStatus = "blocked";
-            // Never leave a goal claiming to be active while automatic
-            // continuation is held: an idle chat with an "active" goal is the
-            // state a user reads as "the goal did not continue". Pausing keeps
-            // the goal resumable and makes Start the explicit way back.
-            const goalHeld = session.goal.length > 0 && session.goalStatus == "active";
-            pauseActiveGoal(*session);
-            // finishAssistantMessage kept the clock alive because it expected a
-            // continuation. This branch starts none, so settle the turn or the
-            // missing-operation watchdog fails it five seconds later.
-            freezeTurnTiming();
-            refreshTurnActiveMarker(sessionIndex);
-            setTurnInFlight(false);
-            clearActivity();
-            publishThreadUpdated(*session);
-            markDirty();
-            updateGoalBar();
-            updateStatus(goalHeld
-                ? "Paused automatic continuation after an audit stall. The goal is paused — press Start to continue it."
-                : "Paused automatic continuation after an audit stall. Continue when ready.");
-            markUnreadIfBackground(sessionIndex);
-            refreshBubbleActions();
-            updateSendButton();
-            startNextQueuedFollowUp(sessionIndex);
-            return;
-        }
         if (!decision.continues())
         {
             // finishAssistantMessage keeps the clock alive while a continuation
@@ -21665,11 +21608,6 @@ private void pollButtonSuggestionRequest()
         return toolProgressPolicy.isCommentOnlyChangedLine(body);
     }
 
-    private static bool isPlainDocumentMutation(string name, string args)
-    {
-        return toolProgressPolicy.isPlainDocumentMutation(name, args);
-    }
-
     /// Whitespace/comment-only edits must not satisfy the implementation gate.
     private static bool isSubstantiveMutation(string name, bool failed,
         int additions, int deletions, string diff)
@@ -21760,12 +21698,6 @@ private void pollButtonSuggestionRequest()
         return toolProgressPolicy.toolCallRunCount(session, call);
     }
 
-    private static bool hasExhaustedRepeatedCall(
-        const ref ChatSession session, const(OpenCodeToolCall)[] calls)
-    {
-        return toolProgressPolicy.hasExhaustedRepeatedCall(session, calls);
-    }
-
     /// A failed summary request cannot restart tool work or repeat the repair.
     private bool finishCompletionHandoffAfterFailure(string error)
     {
@@ -21794,7 +21726,7 @@ private void pollButtonSuggestionRequest()
     }
 
     /// Recover unusable output without requiring the user to restart the task.
-    /// Exact repeated calls remain suppressed. Never execute printed calls.
+    /// Never execute printed calls.
     private void handleOutputFailure(const ref OpenCodeEvent event)
     {
         const sessionIndex = turnOwnerSessionIndex();
@@ -21813,74 +21745,6 @@ private void pollButtonSuggestionRequest()
             recordTurnUsage(*reply, event.totalTokens, event.promptTokens,
                 event.completionTokens, event.requestId);
         }
-        const auditStall = auditStallIssue(event.outputIssue);
-        if (auditStall)
-        {
-            // A goal continuation answered with prose only is not yet proof of
-            // a stall: the model may have finished the goal without recording
-            // it, which paused a partly finished goal behind a summary of its
-            // own limitations and remaining work. Ask once for `goal_complete`
-            // or real tool work before stopping; a repeated reply still stops.
-            if (event.outputIssue == "goal_audit_stalled" &&
-                goalCompletionAuditNeeded(*session) && !_toolContinuationPaused)
-            {
-                _suppressDoneStatus = true;
-                finishAssistantMessage(false);
-                dropAutoResendSchedule();
-                _autoContinuePendingSession = -1;
-                _autoContinueRetries = 0;
-                _activeRequestId = 0;
-                _activeRequestSession = -1;
-                logInfo("agent-output request=" ~ to!string(event.requestId) ~
-                    " thread=" ~ session.id ~
-                    " issue=" ~ event.outputIssue ~ " recovery=goal completion audit");
-                ChatMessage audit;
-                audit.role = "user";
-                audit.internal = true;
-                audit.time = currentTimestamp();
-                audit.content = goalCompletionAuditInstruction(*session);
-                appendMessage(*session, audit);
-                session.turnStatus = "running";
-                session.taskStatus = "active";
-                publishThreadUpdated(*session);
-                markDirty();
-                rebuildMessageColumn();
-                updateStatus("Auditing the goal result…");
-                if (!_toolContinuationPaused) startChatRequest(sessionIndex);
-                return;
-            }
-            // A no-action automatic continuation is a stop boundary, not a
-            // provider-format error. Re-sending the same history only produces
-            // more prose and nested recovery requests.
-            _auditSuppressed[session.id] = true;
-            logInfo("agent-output request=" ~ to!string(event.requestId) ~
-                " thread=" ~ session.id ~ " issue=" ~ event.outputIssue ~
-                " recovery=stopped no-action continuation");
-            _suppressDoneStatus = true;
-            finishAssistantMessage(false);
-            dropAutoResendSchedule();
-            _autoContinuePendingSession = -1;
-            _autoContinueRetries = 0;
-            _activeRequestId = 0;
-            _activeRequestSession = -1;
-            session.turnStatus = "idle";
-            session.taskStatus = "active";
-            // The hold ends automatic continuation until the user acts, so the
-            // persistent goal must not keep advertising itself as active: an
-            // idle turn with an active goal is exactly "goal active but the
-            // chat was not continued". Pause it and let Start resume the work.
-            const goalHeld = session.goal.length > 0 && session.goalStatus == "active";
-            pauseActiveGoal(*session);
-            publishThreadUpdated(*session);
-            markDirty();
-            rebuildMessageColumn();
-            updateStatus(goalHeld
-                ? "Work remains; automatic continuation is held. The goal is paused — press Start to continue it."
-                : "Work remains; the agent returned without further actions.");
-            updateGoalBar();
-            refreshBubbleActions();
-            return;
-        }
         const exhausted = outputRecoveryCount(*session) >= maxOutputRecoveries;
         const recover = outputRecoveryAllowed(event.outputIssue, exhausted,
             toolsEnabledForSession(*session), _stopPending,
@@ -21889,10 +21753,17 @@ private void pollButtonSuggestionRequest()
         logInfo("agent-output request=" ~ to!string(event.requestId) ~
             " thread=" ~ session.id ~ " issue=" ~ event.outputIssue ~
             " recovery=" ~ (recover ? "continuing" : "stopped"));
-        failAssistantMessage(outputFailurePrefix ~ outputIssueDescription(event.outputIssue) ~
-            (exhausted
-                ? " Recovery requests also produced no useful action. Work and the active goal are saved; retry with a working provider to continue."
-                : ""), true);
+        const taskAudit = auditStallIssue(event.outputIssue);
+        if (taskAudit && recover)
+        {
+            _suppressDoneStatus = true;
+            finishAssistantMessage(false);
+        }
+        else failAssistantMessage(outputFailurePrefix ~ (exhausted ? "Recovery exhausted: " : "") ~
+                outputIssueDescription(event.outputIssue) ~
+                (exhausted
+                    ? " Recovery requests also produced no useful action. Work and the active goal are saved; retry with a working provider to continue."
+                    : ""), true);
         dropAutoResendSchedule();
         _autoContinuePendingSession = -1;
         _autoContinueRetries = 0;
@@ -21908,14 +21779,16 @@ private void pollButtonSuggestionRequest()
         ChatMessage guidance;
         guidance.role = "user";
         guidance.internal = true;
-        guidance.content = outputRecoveryMarker ~
+        guidance.content = outputRecoveryMarker ~ (taskAudit
+            ? unfinishedTaskRecoveryInstruction
+            :
             " the previous response failed to produce a usable action. Its text was " ~
             "preserved for diagnosis and excluded from this request. Resume the latest " ~
             "user instruction from the successful tool results. If an action is needed, " ~
             "use the provided function-call channel and tool schemas; do not print XML " ~
             "invocations or repeat earlier prose. Otherwise give a concise result or " ~
-            "supported result. For a skipped repeated call, choose a different tool or hypothesis. " ~
-            "Recover internally and complete the authorized outcomes; do not ask the user to retry.";
+            "supported result. " ~
+            "Recover internally and complete the authorized outcomes; do not ask the user to retry.");
         if (outputRecoveryCount(*session) > 0 && _settings.diagnosticModel.length)
             _execution.diagnosticRequestsRemaining = 4;
         appendMessage(*session, guidance);
@@ -22117,13 +21990,6 @@ private void pollButtonSuggestionRequest()
             return;
         }
 
-        // Compare the previous settled batch before storing this request.
-        // Otherwise the repeat check finds this new, result-less batch itself.
-        const exhausted = hasExhaustedRepeatedCall(*session, calls);
-        const readOnlyRepeat = !exhausted &&
-            _lastToolRepeatCount >= repeatGuidanceThreshold &&
-            toolProgressPolicy.isReadOnlyOrControlBatch(calls) &&
-            toolProgressPolicy.isConsecutiveSuccessfulRepeat(*session, calls);
         message.toolCalls = calls.dup;
         // The tool request ends this assistant reply (reasoning phase included)
         // but the user turn continues, so `finishAssistantMessage` never runs
@@ -22208,24 +22074,6 @@ private void pollButtonSuggestionRequest()
             return;
         }
 
-        // Suppress exhausted exact calls and pathological successful read/control streaks.
-        if (exhausted || readOnlyRepeat)
-        {
-            const reason = exhausted
-                ? "Tool call skipped: this exact call has already run " ~
-                    to!string(cumulativeRepeatLimit) ~ " times in this " ~
-                    "unchanged task state. Tool access remains available for a different " ~
-                    "action that can add new evidence."
-                : "Tool call skipped: this exact read-only/control batch has succeeded repeatedly. " ~
-                    "Use the existing result or choose a different action that can add new evidence.";
-            appendSkippedToolResults(*session, calls, reason);
-            OpenCodeEvent failure;
-            failure.kind = OpenCodeEventKind.error;
-            failure.requestId = event.requestId;
-            failure.outputIssue = "repeated_tool_call";
-            handleOutputFailure(failure);
-            return;
-        }
         // Complex goal work gets one forward-plan/acceptance preflight.
         // Quick edits and answer-only requests do not acquire checklist debt.
         // The single deferral cannot deadlock an uncooperative provider.
@@ -22579,8 +22427,6 @@ private void pollButtonSuggestionRequest()
         auto toolMessage = settlement.message;
         const toolFailed = toolMessage.failed;
         const toolText = toolMessage.content;
-        const checkerAttempt = settlement.checkerAttempt;
-        const scopedVerification = settlement.scopedVerification;
         const acceptedVerification = settlement.acceptedVerification;
         _execution.pendingRouting.accept(settlement.routing);
         appendMessage(*session, toolMessage);
@@ -22597,33 +22443,9 @@ private void pollButtonSuggestionRequest()
             applyNestedPlan(*session, toolArgs);
         if (!toolFailed && event.toolName == "goal_complete")
             applyGoalCompletion(*session, toolArgs);
-        // Prose documents do not need an executable checker. The agent can
-        // read back the artifact as requested without manufacturing a second
-        // final answer. Existing verification for code remains outstanding.
-        const proseChange = !toolFailed && isPlainDocumentMutation(event.toolName, toolArgs);
-        if (!proseChange && (event.workspaceChanged ||
-            isSubstantiveMutation(event.toolName, toolFailed,
-                event.diffAdditions, event.diffDeletions, event.diffText)))
-        {
-            session.verificationStatus = "required";
-            session.taskStatus = "active";
-            publishThreadUpdated(*session);
-        }
-        else if (checkerAttempt && !scopedVerification)
-        {
-            // A checker that cannot be scoped to this workspace must not erase a
-            // still-current accepted receipt. Only a mutation or a changed
-            // scope revokes it.
-            const priorPassStillApplies = priorVerificationStatus == "passed" &&
-                priorVerificationScope == currentScope;
-            if (!priorPassStillApplies)
-            {
-                session.verificationStatus = "required";
-                if (session.taskStatus != "waiting_input") session.taskStatus = "active";
-                publishThreadUpdated(*session);
-            }
-        }
-        else if (acceptedVerification)
+        if (advanceToolTaskState(*session, settlement, event, toolArgs,
+            priorVerificationStatus, priorVerificationScope)) publishThreadUpdated(*session);
+        if (acceptedVerification && session.verificationStatus == "passed")
         {
             const evidenceKey = buildNormalizedPath(verificationWorkspace).toLower();
             // Retain the exact checked revision. A later mutation must revoke
@@ -22637,26 +22459,6 @@ private void pollButtonSuggestionRequest()
                 (*tracked).verificationRecorded = true;
                 (*tracked).verifiedWorkspace = verificationWorkspace;
                 (*tracked).verifiedWorkspaceRevision = verificationRevision;
-            }
-            session.verificationStatus = "passed";
-            if (session.taskStatus != "waiting_input" && !taskInvestigation(*session))
-                session.taskStatus = hasIncompleteTaskSteps(*session) ? "active" : "completed";
-            publishThreadUpdated(*session);
-        }
-
-        // Removing scratch output must not force the same archive/check to run
-        // again when an explicit recipe still hashes to the checked inputs.
-        // Direct command receipts remain revision-bound. Missing/changed recipe
-        // inputs (including checker sources) cannot survive this revalidation.
-        if (!toolFailed && event.toolName == "remove" && session.verificationStatus == "required")
-        {
-            const coverage = verificationCoverage(*session);
-            if (coverage.length > "verify:".length && satisfiesEvidence(coverage, requiredEvidence(*session)))
-            {
-                session.verificationStatus = "passed";
-                if (session.taskStatus != "waiting_input" && !taskInvestigation(*session))
-                    session.taskStatus = hasIncompleteTaskSteps(*session) ? "active" : "completed";
-                publishThreadUpdated(*session);
             }
         }
 
@@ -23417,10 +23219,6 @@ private void pollButtonSuggestionRequest()
         if (_current < 0 || _current >= cast(int) _sessions.length) return;
         auto session = &_sessions[_current];
         if (!goalActive(*session)) return;
-        // Starting or resuming the goal is explicit user intent, exactly like a
-        // typed message. An earlier audit hold must not veto this continuation
-        // and re-record the work as blocked one settle later.
-        _auditSuppressed.remove(session.id);
         if (turnIsBusy())
         {
             if (_current != turnOwnerSessionIndex())
@@ -32432,8 +32230,7 @@ private void pollButtonSuggestionRequest()
                     break;
                 case OpenCodeEventKind.done:
                     if (!event.cancelled && toolsEnabledForSession(_sessions[runtimeIndex]) &&
-                        !completionHandoffPending(_sessions[runtimeIndex]) &&
-                        !auditStallSuppressed(_sessions[runtimeIndex].id))
+                        !completionHandoffPending(_sessions[runtimeIndex]))
                     {
                         const explanationOnly = explanationOnlyRequest(
                             latestActualUserRequest(_sessions[runtimeIndex]));
@@ -33417,14 +33214,6 @@ private void pollButtonSuggestionRequest()
     public string goalStatusForTesting() const
     {
         return _current < 0 ? "" : _sessions[_current].goalStatus;
-    }
-
-    /// Test-only: whether an audit hold is suppressing automatic continuation
-    /// for the viewed conversation.
-    public bool auditHoldForTesting() const
-    {
-        return _current >= 0 && _current < cast(int) _sessions.length &&
-            auditStallSuppressed(_sessions[_current].id);
     }
 
     /// Test-only: the goal bar's Start action for the viewed conversation.

@@ -46,8 +46,29 @@ OpenCodeToolDef verificationToolDefinition()
         "Render steps use reference, actual and referenceSource for independent pixel comparison. " ~
         "Inputs (up to 8 GiB, streamed) are hashed before and after; don't omit checked artifacts or put generated outputs in inputs. " ~
         "Paths resolve from the task workspace. No additional verification framework or documentation lookup is needed.",
-        `{"type":"object","properties":{"recipe":{"type":"string","description":"Optional saved recipe path; use instead of inline inputs/steps"},"inputs":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64,"description":"Actual deliverables and relevant source/checker paths"},"steps":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object"},"description":"Sequential {kind,command:{program,args,workdir,timeout}} or render steps"}},"anyOf":[{"required":["recipe"]},{"required":["inputs","steps"]}]}`);
+        `{"type":"object","properties":{"recipe":{"type":"string","description":"Optional saved recipe path; use instead of inline inputs/steps"},"no_change_needed":{"type":"boolean","description":"Behavioral checks establish the current requested outcome already holds; compilation alone is insufficient"},"inputs":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64,"description":"Actual deliverables and relevant source/checker paths"},"steps":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object"},"description":"Sequential {kind,command:{program,args,workdir,timeout}} or render steps"}},"anyOf":[{"required":["recipe"]},{"required":["inputs","steps"]}]}`);
 
+}
+
+/// A single command shares the tracked-input recipe engine.
+public JSONValue checkedRunRecipe(JSONValue command)
+{
+    enforce(command.type == JSONType.object, "Checked run requires an object.");
+    const kind = command["check"].str;
+    enforce(["compile", "tests", "interaction"].canFind(kind), "Unknown run check kind.");
+    enforce(!("background" in command.object) || command["background"].type != JSONType.true_,
+        "Checked runs must finish in the foreground.");
+    auto inputs = command["inputs"];
+    auto fields = command.object.dup;
+    fields.remove("inputs"); fields.remove("check"); fields.remove("no_change_needed");
+    JSONValue step; step["kind"] = kind; step["command"] = JSONValue(fields);
+    JSONValue recipe; recipe["inputs"] = inputs; recipe["steps"] = [step];
+    if (auto value = "no_change_needed" in command.object)
+    {
+        enforce(value.type == JSONType.true_ || value.type == JSONType.false_, "no_change_needed must be boolean.");
+        recipe["no_change_needed"] = *value;
+    }
+    return recipe;
 }
 
 private string fingerprint(string workspace, JSONValue inputs, bool delegate() cancelled)
@@ -221,6 +242,10 @@ RecipeResult runVerificationRecipe(string arguments, string workspace,
         enforce(text.length <= 64 * 1024, "Recipe exceeds 64 KiB.");
         const recipeHash = sha256Of(text).toHexString().idup;
         const recipe = parseJSON(text);
+        auto noChange = "no_change_needed" in args.object;
+        if (noChange is null) noChange = "no_change_needed" in recipe.object;
+        if (noChange !is null)
+            enforce(noChange.type == JSONType.true_ || noChange.type == JSONType.false_, "no_change_needed must be boolean.");
         const inputs = recipe["inputs"];
         const before = fingerprint(workspace, inputs, cancelled);
         const steps = recipe["steps"];
@@ -345,6 +370,12 @@ RecipeResult runVerificationRecipe(string arguments, string workspace,
             enforce(sha256Of(cast(const(ubyte)[]) read(reference)).toHexString() == hash,
                 "Reference changed during verification; results are stale.");
         enforce(kinds.length > 0, "Preparation alone supplies no verification evidence.");
+        if (noChange !is null && noChange.type == JSONType.true_)
+        {
+            enforce(kinds.canFind("tests") || kinds.canFind("interaction"),
+                "An unchanged result needs behavioral tests or interaction evidence, not compilation alone.");
+            report["noChangeNeeded"] = true;
+        }
         result.passed = true;
         result.check = "verify:";
         foreach (i, kind; kinds) result.check ~= (i ? "," : "") ~ kind;

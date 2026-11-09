@@ -86,6 +86,15 @@ bool planPositionMissing(const ref ChatSession session, int phase)
     return true;
 }
 
+private bool planTracksPhase(const ref ChatSession session, int phase)
+{
+    if (workTracksPhase(session, phase)) return true;
+    foreach (step; session.taskSteps) if (step.status == "in_progress")
+        return phase == 2 ? step.kind == "verify" :
+            phase == 1 && (step.kind == "edit" || step.kind == "verify");
+    return false;
+}
+
 bool planNeedsRefresh(const ref ChatSession session)
 {
     if (!session.taskSteps.length || !hasIncompleteTaskSteps(session) ||
@@ -103,13 +112,13 @@ string planProgressGuidance(const ref ChatSession session)
     const unfinished = hasIncompleteTaskSteps(session);
     const stale = session.taskSteps.length && unfinished &&
         (progress.results >= planProgressWindow || planPositionMissing(session, progress.phase) ||
-            (progress.phase > 0 && progress.phase != progress.nudgedPhase && !workTracksPhase(session, progress.phase)));
+            (progress.phase > 0 && progress.phase != progress.nudgedPhase && !planTracksPhase(session, progress.phase)));
     const missing = !session.taskSteps.length && !progress.recorded &&
         (progress.inspections >= 3 || progress.results >= planProgressWindow);
     if (!stale && !missing) return "";
     // Even an unclassified outcome needs reconciliation when actual work
     // changes phase; do not assert that its label is wrong.
-    const phaseChanged = stale && progress.phase > 0 && progress.phase != progress.nudgedPhase && !workTracksPhase(session, progress.phase);
+    const phaseChanged = stale && progress.phase > 0 && progress.phase != progress.nudgedPhase && !planTracksPhase(session, progress.phase);
     if (progress.nudged && !phaseChanged)
         return "";
     JSONValue checkpoint;

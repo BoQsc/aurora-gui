@@ -256,31 +256,8 @@ public string goalContinuationInstruction(const ref ChatSession session)
         "The user can pause this goal at any time.";
 }
 
-/// A goal continuation answered with prose only is ambiguous: the model either
-/// finished the work without recording it or stopped early. This marker bounds
-/// the repair to one extra turn that must call `goal_complete` or resume tool
-/// work, so a partly finished goal is not paused on the strength of a summary
-/// that lists its own limitations and remaining work.
+/// Retained for reading and retiring control history from older builds.
 public enum goalCompletionAuditMarker = "Persistent goal completion audit:\n";
-
-public string goalCompletionAuditInstruction(const ref ChatSession session)
-{
-    const answerGoal = goalIsAnswerOnly(session.goal);
-    return goalCompletionAuditMarker ~ session.goal ~ "\n" ~
-        "The last turn replied with prose but neither called `goal_complete` nor " ~
-        "advanced the recorded plan with a tool. Do one of those now. " ~
-        (answerGoal ? "" :
-            "If the previous reply named remaining work, limitations or follow-ups, " ~
-            "finish them with tools or record them as plan outcomes; do not call " ~
-            "`goal_complete` while they remain. ") ~
-        (answerGoal
-            ? "This goal's completion condition is its answer: call `goal_complete` with a concise summary now that the answer is delivered. "
-            : "If the completion condition is demonstrably true, call `goal_complete` with a concise summary and the toolCallId of each successful recorded result that proves it. ") ~
-        "Otherwise keep working the unfinished plan outcomes with tools; do not restate " ~
-        "limitations or remaining work instead of acting on them. A second prose-only " ~
-        "reply ends automatic continuation and pauses the goal, so do not answer the " ~
-        "same way twice.";
-}
 
 /// Labels a completion answer uses to declare work it has not finished. Only an
 /// explicit label counts: discussing a limitation of the code is not a claim

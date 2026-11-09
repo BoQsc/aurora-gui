@@ -30,18 +30,17 @@ import auroraopencode.repository : RepositoryRuntime;
 import auroraopencode.runtime : AgentRuntimeEvent, AgentEventKind;
 import auroraopencode.requestpolicy : RequestPolicy, prepareAgentRequest;
 import auroraopencode.turnpolicy : TurnPolicy, TurnAction, decideTurn, hasIncompleteTaskSteps;
-import auroraopencode.toolsettlement : ToolResultPolicy, settleToolResult;
+import auroraopencode.toolsettlement : ToolResultPolicy, settleToolResult, advanceToolTaskState;
 import auroraopencode.toolprotocol : normalizeToolCalls;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision;
 import auroraopencode.tools : ChangeContext, ToolCancellation;
-import auroraopencode.toolprogresspolicy : isPlainDocumentMutation, isSubstantiveMutation, hasExhaustedRepeatedCall;
 import auroraopencode.taskflow : acceptTaskRequest, taskInvestigation, restoreBranchTask, executionRecoveryDue, executionDiagnosisMarker;
 import auroraopencode.taskmutation : applyTaskPlan, applyTaskSubplan;
 import auroraopencode.taskpolicy : verificationScope;
 import auroraopencode.goalmode : goalActive, recordGoalSet, recordGoalOutcome, clampGoalText, goalContinuationInstruction;
 import auroraopencode.planhistory : recordPlanHistory;
 import auroraopencode.goalmutation : resetTaskForNewGoal, restoreGoalTask;
-import auroraopencode.outputrecovery : answerReplayed, goalAuditStalled, taskAuditStalled, outputRecoveryCount, maxOutputRecoveries;
+import auroraopencode.outputrecovery : answerReplayed, goalAuditStalled, taskAuditStalled, outputRecoveryCount, maxOutputRecoveries, unfinishedTaskRecoveryInstruction;
 import auroraopencode.outputguard : outputRecoveryMarker;
 import auroraopencode.imagehistory : pruneHistoryImages, completedReplyImageIds;
 import core.sync.mutex : Mutex;
@@ -167,6 +166,8 @@ public final class ConversationActor
     private bool diagnosticActive, diagnosticUsed;
     private ConversationImages images;
     private ConversationToolView[] liveTools;
+    private bool preparingTools;
+    private MonoTime preparingToolsAt;
     private size_t omittedTools;
     private const(PlanHistoryEntry)[] encodedHistorySource;
     private JSONValue encodedPlanHistory;
@@ -503,7 +504,7 @@ public final class ConversationActor
         auto value = sessionMetaToJson(session, false);
         value["planHistory"] = historyJson();
         ConversationExecutionView execution;
-        execution.phase = to!string(engine.phase);
+        execution.phase = preparingTools ? "preparing_tools" : to!string(engine.phase);
         if (waitingChildren) execution.phase = "waiting_agents";
         execution.routingKey = engine.client.openCodeSession();
         execution.requestModel = roundModel; execution.diagnosticReview = diagnosticActive || config.request.diagnosticReview;
@@ -577,6 +578,7 @@ public final class ConversationActor
     private void request()
     {
         if (engine.turnCancelled) return;
+        preparingTools = false; liveTools = null; omittedTools = 0;
         if (diagnosticActive && !diagnosticRemaining) finishDiagnostic();
         const diagnostic = config.diagnosticModel.length && diagnosticRemaining > 0;
         const budget = diagnostic && (config.outageBudgetMs <= 0 || config.outageBudgetMs > 15_000) ? 15_000 : config.outageBudgetMs;
@@ -764,6 +766,7 @@ public final class ConversationActor
     }
     private void fail(string text, bool terminal = true)
     {
+        preparingTools = false; liveTools = null; omittedTools = 0;
         if (engine.phase != RequestPhase.failed)
         {
             OpenCodeEvent failure; failure.kind = OpenCodeEventKind.error;
@@ -804,7 +807,7 @@ public final class ConversationActor
             }
         engine.pendingToolCalls = null; engine.pendingToolResults = 0;
         engine.pendingToolImages = null; engine.reportedToolCallIds = null;
-        liveTools = null; omittedTools = 0;
+        liveTools = null; omittedTools = 0; preparingTools = false;
         if (wasRunning && session.messages.length && session.messages[$ - 1].role == "assistant")
         { session.messages[$ - 1].finishReason = "cancelled"; updateLast(); }
         metadata();
@@ -1083,25 +1086,9 @@ public final class ConversationActor
             return;
         }
         calls = allowed;
-        if (hasExhaustedRepeatedCall(session, calls))
-        {
-            foreach (call; calls)
-            {
-                ChatMessage skipped; skipped.role = "tool"; skipped.toolName = call.name;
-                skipped.toolCallId = call.id; skipped.toolArgs = call.arguments; skipped.failed = true;
-                skipped.toolState = ToolState.failed;
-                skipped.content = "This exact call already ran repeatedly in unchanged task state. No tool ran; choose a different action.";
-                append(skipped);
-            }
-            engine.pendingToolCalls = null; engine.pendingToolResults = 0;
-            if (diagnosticActive) { finishDiagnostic(); request(); return; }
-            if (outputRecoveryCount(session) >= maxOutputRecoveries) fail("Repeated tool calls added no progress; the task and goal were preserved.");
-            else { internalNote(outputRecoveryMarker ~ "Change the unsuccessful approach and continue with a useful action."); request(); }
-            return;
-        }
         auto token = new ToolCancellation(); engine.cancellation = token;
         batchConfig = roundConfig;
-        liveTools = null; omittedTools = 0;
+        liveTools = null; omittedTools = 0; preparingTools = false;
         foreach (i, call; calls)
         {
             if (i >= 64) { ++omittedTools; continue; }
@@ -1163,6 +1150,8 @@ public final class ConversationActor
         const workspace = batchConfig.workspace;
         const current = workspaceRevision(workspace);
         const currentScope = verificationScope(workspace, current);
+        const priorVerificationStatus = session.verificationStatus;
+        const priorVerificationScope = session.verificationScope;
         if (session.verificationStatus == "passed" && session.verificationScope != currentScope)
         { session.verificationStatus = "required"; session.taskStatus = "active"; }
         session.verificationScope = currentScope;
@@ -1186,24 +1175,14 @@ public final class ConversationActor
             if (event.toolName == "request_input" || event.toolName == "task_blocker")
             { session.taskStatus = "waiting_input"; session.contract.blocker = parseJSON(admission.arguments)["reason"].str; }
         }
-        const prose = !settled.message.failed && isPlainDocumentMutation(event.toolName, admission.arguments);
-        if (!prose && (event.workspaceChanged || isSubstantiveMutation(event.toolName, settled.message.failed,
-                event.diffAdditions, event.diffDeletions, event.diffText)))
-        { session.verificationStatus = "required"; session.taskStatus = "active"; }
-        else if (settled.checkerAttempt && !settled.scopedVerification)
-        { session.verificationStatus = "required"; if (session.taskStatus != "waiting_input") session.taskStatus = "active"; }
-        else if (settled.acceptedVerification)
-        {
-            session.verificationStatus = "passed";
-            if (session.taskStatus != "waiting_input" && !taskInvestigation(session))
-                session.taskStatus = hasIncompleteTaskSteps(session) ? "active" : "completed";
-        }
+        advanceToolTaskState(session, settled, event, admission.arguments,
+            priorVerificationStatus, priorVerificationScope);
         engine.pendingToolImages ~= event.images;
         if (!diagnosticActive && !settled.message.failed && (settled.acceptedVerification || event.workspaceChanged)) diagnosticUsed = false;
         metadata();
         if (--engine.pendingToolResults > 0) return;
         engine.pendingToolCalls = null; engine.reportedToolCallIds = null;
-        liveTools = null; omittedTools = 0;
+        liveTools = null; omittedTools = 0; preparingTools = false;
         if (config.turn.orchestratorEnabled)
         {
             const routing = engine.pendingRouting.take();
@@ -1245,6 +1224,7 @@ public final class ConversationActor
     }
     private void completed(const ref OpenCodeEvent event)
     {
+        preparingTools = false; liveTools = null; omittedTools = 0;
         resetOutage();
         refreshVerification();
         ensureAssistant(); auto message = &session.messages[$ - 1];
@@ -1254,12 +1234,12 @@ public final class ConversationActor
         updateLast();
         if (event.cancelled) { applyStop(); return; }
         if (diagnosticActive) { finishDiagnostic(); applySteering(); request(); return; }
-        if (answerReplayed(session) || goalAuditStalled(session) ||
-            (config.request.toolsEnabled && taskAuditStalled(session)))
+        const auditStall = goalAuditStalled(session) || (config.request.toolsEnabled && taskAuditStalled(session));
+        if (answerReplayed(session) || auditStall)
         {
             if (outputRecoveryCount(session) >= maxOutputRecoveries)
             { fail("Provider output repeatedly added no progress. Retry continues the preserved task and goal."); return; }
-            internalNote(outputRecoveryMarker ~ "The response added no new action or evidence. Continue the unfinished task with a different useful action.");
+            internalNote(outputRecoveryMarker ~ (auditStall ? unfinishedTaskRecoveryInstruction : "The response added no new action or evidence. Continue the unfinished task with a different useful action."));
             beginDiagnostic();
             request(); return;
         }
@@ -1359,7 +1339,22 @@ public final class ConversationActor
                 }
                 break;
             case OpenCodeEventKind.usage: emit(ActorChangeKind.usage, eventJson(event).toString()); break;
-            case OpenCodeEventKind.toolCallDelta: break;
+            case OpenCodeEventKind.toolCallDelta:
+                const now = MonoTime.currTime;
+                if (preparingTools && now - preparingToolsAt < 50.msecs) break;
+                preparingToolsAt = now;
+                preparingTools = true; liveTools = null; omittedTools = 0;
+                foreach (i, call; event.toolCalls)
+                {
+                    if (i >= 64) { ++omittedTools; continue; }
+                    ConversationToolView view;
+                    view.id = call.id.length ? call.id : "preparing-" ~ to!string(i);
+                    view.name = call.name; view.arguments = checkpointSnippet(call.arguments, 2048);
+                    view.output = "Preparing tool arguments; no tool has started.";
+                    liveTools ~= view;
+                }
+                metadata();
+                break;
             case OpenCodeEventKind.toolCalls: toolsRequested(event); break;
             case OpenCodeEventKind.toolResult: toolResult(event); break;
             case OpenCodeEventKind.done: completed(event); break;

@@ -8,6 +8,10 @@ import auroraopencode.goalmode : goalActive;
 import auroraopencode.planprogress : planReconciliationDue;
 import auroraopencode.taskpolicy : diagnosticToolAllowed;
 import auroraopencode.completionhandoff : completionHandoffInstruction;
+import auroraopencode.turnpolicy : hasIncompleteTaskSteps;
+import auroraopencode.taskflow : taskInvestigation, missingVerificationInput;
+import auroraopencode.taskcontext : taskExcerpt;
+import auroraopencode.requestintent : answerOnlyRequest, requestIntent, RequestIntent;
 import auroraopencode.orchestrator : experimentalOrchestratorFilterTools;
 import std.json : JSONValue, JSONType, parseJSON;
 
@@ -140,7 +144,28 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     ChatRequestMessage contract;
     contract.role = "system"; contract.content = responseContract;
     result.messages ~= contract;
-    const fixedBytes = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools) + 64;
+    string outcomeCheck;
+    if (policy.toolsEnabled && !policy.finalAnswer && !policy.summaryOnly &&
+        !policy.diagnosticReview && !policy.orchestratorEnabled &&
+        (session.contract.intent == "implementation" || session.contract.intent == "diagnosis") &&
+        !taskInvestigation(session) && !answerOnlyRequest(latestActualUserRequest(session)) &&
+        !hasIncompleteTaskSteps(session) && (session.taskSteps.length || session.verificationStatus == "passed"))
+    {
+        auto requested = session.contract.requestedOutcome;
+        const latest = latestActualUserRequest(session);
+        if (latest != requested && requestIntent(latest) != RequestIntent.continuation) requested ~= "\n" ~ latest;
+        outcomeCheck = "Outcome check before the final reply: compare the implemented behavior and executed checks with this exact user request:\n" ~
+            taskExcerpt(requested, 4000) ~ "\nA completed checklist and green checks do not prove behavior the checks never exercised. " ~
+            "Preserve explicit triggers, interactions and constraints; do not substitute a weaker behavior because it is easier. " ~
+            "If something is missing, fix and check that gap using the normal tools. Otherwise reply now from the existing evidence; do not add audits or repeat passing checks.";
+        if (session.verificationStatus == "required" || session.verificationStatus == "failed")
+        {
+            const missing = missingVerificationInput(session);
+            if (missing.length) outcomeCheck ~= "\nVerification lost a tracked input: " ~ taskExcerpt(missing, 1000) ~
+                ". Restore the required deliverable/checker input and retain it through one final relevant check. This is a concrete reason for rechecking.";
+        }
+    }
+    const fixedBytes = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools) + outcomeCheck.length + 64;
     result.summaryByteBudget = compactionSummaryCapacity(policy.contextLimit, fixedBytes);
     result.oldAnchor = checkpointOnActivePath(session) ? session.compactedThroughMessageId : "";
     result.oldSummary = result.oldAnchor.length ? session.compactionSummary : "";
@@ -159,7 +184,13 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     result.contextCompacted = policy.compactionEnabled &&
         (checkpointOnActivePath(session) || result.fallbackCompacted);
     result.messages ~= history;
-    if (policy.toolsEnabled && !policy.finalAnswer && !policy.summaryOnly &&
+    if (outcomeCheck.length)
+    {
+        ChatRequestMessage check;
+        check.role = "system"; check.content = outcomeCheck;
+        result.messages ~= check;
+    }
+    else if (policy.toolsEnabled && !policy.finalAnswer && !policy.summaryOnly &&
         !policy.diagnosticReview && !policy.orchestratorEnabled && planReconciliationDue(session))
     {
         ChatRequestMessage reconcile;

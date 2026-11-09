@@ -37,6 +37,21 @@ int main()
         assert(taskContinuation(progress, true).stalled == 0,
             "Completed outcome progress was ignored when the normal checklist carried no receipt IDs");
     }
+    {
+        auto changing = pending();
+        foreach (i; 0 .. 8)
+        {
+            append(changing, "user", taskContinuation(changing, true).guidance(), true);
+            append(changing, "tool", "Changed file " ~ to!string(i), false, "edit");
+            changing.messages[$ - 1].diffAdditions = 1;
+            changing.messages[$ - 1].diffDeletions = 1;
+            changing.messages[$ - 1].toolDiff = "@@ -1 +1 @@\n-old\n+new" ~ to!string(i);
+            auto actual = taskContinuation(changing, true);
+            assert(actual.stalled == 0 && actual.effects == i + 1,
+                "Actual implementation progress was treated as a stall because the checklist stayed active");
+            assert(changing.taskSteps[0].status == "in_progress", "Progress fabricated a completed outcome");
+        }
+    }
     auto session = pending();
     auto decision = taskContinuation(session, true);
     assert(decision.action == TaskContinuationAction.continueWork);

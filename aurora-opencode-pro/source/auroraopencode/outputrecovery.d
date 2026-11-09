@@ -2,7 +2,7 @@ module auroraopencode.outputrecovery;
 
 import auroraopencode.core : ChatMessage, ChatSession, activeMessagePath;
 import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker;
-import auroraopencode.goalmode : goalActive, goalCompletionAuditMarker;
+import auroraopencode.goalmode : goalActive;
 import auroraopencode.taskcontinuation : taskContinuationMarker, taskAwaitingInput;
 import std.string : startsWith, strip;
 
@@ -28,40 +28,32 @@ int outputRecoveryCount(const ref ChatSession session)
     return count;
 }
 
-/// Goal and task continuation audits are not provider-format failures. The
-/// continuation counter that triggered them is still in the transcript, so a
-/// recovery request would be rejected again and append another failure bubble
-/// without new evidence. Report one failure and let the user continue.
+/// Progress audits are distinct from provider wire-format failures.
 bool auditStallIssue(string issue)
 {
     return issue == "goal_audit_stalled" || issue == "task_audit_stalled";
 }
 
-/// A recovery request is useful only for provider output that can change on a
-/// resend. Goal/task audits keep the continuation counter that produced them,
-/// so they stop after one report instead of repeating the same failure.
+/// Both execution owners recover unfinished work within one shared budget.
 bool outputRecoveryAllowed(string issue, bool exhausted, bool toolsEnabled,
     bool stopped, bool aborting, bool explanationOnly)
 {
-    return !auditStallIssue(issue) && !exhausted && toolsEnabled &&
+    return !exhausted && toolsEnabled &&
         !stopped && !aborting && !explanationOnly;
 }
 
-/// After an audit stop, automatic continuation must wait for a real user
-/// message. Otherwise the next automatic turn sees the same unfinished task
-/// state and produces another audit failure.
-bool suppressAuditContinuation(bool auditStalled, bool automaticContinuation)
-{
-    return auditStalled && automaticContinuation;
-}
+enum unfinishedTaskRecoveryInstruction = " The reply claimed completion but recorded work or verification remains. " ~
+    "Use the normal tools to close the specific gap in durable task state. Conventional direct test scripts/programs produce receipts; " ~
+    "arbitrary custom checks can use run with check and inputs. For a finished persistent goal, call goal_complete with the existing evidence. " ~
+    "Do not repeat passing checks, add scope, or ask the user to restart the task.";
 
-/// A surfaced output failure ends its audit interval. Without this boundary a
-/// later retry sees the same stale continuation prompts and is rejected again
-/// before the provider has a chance to act.
+/// Recovery starts a fresh audit interval while retaining the shared retry
+/// count. Otherwise the same stale continuation immediately rejects a repair.
 private bool endsAuditInterval(const ref ChatMessage message)
 {
-    return message.role == "assistant" && message.failed &&
-        message.error.startsWith(outputFailurePrefix);
+    return (message.role == "assistant" && message.failed &&
+        message.error.startsWith(outputFailurePrefix)) ||
+        (message.internal && message.content.startsWith(outputRecoveryMarker));
 }
 
 bool answerReplayed(const ref ChatSession session)
@@ -102,35 +94,7 @@ bool goalAuditStalled(const ref ChatSession session)
     return audits >= 1;
 }
 
-/// A completion audit already sent in the current interval. It keeps the
-/// repair to one turn: reporting the same prose again is a real stall.
-bool goalCompletionAuditPending(const ref ChatSession session)
-{
-    foreach_reverse (index; activeMessagePath(session))
-    {
-        const ref message = session.messages[index];
-        if (endsAuditInterval(message)) break;
-        if ((message.role == "user" && !message.internal) ||
-            (message.role == "tool" && usefulTool(message.toolName) &&
-                !message.content.startsWith("Tool call skipped:"))) break;
-        if (message.internal && message.content.startsWith(goalCompletionAuditMarker))
-            return true;
-    }
-    return false;
-}
-
-/// A goal continuation that returned prose only is repaired by one completion
-/// audit turn first: the goal may already be finished and merely unrecorded, and
-/// pausing it there is the "partially completed with limitations and remaining
-/// work" state users report. Only a second prose-only reply ends the goal.
-bool goalCompletionAuditNeeded(const ref ChatSession session)
-{
-    return goalAuditStalled(session) && !goalCompletionAuditPending(session);
-}
-
-/// Bound consecutive no-action continuations, including short or varied prose.
-/// Any real user instruction or nonadministrative tool attempt starts a new
-/// interval. Productive long work has no global turn limit.
+/// An unfinished task that returned prose instead of useful work.
 bool taskAuditStalled(const ref ChatSession session)
 {
     if (taskAwaitingInput(session)) return false;

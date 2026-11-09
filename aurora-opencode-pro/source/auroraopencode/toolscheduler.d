@@ -5,6 +5,7 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeE
 import auroraopencode.tools : ToolCancellation, ToolExecution, ChangeContext, executeTool,
     toolStatusHandler, developerToolSourceDirectory, installDeveloperToolSource, restoreDeveloperToolSource;
 import std.json : JSONValue, JSONType;
+import std.string : startsWith;
 import auroraopencode.workscheduler : WorkItem, WorkScheduler, WorkAdmission;
 import auroraopencode.toolstate : ToolState, terminalToolState, toolStateName;
 import auroraopencode.computeruse : installComputerUseContext;
@@ -306,7 +307,7 @@ private final class ToolJob : WorkItem
         try
         {
             result = executeTool(call, workspace, batch.cancellation, batch.context, &progress);
-            changed = (call.name == "verify" && result.failed) ||
+            changed = ((call.name == "verify" || result.verification.check.startsWith("verify:")) && result.failed) ||
                 (mutationCandidate() && result.verification.check.length == 0 && !result.workspaceUnchanged);
             const separateSourceUnobserved = result.workspaceObservationOnly &&
                 batch.developerSource.length && checkoutIdentity(batch.developerSource) != checkoutIdentity(workspace);

@@ -20,13 +20,13 @@ app keeps running the old build, and the change appears to do nothing (or the
 next interaction fails with an error such as `undefined identifier ...` because
 the running binary is stale).
 
-## Agent discipline: tool-call budget and rebuilds
+## Agent discipline and rebuilds
 
 Two failures to avoid, with a shared root cause: acting as if actions are free.
 
-**The tool-call budget is counted in rounds, not time.** Every `read`, `grep`,
-`dshell`, `edit`, and `rebuild` costs one, and the round cap ends the turn
-mid-work.
+Productive task work has no fixed tool-round cap. Use the current task state,
+actual results and relevant checks to decide what remains; do not stop at a
+partial stage to satisfy an imagined round budget.
 
 - One file = one patch. Batch all edits to a file into a single
   `apply_patch`/`write`; many small sequential `edit` calls lose track of what
@@ -34,13 +34,11 @@ mid-work.
   signature).
 - Spend reads only on the unknown that gates the next edit; do not re-read for
   confidence or to restate what is already known.
-- Reserve the last call for the build/verify step: edit then verify, never end
-  on a mutation with unverified state.
-- If the work will not fit, ship a coherent, compiling stage and stop with a
-  clean tree and a stated next step. Never end a turn with unapplied or broken
-  edits.
-- Tell: running out of rounds with a broken file means the granularity was
-  wrong, not that the cap was too small.
+- Complete the requested outcome and its relevant verification. Do not finish
+  on unapplied edits, an unverified mutation, or a bookkeeping-only remainder.
+- Ordinary direct test commands produce verification receipts. Use a tracked
+  custom check once when needed; do not rerun passing commands through another
+  framework solely to make their results count.
 
 **A rebuild is a deploy, not a save.** `rebuild` persists the conversation,
 **closes the running app**, runs `dub build`, and relaunches it with whatever the

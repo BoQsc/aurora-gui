@@ -6,7 +6,7 @@ import auroraopencode.planmode : experimentalStrictPlanEnabled;
 import auroraopencode.planhistory : recordPlanHistory;
 import auroraopencode.verification : verificationCheck;
 import auroraopencode.inputcontract : inputRequestStep;
-import auroraopencode.workevidence : observedResultKey;
+import auroraopencode.workevidence : observedResultKey, observedSourceKeys;
 import std.algorithm : canFind, min;
 import std.array : appender;
 import std.conv : to;
@@ -28,6 +28,19 @@ string latestTaskRequest(const ref ChatSession session)
         if (taskInstruction(session, session.messages[index]))
             return session.messages[index].content;
     return "";
+}
+
+string missingVerificationInput(const ref ChatSession session)
+{
+    import auroraopencode.effectfacts : effectFact;
+    import auroraopencode.recipeevidence : missingRecipeInput;
+    return effectFact("verification.missing-input\n" ~ session.id ~ "\n" ~ session.activeLeafId ~ "\n" ~ session.verificationScope,
+        () {
+            foreach_reverse (index; taskMessagePath(session))
+                if (session.messages[index].verificationCheck.length)
+                    return missingRecipeInput(session.messages[index], session.verificationScope);
+            return "";
+        });
 }
 
 size_t[] taskMessagePath(const ref ChatSession session)
@@ -266,10 +279,15 @@ int stalledExecutionTools(const ref ChatSession session)
         const message = session.messages[index];
         if (message.role != "tool" || ["update_plan", "update_subplan", "process", "tool_status",
                 "task_blocker", "request_input", "retire_images"].canFind(message.toolName)) continue;
-        if (!message.failed && (message.workspaceChanged || message.toolDiff.length)) seen = null;
-        const key = observedResultKey(message);
-        if (key.length && evidenceKind(message).length && !(key in seen))
-        { seen[key] = true; stalled = 0; }
+        auto keys = observedSourceKeys(message);
+        if (!keys.length)
+        {
+            const key = observedResultKey(message);
+            if (key.length && evidenceKind(message).length) keys = [key];
+        }
+        bool novel;
+        foreach (key; keys) if (!(key in seen)) { seen[key] = true; novel = true; }
+        if (novel) stalled = 0;
         else ++stalled;
     }
     return stalled;
@@ -335,7 +353,7 @@ string evidenceKind(const ref ChatMessage message)
     if (["calculate", "read", "grep", "glob", "checksum", "view_image", "webfetch", "websearch"].canFind(message.toolName)) return "research";
     if (message.toolName == "dshell") return message.toolArgs.canFind("\"list\"") || message.toolArgs.canFind("\"info\"") ? "research" : "";
     if (["write", "edit", "apply_patch", "copy", "move", "rename", "remove", "download", "create_folder"].canFind(message.toolName)) return "edit";
-    if (message.toolName == "verify") return "verify";
+    if (message.toolName == "verify" || message.verificationCheck.startsWith("verify:")) return "verify";
     if (message.toolName == "run")
     {
         try
@@ -507,6 +525,27 @@ bool taskHasActionEvidence(const ref ChatSession session, bool includeResearch =
     const changedArtifact = artifactChangeRequested(current) ||
         ((!current.length || intent == RequestIntent.continuation || intent == RequestIntent.conversation || intent == RequestIntent.clarification) &&
             artifactChangeRequested(session.contract.requestedOutcome));
+    // An explicit current behavioral receipt can establish that a reported
+    // defect is already resolved. Do not force a meaningless implementation edit.
+    if (changedArtifact && session.verificationStatus == "passed")
+    {
+        string[string] proofs;
+        bool indexed;
+        foreach (index; taskActionPath(session))
+        {
+            const ref message = session.messages[index];
+            if (message.failed || !message.verificationCheck.startsWith("verify:")) continue;
+            try
+            {
+                const report = parseJSON(message.content);
+                if (!("noChangeNeeded" in report.object) || report["noChangeNeeded"].type != JSONType.true_) continue;
+                if (!indexed) { proofs = taskEvidenceIndex(session); indexed = true; }
+                if (auto proof = message.id in proofs)
+                    if ((*proof).startsWith("verify-current|")) return true;
+            }
+            catch (Exception) {}
+        }
+    }
     foreach (index; taskActionPath(session))
     {
         const ref message = session.messages[index];

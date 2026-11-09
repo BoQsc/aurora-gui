@@ -92,7 +92,7 @@ ToolSettlement settleToolResult(const ref ChatSession session,
         receipt["remaining"] = JSONValue(remaining);
         if (!scopedVerification) receipt["reason"] = toolFailed ? "The checker failed." : "Checker workspace or source revision does not match the current task.";
         else if (!acceptedVerification) receipt["reason"] = "This check is valid evidence; overall task verification still needs the remaining required categories.";
-        if (event.toolName == "verify")
+        if (event.toolName == "verify" || event.verificationCheck.startsWith("verify:"))
         {
             try { auto result = parseJSON(toolText); result["receipt"] = receipt; toolText = result.toPrettyString(); }
             catch (Exception) {}
@@ -127,4 +127,42 @@ ToolSettlement settleToolResult(const ref ChatSession session,
     toolMessage.time = policy.timestamp;
     return ToolSettlement(toolMessage, checkerAttempt, scopedVerification, acceptedVerification,
         toolFailed ? OrchestratorDirective.init : routing);
+}
+
+/// The execution owner calls this after appending the result and applying plan
+/// changes. Desktop and headless execution share one completion/verification
+/// transition; presentation and runtime receipt bookkeeping stay with the owner.
+bool advanceToolTaskState(ref ChatSession session, const ref ToolSettlement settled,
+    const ref OpenCodeEvent event, string arguments, string priorStatus, string priorScope)
+{
+    import auroraopencode.toolprogresspolicy : isPlainDocumentMutation, isSubstantiveMutation;
+    import auroraopencode.turnpolicy : hasIncompleteTaskSteps;
+    import auroraopencode.taskflow : taskInvestigation;
+    const oldStatus = session.verificationStatus;
+    const oldTask = session.taskStatus;
+    void requireCheck()
+    {
+        session.verificationStatus = "required";
+        if (session.taskStatus != "waiting_input") session.taskStatus = "active";
+    }
+    void passCheck()
+    {
+        session.verificationStatus = "passed";
+        if (session.taskStatus != "waiting_input" && !taskInvestigation(session))
+            session.taskStatus = hasIncompleteTaskSteps(session) ? "active" : "completed";
+    }
+    const prose = !settled.message.failed && isPlainDocumentMutation(event.toolName, arguments);
+    if (!prose && (event.workspaceChanged || isSubstantiveMutation(event.toolName,
+        settled.message.failed, event.diffAdditions, event.diffDeletions, event.diffText))) requireCheck();
+    else if (settled.acceptedVerification) passCheck();
+    else if (settled.checkerAttempt && !settled.scopedVerification &&
+        !(priorStatus == "passed" && priorScope == session.verificationScope)) requireCheck();
+    // A revision is conservative; explicit recipe inputs can establish that
+    // cleanup did not alter the checked deliverable or checker source.
+    if (!settled.message.failed && event.toolName == "remove" && session.verificationStatus == "required")
+    {
+        const coverage = verificationCoverage(session);
+        if (coverage.length > "verify:".length && satisfiesEvidence(coverage, requiredEvidence(session))) passCheck();
+    }
+    return oldStatus != session.verificationStatus || oldTask != session.taskStatus;
 }

@@ -1,7 +1,7 @@
 module auroraopencode.verification;
 
 import std.path : baseName, stripExtension;
-import std.string : toLower, startsWith;
+import std.string : toLower, startsWith, endsWith;
 
 public struct VerificationEvidence
 {
@@ -104,7 +104,22 @@ public string verificationCheck(string program, const(string)[] args)
             (args[cursor + 1] == "pytest" || args[cursor + 1] == "unittest" ||
                 args[cursor + 1] == "mypy"))
             return args[cursor + 1];
+        if (cursor + 1 < args.length && args[cursor] == "-m" &&
+            (args[cursor + 1] == "py_compile" || args[cursor + 1] == "compileall"))
+            return "python compile";
+        if (cursor < args.length && !args[cursor].startsWith("-"))
+        {
+            const script = baseName(args[cursor]).toLower();
+            if (script.endsWith(".py") && (script.startsWith("test_") || script.endsWith("_test.py") ||
+                script == "run_tests.py" || script == "run_architecture_checks.py"))
+            {
+                foreach (arg; args[cursor + 1 .. $]) if (arg == "--prune-only" || arg == "--dry-run") return "";
+                return "python tests";
+            }
+        }
     }
+    if (name.startsWith("test_") || name.endsWith("_test") || name.endsWith("_tests") ||
+        name.endsWith("_contracts") || name.endsWith("_smoke")) return "native tests";
     if ((name == "dub" && (first == "test" || first == "build")) ||
         (name == "cargo" && (first == "test" || first == "build" ||
             first == "check" || first == "clippy")) ||

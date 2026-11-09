@@ -98,14 +98,6 @@ int main(string[] args)
     enum build = `{"program":"dmd","args":["source/app.d"]}`;
     foreach (_; 0 .. 12) root.injectToolResultForTesting("run", "compiled", false, build);
     assert(root.exactToolRunCountForTesting("run", build) == 12);
-    root.beginStreamForTesting();
-    root.injectToolCallsForTesting([OpenCodeToolCall("repeat-1", "run", build)]);
-    assert(root.taskStatusForTesting() == "active",
-        "An exhausted call did not receive its bounded recovery");
-    root.beginStreamForTesting();
-    root.injectToolCallsForTesting([OpenCodeToolCall("repeat-2", "run", build)]);
-    assert(root.taskStatusForTesting() == "active",
-        "Skipped repeated calls ended the authorized task");
     root.injectToolResultForTesting("edit", "Edited implementation", false,
         `{"filePath":"source/app.d"}`, 1, 1, "@@ -1 +1 @@\n-old\n+new\n");
     assert(root.exactToolRunCountForTesting("run", build) == 0,

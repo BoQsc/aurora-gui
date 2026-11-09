@@ -4,7 +4,7 @@ import auroraopencode.core : ChatSession, activeMessagePath;
 import auroraopencode.taskcontext : taskExcerpt;
 import auroraopencode.requestintent : RequestIntent, actionApprovalRequest, answerOnlyRequest,
     permissionQuestionReply, requestIntent;
-import auroraopencode.taskflow : supportedStep, taskHasActionEvidence, taskEvidenceIndex, taskRequiresPlan, taskInvestigation;
+import auroraopencode.taskflow : supportedStep, taskHasActionEvidence, taskEvidenceIndex, taskRequiresPlan, taskInvestigation, missingVerificationInput;
 import auroraopencode.workevidence : observedResultKey;
 import auroraopencode.planmode : experimentalStrictPlanEnabled;
 import auroraopencode.inputcontract : inputRequestStep;
@@ -23,6 +23,7 @@ struct TaskContinuation
 {
     TaskContinuationAction action;
     int tools;
+    int effects;
     int completed;
     bool verified;
     int stalled;
@@ -36,6 +37,7 @@ struct TaskContinuation
     {
         JSONValue state;
         state["tools"] = tools;
+        state["effects"] = effects;
         state["completed"] = completed;
         state["verified"] = verified;
         state["stalled"] = action == TaskContinuationAction.replan ? 0 : stalled;
@@ -60,8 +62,7 @@ struct TaskContinuation
     {
         return verificationRequired
             ? "Verify the current requested behavior using the relevant execution path and acceptance checks. " ~
-              "A helper test does not prove a live GUI change. Use available tools to close that gap; " ~
-              "do not repeat an already passing check or report the same limitation again."
+              "Reuse checks that are still current. Changed or deleted tracked inputs are a new reason to run the relevant check once."
             : "Use request_input only for an essential unavailable user fact, after finishing independent work.";
     }
 }
@@ -143,7 +144,7 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
 
     JSONValue previous;
     int previousVerificationAttempts;
-    bool[string] evidence;
+    bool[string] evidence, effects;
     foreach (index; path[begin .. $])
     {
         const message = session.messages[index];
@@ -181,9 +182,16 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
             (message.toolArgs.indexOf("\"sleep\"") >= 0 ||
              message.toolArgs.indexOf("\"wait\"") >= 0)) continue;
         const key = observedResultKey(message);
-        if (key.length) evidence[key] = true;
+        if (key.length)
+        {
+            evidence[key] = true;
+            import auroraopencode.toolprogresspolicy : isSubstantiveMutation;
+            if (message.verificationCheck.length || isSubstantiveMutation(message.toolName,
+                message.failed, message.diffAdditions, message.diffDeletions, message.toolDiff)) effects[key] = true;
+        }
     }
     result.tools = cast(int) evidence.length;
+    result.effects = cast(int) effects.length;
     bool[string] completedEvidence;
     auto evidenceIndex = taskEvidenceIndex(session, false);
     foreach (step; session.taskSteps)
@@ -215,8 +223,14 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
         result.remaining ~= "This task now requires an outcome checklist. Record the already requested outcomes " ~
             "with update_plan and cite successful tool-call IDs for completed work; do not invent extra work. ";
     const diagnosisContract = session.contract.intent == "diagnosis";
+    if (result.verificationRequired)
+    {
+        const missing = missingVerificationInput(session);
+        if (missing.length) result.remaining ~= "A tracked input to the last passing check is missing: " ~
+            taskExcerpt(missing, 1000) ~ ". Restore the required deliverable/checker input and retain it through one final relevant check. ";
+    }
     if (!taskHasActionEvidence(session, diagnosisContract) && session.contract.intent != "analysis")
-        result.remaining ~= "Actual requested action evidence is still missing; prose or a check of unchanged code is insufficient. ";
+        result.remaining ~= "Actual requested action evidence is missing. Perform it, or use a tracked behavioral check with no_change_needed when the requested outcome already holds. Compilation alone does not establish this. ";
     size_t omitted;
     void remaining(string label, string text, string done)
     {
@@ -243,7 +257,10 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
                         if (entry.type == JSONType.string && entry.str == id) known = true;
                     if (!known) newEvidence = true;
                 }
-        const progressed = newEvidence || result.completed > previous["completed"].integer ||
+        int previousEffects;
+        if (auto value = "effects" in previous.object)
+            if (value.type == JSONType.integer) previousEffects = cast(int) value.integer;
+        const progressed = result.effects > previousEffects || newEvidence || result.completed > previous["completed"].integer ||
             (result.verified && !previous["verified"].boolean);
         result.stalled = progressed ? 0 : cast(int) previous["stalled"].integer + 1;
         if (!progressed)

@@ -14,9 +14,31 @@ On restart, the recorded owner receives its specific cause and build result.
 Other interrupted chats receive a neutral notice and resume their own objective
 and guidance. Another chat's application rebuild does not verify their outputs.
 
-## Saved verification sequences
+## Run the relevant check once
 
-Save a recipe with native file tools, then call
+Ordinary test commands produce native receipts without another verification
+framework: pytest/unittest, conventional direct Python test files, Aurora's
+architecture runner, and test executables ending in `_test`, `_tests`,
+`_contracts` or `_smoke`. Help and collection-only invocations do not count;
+the architecture runner's prune-only mode is also excluded. Python byte
+compilation counts as compilation, not behavioral testing.
+
+For an arbitrary custom check, add `check` and `inputs` to the same foreground
+`run` call. For example:
+
+```json
+{"program":"python","args":["-B","check_artifact.py"],"check":"tests","inputs":["deliverable.zip","check_artifact.py"]}
+```
+
+This runs once and hashes the declared inputs before and after. Do not execute
+the command first and repeat it through `verify`. When behavioral checks prove
+the requested outcome already holds, `no_change_needed:true` permits a verified
+result without an unnecessary implementation edit. Compilation alone cannot
+establish that outcome.
+
+## Optional multi-step verification
+
+Use `verify` with inline `inputs` and `steps`, or save a reusable recipe and call
 `verify({"recipe":".aurora/verify.json"})`. The runner executes a finite sequence
 in one supervised operation, with progress and cancellation. Arguments are
 literal arrays. Recipe commands stay foreground until their deadline; they do
@@ -35,8 +57,9 @@ not automatically detach at thirty seconds. Execution stops at the first failure
 }
 ```
 
-Paths resolve from the task checkout; command `workdir` may override that.
-`inputs` must cover the source/tests actually used. Exclude generated outputs.
+Paths resolve from the task workspace; command `workdir` may override that.
+`inputs` must cover the actual deliverables and relevant source/checker files.
+Exclude files that the check itself generates or rewrites.
 The recipe and inputs are hashed before and after execution. Reference hashes
 are frozen before commands run. Changes invalidate the result. Receipts record
 commands, results, source/recipe hashes, reference provenance, image dimensions,

@@ -571,7 +571,7 @@ public final class SessionServer
         {
             auto pending = externalId in _pending;
             if (pending is null) continue;
-            finishTurn(externalId, *pending, "turn_not_started", false);
+            finishTurn(externalId, *pending, pending.sawRunning ? "turn_stalled" : "turn_not_started", false);
             _pending.remove(externalId);
         }
     }

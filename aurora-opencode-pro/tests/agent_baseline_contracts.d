@@ -150,11 +150,17 @@ int main()
         else assert(!root.ensureDurableTaskCheckpointForTesting(),
             "Read-only tool output appended a redundant full task checkpoint");
     }
+    write(first, "external writer changed the file");
     run([OpenCodeToolCall("duplicate", "read", `{"filePath":` ~ JSONValue(first).toString ~ `}`)]);
-    assert(root.lastToolResultForTesting().indexOf("Tool call skipped:") >= 0,
-        "The live dispatcher missed a repeated read; streak=" ~ to!string(root.toolRepeatCountForTesting()) ~
-        " result=" ~ root.lastToolResultForTesting());
-    writeln("PASS live repeat guard allows rereads and stops an unchanged pathological streak");
+    assert(root.lastToolResultForTesting().indexOf("external writer changed") >= 0,
+        "Argument-only repeat suppression hid an external edit");
+    foreach (i; 0 .. 13)
+        run([OpenCodeToolCall("fresh-read-" ~ to!string(i), "read", `{"filePath":` ~ JSONValue(first).toString ~ `}`)]);
+    const newWork = buildPath(state, "new-work.txt");
+    run([OpenCodeToolCall("reread", "read", `{"filePath":` ~ JSONValue(first).toString ~ `}`),
+        OpenCodeToolCall("new-work", "write", `{"filePath":` ~ JSONValue(newWork).toString ~ `,"content":"useful new work"}`)]);
+    assert(exists(newWork), "A repeated lookup poisoned a batch containing useful new work");
+    writeln("PASS fresh rereads observe external edits and repeated calls do not discard useful mixed batches");
 
     fresh("Measure live speed.");
     root.startTurnClockForTesting(); root.beginStreamForTesting();

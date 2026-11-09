@@ -286,6 +286,14 @@ int main(string[] args)
     assert(verificationCheck("python", ["-u", "-c", "print('ok')", "-m", "unittest"]) == "");
     assert(verificationCheck("python", ["-B", "script.py", "-m", "unittest"]) == "");
     assert(verificationCheck("python", ["-u", "-m", "pytest", "--collect-only"]) == "");
+    assert(verificationCheck("python", ["-u", "-B", "tests/test_behavior.py"]) == "python tests");
+    assert(verificationCheck("python", ["-X", "utf8", "tests/run_architecture_checks.py", "actor_mailbox_contracts"]) == "python tests");
+    assert(verificationCheck("python", ["tests/run_architecture_checks.py", "--prune-only"]) == "");
+    assert(verificationCheck("python", ["tests/test_behavior.py", "--collect-only"]) == "");
+    assert(verificationCheck("python", ["-c", "print('PASS')", "test_behavior.py"]) == "");
+    assert(verificationCheck("python", ["-m", "py_compile", "source.py"]) == "python compile");
+    assert(verificationCheck("build/actor_mailbox_contracts.exe", []) == "native tests");
+    assert(verificationCheck("build/headless_pro_smoke.exe", ["--help"]) == "");
     const commandDirectory = buildPath(directory, "commands");
     mkdirRecurse(commandDirectory);
     write(buildPath(commandDirectory, "test_actual.py"),

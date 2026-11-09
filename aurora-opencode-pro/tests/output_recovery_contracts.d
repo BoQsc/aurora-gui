@@ -5,7 +5,6 @@ import auroraopencode.outputrecovery;
 import auroraopencode.outputguard : outputFailurePrefix, outputIssueDescription,
     outputRecoveryMarker;
 import auroraopencode.taskcontinuation : taskContinuationMarker;
-import auroraopencode.goalmode : goalCompletionAuditMarker;
 import std.stdio : writeln;
 import std.conv : to;
 import std.string : indexOf;
@@ -65,20 +64,16 @@ int main()
     assert(goalAuditStalled(session), "Varying prose must not create an endless goal audit");
     assert(auditStallIssue("goal_audit_stalled") &&
         auditStallIssue("task_audit_stalled") && !auditStallIssue("replayed_prose"));
-    assert(!outputRecoveryAllowed("goal_audit_stalled", false, true, false, false, false),
-        "A goal audit must not launch a recovery request");
-    assert(!outputRecoveryAllowed("task_audit_stalled", false, true, false, false, false),
-        "A task audit must not launch a recovery request");
+    assert(outputRecoveryAllowed("goal_audit_stalled", false, true, false, false, false),
+        "An unfinished goal silently held instead of recovering");
+    assert(outputRecoveryAllowed("task_audit_stalled", false, true, false, false, false),
+        "An ordinary task audit silently held unfinished work");
+    assert(!outputRecoveryAllowed("task_audit_stalled", true, true, false, false, false),
+        "Task audit recovery was unbounded");
     assert(outputRecoveryAllowed("replayed_prose", false, true, false, false, false),
         "A real replay still gets bounded recovery");
     assert(!outputRecoveryAllowed("replayed_prose", true, true, false, false, false),
         "Exhausted recovery stays stopped");
-    assert(suppressAuditContinuation(true, true),
-        "An audit stop must pause automatic continuation");
-    assert(!suppressAuditContinuation(true, false),
-        "Queued user guidance still applies after an audit stop");
-    assert(!suppressAuditContinuation(false, true),
-        "Ordinary automatic continuation is unchanged");
     assert(outputIssueDescription("goal_audit_stalled").indexOf("goal") >= 0);
     assert(outputIssueDescription("replayed_prose").indexOf("same prose") >= 0,
         "A real replay keeps its explicit description");
@@ -143,26 +138,15 @@ int main()
             "Result: the artifact is written.\nRemaining: verification is still running.");
         assert(goalAuditStalled(goalSession),
             "a prose-only goal continuation was not detected as a stall");
-        assert(goalCompletionAuditNeeded(goalSession),
-            "the goal was stopped without offering its completion audit");
-        push(goalSession, "user", goalCompletionAuditMarker ~ goalSession.goal, true);
-        assert(goalCompletionAuditPending(goalSession) &&
-            !goalCompletionAuditNeeded(goalSession),
-            "the bounded completion audit was offered twice");
-        assert(goalAuditStalled(goalSession),
-            "a repeated prose-only reply must still end the goal");
-        push(goalSession, "assistant", "Result: written.\nRemaining: verification.");
-        assert(!goalCompletionAuditNeeded(goalSession),
-            "a second prose-only reply earned another audit turn");
-        push(goalSession, "tool", "Applied the fix", false, "apply_patch");
-        assert(!goalAuditStalled(goalSession) && !goalCompletionAuditPending(goalSession),
-            "recorded tool work did not end the goal audit interval");
-        // A real user message starts a new interval with a fresh audit.
-        push(goalSession, "user", "Continue the goal");
+        push(goalSession, "user", outputRecoveryMarker ~ unfinishedTaskRecoveryInstruction, true);
+        assert(!goalAuditStalled(goalSession) && outputRecoveryCount(goalSession) == 1,
+            "Recovery reused the stale audit interval");
         push(goalSession, "user", "Persistent goal continuation: " ~ goalSession.goal, true);
-        push(goalSession, "assistant", "Result: written.\nRemaining: verification.");
-        assert(goalCompletionAuditNeeded(goalSession),
-            "a new user request did not reset the completion-audit budget");
+        push(goalSession, "assistant", "Still unfinished.");
+        assert(goalAuditStalled(goalSession));
+        push(goalSession, "tool", "Applied the fix", false, "apply_patch");
+        assert(!goalAuditStalled(goalSession) && outputRecoveryCount(goalSession) == 0);
+
     }
     writeln("PASS bounded unusable output, varied goal chatter, useful long-horizon work and new-user boundaries");
     return 0;

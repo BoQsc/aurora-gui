@@ -114,6 +114,26 @@ int main()
         "Goal: finish the original implementation. Evidence: earlier observations remain saved. Next: act on the current source and run checks.",
         32000,false,compactionSummaryCapacity(32000,fixed)));
     assert(s.compactionSummary.indexOf("0.0175")>=0,"Model refinement erased the authoritative customer decision");
+    ChatSession rolling; rolling.id = "long-work";
+    user.id = "long-request"; user.content = "Keep rate 0.0175 and finish the requested source change.";
+    add(rolling, user);
+    rolling.contract.id = "long-task"; rolling.contract.startMessageId = user.id;
+    foreach (i; 0 .. 30)
+    {
+        ChatMessage call; call.id = "long-call" ~ to!string(i); call.role = "assistant";
+        call.toolCalls = [OpenCodeToolCall(call.id, "read", `{"filePath":"source.txt"}`)]; add(rolling, call);
+        ChatMessage output; output.id = "long-output" ~ to!string(i); output.role = "tool";
+        output.toolName = "read"; output.toolCallId = call.id; output.toolArgs = call.toolCalls[0].arguments;
+        output.content = ("unique source window " ~ to!string(i) ~ "\n").replicate(1000); add(rolling, output);
+    }
+    RequestPolicy rollingPolicy; rollingPolicy.toolsEnabled = true; rollingPolicy.compactionEnabled = true;
+    rollingPolicy.contextLimit = 500_000;
+    const originalLast = rolling.messages[$ - 1].content;
+    auto rolled = prepareAgentRequest(rolling, rollingPolicy);
+    assert(!rolled.checkpointCreated && rolling.messages.length == 61, "Tool activity overrode the selected context target or destroyed saved history");
+    assert(rolled.messages[$ - 1].content == originalLast, "Rolling checkpoint lost the current native tool result");
+    rollingPolicy.contextLimit = 32_000;
+    assert(prepareAgentRequest(rolling, rollingPolicy).checkpointCreated, "Selected smaller context target was not honored");
     ChatSession pasted;
     user.id="large-user";user.content="Keep rate 0.0175 and original reference.\n"~"Read-only audit row. ".replicate(10000)~"\nFinish with CSV and JSON.";
     const fullPaste=user.content;add(pasted,user);

@@ -14,6 +14,7 @@ import std.path : absolutePath, buildPath;
 import std.process : environment;
 import std.conv : to;
 import std.stdio : writeln;
+import std.string : indexOf;
 
 int main()
 {
@@ -37,7 +38,8 @@ int main()
     auto actor = new ConversationActor(initial, config, journal);
     auto projection = new ConversationProjection(initial);
     ChatSession view = initial;
-    bool sawRunningTool, sawCompletedTool;
+    bool sawRunningTool, sawCompletedTool, sawPreparing;
+    size_t preparingUpdates;
     assert(actor.post(ActorCommand(ActorCommandKind.start,
         "Write out.txt containing success, verify its contents with unittest, then reply READY.")) == ActorAdmission.accepted);
     bool ready;
@@ -51,6 +53,7 @@ int main()
         if (applied.requestSnapshot) actor.post(ActorCommand(ActorCommandKind.snapshot));
         foreach (change; changes)
         {
+            if (change.text.indexOf("preparing_tools") >= 0) { sawPreparing = true; ++preparingUpdates; }
             if (change.kind == ActorChangeKind.toolProgress)
             {
                 const progress = parseJSON(change.text);
@@ -63,8 +66,12 @@ int main()
         Thread.sleep(5.msecs);
     }
     assert(ready, "Autonomous turn never settled");
+    if (environment.get("AURORA_CONTRACT_STREAM_TOOLS", "") == "1")
+        assert(preparingUpdates <= 12, "Small argument chunks flooded metadata instead of coalescing progress");
     actor.close(); assert(!actor.fault().length, actor.fault());
     auto applied = projection.apply(view, actor.takeChanges()); assert(!applied.error.length, applied.error);
+    if (environment.get("AURORA_CONTRACT_STREAM_TOOLS", "") == "1")
+        assert(sawPreparing && projection.execution.tools.length == 0, "Tool argument streaming was invisible or remained stuck after completion");
     assert(sawRunningTool && sawCompletedTool, "Live tool state never reached the UI projection");
     assert(readText(buildPath(workspace, "out.txt")) == "success");
     const snapshot = actor.finalSnapshot();

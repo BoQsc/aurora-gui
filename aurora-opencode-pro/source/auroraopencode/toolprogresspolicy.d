@@ -8,7 +8,6 @@ import std.string : startsWith, strip, splitLines, toLower;
 import std.array : appender;
 import std.conv : to;
 
-public enum cumulativeRepeatLimit = 12;
 
 public bool isCommentOnlyChangedLine(string body)
 {
@@ -79,89 +78,6 @@ public bool isVerificationTool(string name, string arguments)
     catch (Exception) { return false; }
 }
 
-private bool isReadOnlyOrControlCall(const OpenCodeToolCall call)
-{
-    switch (call.name)
-    {
-        case "read":
-        case "grep":
-        case "glob":
-        case "read_plan":
-        case "read_history":
-        case "tool_status":
-        case "calculate":
-        case "view_image":
-        case "webfetch":
-        case "checksum":
-        case "update_plan":
-        case "update_subplan":
-            return true;
-        case "dshell":
-            try
-            {
-                const value = parseJSON(call.arguments);
-                if (value.type != JSONType.object) return false;
-                auto command = "command" in value.object;
-                return command !is null && command.type == JSONType.string &&
-                    (command.str == "where" || command.str == "list" ||
-                     command.str == "info");
-            }
-            catch (Exception) { return false; }
-        default:
-            return false;
-    }
-}
-
-public bool isReadOnlyOrControlBatch(const(OpenCodeToolCall)[] calls)
-{
-    if (calls.length == 0) return false;
-    foreach (call; calls)
-        if (!isReadOnlyOrControlCall(call)) return false;
-    return true;
-}
-
-/// The immediately preceding assistant tool batch must have the same
-/// signature and every result must have succeeded. A skipped result is neutral:
-/// it means the duplicate was already suppressed, so continue suppressing it.
-/// Only the active branch is judged: an edited or regenerated run stays in the
-/// message store but is not part of the conversation, so its results must not
-/// decide whether this duplicate is safe to collapse.
-public bool isConsecutiveSuccessfulRepeat(
-    const ref ChatSession session, const(OpenCodeToolCall)[] calls)
-{
-    const signature = toolCallSignature(calls);
-    if (signature.length == 0) return false;
-
-    const path = activeMessagePath(session);
-    size_t lastAssistant = size_t.max;
-    foreach (position, index; path)
-    {
-        const message = session.messages[index];
-        if (message.role == "assistant" && message.toolCalls.length)
-            lastAssistant = position;
-    }
-    if (lastAssistant == size_t.max) return false;
-    if (toolCallSignature(session.messages[path[lastAssistant]].toolCalls) != signature)
-        return false;
-
-    bool sawResult;
-    foreach (position; lastAssistant + 1 .. path.length)
-    {
-        const message = session.messages[path[position]];
-        if (message.role == "tool")
-        {
-            sawResult = true;
-            if (message.failed && !message.content.startsWith("Tool call skipped:"))
-                return false;
-        }
-        else if (message.role == "user" && !message.internal)
-            return false;
-        else if (message.role == "assistant")
-            break;
-    }
-    return sawResult;
-}
-
 public int toolCallRunCount(const ref ChatSession session,
     const ref OpenCodeToolCall call)
 {
@@ -186,15 +102,6 @@ public int toolCallRunCount(const ref ChatSession session,
             ++count;
     }
     return count;
-}
-
-public bool hasExhaustedRepeatedCall(
-    const ref ChatSession session, const(OpenCodeToolCall)[] calls)
-{
-    foreach (ref call; calls)
-        if (toolCallRunCount(session, call) >= cumulativeRepeatLimit)
-            return true;
-    return false;
 }
 
 public string toolCallSignature(const(OpenCodeToolCall)[] calls)

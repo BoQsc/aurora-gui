@@ -6,7 +6,7 @@ import std.array : appender;
 import std.digest : toHexString;
 import std.digest.sha : sha256Of;
 import std.json : JSONValue, JSONType, parseJSON;
-import std.string : strip, startsWith, lastIndexOf, toLower, splitLines;
+import std.string : strip, startsWith, lastIndexOf, toLower, splitLines, indexOf, replace;
 
 private string excerpt(string text, size_t bytes)
 {
@@ -54,11 +54,57 @@ string observedResultKey(const ref ChatMessage message)
 {
     if (message.role != "tool" || message.failed || ["update_plan", "read_plan", "read_history", "update_subplan", "process",
             "tool_status", "request_input", "task_blocker", "retire_images", "assign", "finish", "ask_user"].canFind(message.toolName)) return "";
-    const body = resultBody(message.content);
+    const body = observationBody(message);
     const lower = body.toLower();
     if (lower.startsWith("no matches") || lower.startsWith("no results") || lower.startsWith("no files") || lower.startsWith("0 matches")) return "";
     if (!body.length && !message.toolDiff.length && !message.verificationCheck.length) return "";
     return sha256Of(message.toolName ~ "\n" ~ body ~ "\n" ~ message.toolDiff ~ "\n" ~ message.verificationCheck).toHexString().idup;
+}
+
+/// Discard search bookkeeping when comparing findings. The native result and
+/// saved transcript retain it; a different query or timing is not a new fact.
+string observationBody(const ref ChatMessage message)
+{
+    auto text = resultBody(message.content);
+    if (message.toolName != "grep") return text;
+    import auroraopencode.grepformat : compactGrepHistory;
+    text = compactGrepHistory(text);
+    const start = text.indexOf("File: ");
+    if (start >= 0) return text[start .. $];
+    try
+    {
+        const args = parseJSON(message.toolArgs);
+        if (!("mode" in args.object) || args["mode"].str == "content") return "";
+    }
+    catch (Exception) {}
+    return text;
+}
+
+/// Stable source facts survive overlapping queries and differently sized read
+/// windows. Changed bytes at the same line are new evidence, not a cached hit.
+private string sourceLineKey(ref string path, string line)
+{
+    if (line.startsWith("File: ")) { path = line[6 .. $].strip(); return ""; }
+    size_t number;
+    while (number < line.length && line[number] >= '0' && line[number] <= '9') ++number;
+    if (!path.length || !number || number + 1 >= line.length ||
+        (line[number] != ':' && line[number] != '-') || line[number + 1] != ' ') return "";
+    auto normalized = path.replace("\\", "/");
+    version (Windows) normalized = normalized.toLower();
+    return sha256Of(normalized ~ "\n" ~ line[0 .. number] ~ "\n" ~ line[number + 2 .. $]).toHexString().idup;
+}
+
+string[] observedSourceKeys(const ref ChatMessage message)
+{
+    if (message.failed || (message.toolName != "read" && message.toolName != "grep")) return null;
+    string path = message.toolName == "read" ? resultTarget(message) : "";
+    string[] result;
+    foreach (line; observationBody(message).splitLines())
+    {
+        const key = sourceLineKey(path, line);
+        if (key.length) result ~= key;
+    }
+    return result;
 }
 
 private string resultTarget(const ref ChatMessage message)

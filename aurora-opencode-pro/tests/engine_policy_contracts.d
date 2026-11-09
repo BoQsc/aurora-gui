@@ -97,6 +97,21 @@ int main()
     prepared = prepareAgentRequest(session, request);
     assert(!prepared.tools.length);
     assert(request.availableTools.length == 4, "Filtering mutated the admitted capability snapshot");
+    request = RequestPolicy.init; request.toolsEnabled = true;
+    request.availableTools = [OpenCodeToolDef("read", "Read", "{}"), OpenCodeToolDef("edit", "Edit", "{}")];
+    session = ChatSession.init;
+    session.contract.intent = "implementation";
+    session.contract.requestedOutcome = "Reveal Export when hovering Checkpoint";
+    session.taskSteps = [TaskStep("Move Export", "completed")];
+    session.verificationStatus = "passed";
+    append(session, "user", session.contract.requestedOutcome);
+    prepared = prepareAgentRequest(session, request);
+    assert(prepared.messages[$ - 1].content.indexOf("Outcome check before the final reply") >= 0);
+    assert(prepared.messages[$ - 1].content.indexOf("hovering Checkpoint") >= 0);
+    assert(prepared.tools.length == 2 && session.taskSteps[0].status == "completed",
+        "Outcome reconciliation restricted tools or rewrote completion");
+    session.taskSteps[0].status = "in_progress";
+    assert(prepareAgentRequest(session, request).messages[$ - 1].content.indexOf("Outcome check before the final reply") < 0);
     writeln("PASS turn decisions preserve evidence, steering, goals and delegation; request modes isolate capabilities");
     return 0;
 }

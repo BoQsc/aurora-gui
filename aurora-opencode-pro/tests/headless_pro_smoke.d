@@ -711,13 +711,13 @@ private void verifyRetryPill(OpenCodeRoot root, UiTestDriver driver)
         if (text.indexOf("Agent output recovery:") >= 0) auditContinuation = true;
     }
     assert(!auditVisible, "audit stall leaked into the transcript");
-    assert(!auditContinuation, "audit stall launched another no-action recovery round");
+    assert(auditContinuation, "unfinished task did not get bounded recovery");
     assert(root.taskStatusForTesting() == "active", "audit stall stopped the task");
-    assert(root.goalStatusForTesting() == "paused",
-        "an audit hold left the goal claiming to be active while nothing ran");
-    assert(root.turnStatusForTesting() == "idle", "audit stall left a phantom running turn");
+    assert(root.goalStatusForTesting() == "active",
+        "ordinary task recovery paused the goal");
+    assert(root.turnStatusForTesting() == "running", "ordinary task recovery silently stopped");
     assert(root.failedMessageCountForTesting() == 0, "audit stall marked a visible failure");
-    writeln("PASS audit stall is hidden, keeps the work and pauses the active goal");
+    writeln("PASS ordinary task audit recovers without a failure bubble or goal pause");
 
     // Provider/transport failures still use the visible failure path.
     root.newChatForTesting();
@@ -750,11 +750,11 @@ private void verifyAuditStallOnly(OpenCodeRoot root)
         if (text.indexOf("Agent output recovery:") >= 0) auditContinuation = true;
     }
     assert(!auditVisible, "audit stall leaked into the transcript");
-    assert(!auditContinuation, "audit stall launched another no-action recovery round");
+    assert(auditContinuation, "unfinished task did not get bounded recovery");
     assert(root.taskStatusForTesting() == "active", "audit stall stopped the task");
-    assert(root.goalStatusForTesting() == "paused",
-        "an audit hold left the goal claiming to be active while nothing ran");
-    assert(root.turnStatusForTesting() == "idle", "audit stall left a phantom running turn");
+    assert(root.goalStatusForTesting() == "active",
+        "ordinary task recovery paused the goal");
+    assert(root.turnStatusForTesting() == "running", "ordinary task recovery silently stopped");
     assert(root.failedMessageCountForTesting() == 0, "audit stall marked a visible failure");
 
     root.newChatForTesting();
@@ -773,13 +773,13 @@ private void verifyAuditStallOnly(OpenCodeRoot root)
         if (text.indexOf("Agent output recovery:") >= 0) goalAuditContinuation = true;
     }
     assert(!goalAuditVisible, "goal audit stall leaked into the transcript");
-    assert(!goalAuditContinuation, "goal audit stall launched another no-action recovery round");
+    assert(goalAuditContinuation, "unfinished goal did not get bounded recovery");
     assert(root.taskStatusForTesting() == "active", "goal audit stall stopped the task");
-    assert(root.goalStatusForTesting() == "paused",
-        "a goal audit hold left the goal claiming to be active while nothing ran");
-    assert(root.turnStatusForTesting() == "idle", "goal audit stall left a phantom running turn");
+    assert(root.goalStatusForTesting() == "active",
+        "recovering the goal silently paused it");
+    assert(root.turnStatusForTesting() == "running", "recovering the goal silently returned to idle");
     assert(root.failedMessageCountForTesting() == 0, "goal audit stall marked a visible failure");
-    writeln("PASS goal audit stall is hidden, keeps the work and pauses the active goal");
+    writeln("PASS goal audit recovers without a failure bubble or implicit pause");
 
     root.newChatForTesting();
     root.addConversationForTesting(["user", "assistant"],

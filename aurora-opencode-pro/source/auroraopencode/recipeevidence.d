@@ -2,13 +2,41 @@ module auroraopencode.recipeevidence;
 import auroraopencode.effectfacts : effectFactBool;
 import auroraopencode.core : ChatMessage;
 import auroraopencode.checkout : canonicalPath, checkoutIdentity;
-import auroraopencode.verificationrecipe : verificationInputsFingerprint, verificationInputsSignature;
-import std.file : read, readText, getSize;
+import auroraopencode.verificationrecipe : verificationInputsFingerprint, verificationInputsSignature, checkedRunRecipe;
+import std.file : read, readText, getSize, exists;
 import std.digest : toHexString;
 import std.digest.sha : sha256Of;
 import std.json : JSONValue, JSONType, parseJSON;
-import std.string : indexOf;
+import std.string : indexOf, startsWith;
 import std.path : absolutePath;
+
+/// Explain a lost native proof without weakening its current-input checks.
+string missingRecipeInput(const ref ChatMessage message, string ownerScope)
+{
+    if (message.failed || !message.verificationCheck.startsWith("verify:")) return "";
+    try
+    {
+        const report = parseJSON(message.content);
+        if (report["passed"].type != JSONType.true_) return "";
+        const separator = ownerScope.indexOf('|');
+        if (separator <= 0) return "";
+        const owner = ownerScope[0 .. separator];
+        bool owned(string path) { return path == owner || path.startsWith(owner ~ "/") || path.startsWith(owner ~ "\\"); }
+        const workspace = canonicalPath(report["workspace"].str);
+        if (!owned(workspace) || checkoutIdentity(workspace) != owner) return "";
+        const recipe = report["recipe"].str;
+        if (recipe != "inline" && owned(canonicalPath(recipe)) && !exists(recipe)) return recipe;
+        const inputs = report["inputs"];
+        if (inputs.type != JSONType.array || inputs.array.length > 64) return "";
+        foreach (input; inputs.array)
+        {
+            const path = absolutePath(input.str, workspace);
+            if (owned(canonicalPath(path)) && !exists(path)) return path;
+        }
+    }
+    catch (Exception) {}
+    return "";
+}
 
 /// Full hashes are reused only within the same native source generation and
 /// an unchanged bounded input inventory. External file edits refresh the proof.
@@ -22,7 +50,7 @@ struct RecipeEvidenceCache
 
     JSONValue report(const ref ChatMessage message)
     {
-        if (message.toolName != "verify") return JSONValue.init;
+        if (message.toolName != "verify" && !(message.toolName == "run" && message.verificationCheck.startsWith("verify:"))) return JSONValue.init;
         const key = message.id.length ? message.id : message.content;
         if (auto value = key in reports) return *value;
         JSONValue value;
@@ -33,7 +61,7 @@ struct RecipeEvidenceCache
     }
     string key(const ref ChatMessage message)
     {
-        if (message.toolName != "verify") return "";
+        if (message.toolName != "verify" && !(message.toolName == "run" && message.verificationCheck.startsWith("verify:"))) return "";
         try
         {
             const value = report(message);
@@ -112,6 +140,7 @@ struct RecipeEvidenceCache
             if (value["recipe"].str == "inline")
             {
                 recipe = parseJSON(message.toolArgs);
+                if (message.toolName == "run") recipe = checkedRunRecipe(recipe);
                 if (sha256Of(recipe.toString()).toHexString() != value["recipeSha256"].str) return false;
             }
             else
