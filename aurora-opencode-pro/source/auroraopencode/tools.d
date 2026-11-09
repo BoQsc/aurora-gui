@@ -12,6 +12,7 @@ import auroraopencode.filetransfer : transferFiles;
 import auroraopencode.download : downloadFile, checksumFile, validSha256;
 import auroraopencode.searchprogress : SearchProgress, SearchReporter,
     encodeSearchProgress, decodeSearchProgress, searchProgressText;
+import auroraopencode.searchscope : discoverProjectScopes, generatedSearchDirectory, narrowsSearchInclude;
 import auroraopencode.readprogress : ReadProgress, encodeReadProgress, decodeReadProgress, readProgressText;
 
 import auroraopencode.core : ChatImageAttachment, OpenCodeToolCall,
@@ -213,6 +214,14 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
                 if (timeout.type == JSONType.integer)
                     timeoutMs = timeout.integer < 100 ? 100 :
                         timeout.integer > 600_000 ? 600_000 : timeout.integer;
+            if (call.name == "grep" && jsonString(args, "scope") != "contents" &&
+                !narrowsSearchInclude(jsonString(args, "include")))
+            {
+                const requestedPath = jsonString(args, "path");
+                const root = requestedPath.length ? resolveToolPath(requestedPath, workspace) : workspace;
+                if (comparableSearchPath(root) == comparableSearchPath(workspace) && timeoutMs > 10_000)
+                    timeoutMs = 10_000;
+            }
             if (call.name == "dshell")
                 if (auto secondsArg = "seconds" in args.object)
                     if (secondsArg.type == JSONType.integer || secondsArg.type == JSONType.float_ ||
@@ -404,6 +413,7 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
                     searchInterruption(call.name == "read" ? "Read timed out — incomplete" : "Search timed out — incomplete") ~
                     (scanCursor.length > 0 ? directoryScanResumeHint(scanCursor)
                         : call.name == "read" ? " Retry a smaller line window after the file or storage responds."
+                        : call.name == "grep" ? " Narrow path/include or inspect partial results before retrying. Increasing the deadline alone repeats the same work."
                         : " Narrow the path or increase timeout."), true);
         }
         output.close();
@@ -847,11 +857,12 @@ private OpenCodeToolDef grepToolDefinition()
             "`mode` selects matching lines, matching files, or per-file counts. " ~
             "Discovers candidate files first, then shows measured progress by files processed, " ~
             "with live scope, current path, scan counts, matches and skipped files. " ~
-            "Recursive searches skip generated folders, binary files and files over 8 MiB; " ~
+            "At a workspace root, auto scope first discovers matching project folders and returns narrower calls without scanning their contents. Use a chosen path for content search; scope=contents explicitly searches across projects. " ~
+            "Recursive searches skip generated/audit folders, binary files and files over 8 MiB; " ~
             "use an exact file path to search a larger text file. Partial results are labelled. " ~
             "Content results default to one File header followed by numbered match/context lines. " ~
             "Prefer a known file or source subfolder and a focused include filter; combine related patterns.",
-        `{"type":"object","properties":{"pattern":{"type":"string","description":"Text or regular expression to search for"},"literal":{"type":"boolean","description":"Treat pattern as exact text instead of a regular expression (default false)"},"caseSensitive":{"type":"boolean","description":"Match letter case (default true)"},"context":{"type":"integer","minimum":0,"maximum":20,"description":"Context lines before and after each content match (default 0)"},"mode":{"type":"string","enum":["content","files","count"],"description":"Return matching lines, matching file paths, or per-file matching-line counts (default content)"},"format":{"type":"string","enum":["grouped","classic"],"description":"grouped prints each file path once (default); classic repeats path:line on each result"},"limit":{"type":"integer","minimum":1,"maximum":1000,"description":"Maximum matching lines in content mode or matching files in files/count mode (default 200)"},"include":{"type":"string","description":"Optional file-name glob or suffix, e.g. *.d"},"path":{"type":"string","description":"Directory or file to search, relative to the workspace or absolute; defaults to the workspace"},"timeout":{"type":"integer","minimum":1,"maximum":600000,"description":"Soft deadline in milliseconds (default 10000). If progress justifies waiting, rerun with a longer value."}},"required":["pattern"]}`
+        `{"type":"object","properties":{"pattern":{"type":"string","description":"Text or regular expression to search for"},"literal":{"type":"boolean","description":"Treat pattern as exact text instead of a regular expression (default false)"},"caseSensitive":{"type":"boolean","description":"Match letter case (default true)"},"context":{"type":"integer","minimum":0,"maximum":20,"description":"Context lines before and after each content match (default 0)"},"mode":{"type":"string","enum":["content","files","count"],"description":"Return matching lines, matching file paths, or per-file matching-line counts (default content)"},"format":{"type":"string","enum":["grouped","classic"],"description":"grouped prints each file path once (default); classic repeats path:line on each result"},"limit":{"type":"integer","minimum":1,"maximum":1000,"description":"Maximum matching lines in content mode or matching files in files/count mode (default 200)"},"scope":{"type":"string","enum":["auto","contents"],"description":"auto discovers matching project folders before broad content scans; contents explicitly searches across the selected root"},"includeGenerated":{"type":"boolean","description":"Include generated/audit/build directories when intentionally needed; default false. An explicitly selected generated directory is searchable directly."},"include":{"type":"string","description":"Optional file-name glob or suffix, e.g. *.d"},"path":{"type":"string","description":"Directory or file to search, relative to the workspace or absolute; defaults to the workspace"},"timeout":{"type":"integer","minimum":1,"maximum":600000,"description":"Soft deadline in milliseconds (default 10000). On timeout narrow path/include first; unfiltered auto searches at the workspace root keep the 10-second budget."}},"required":["pattern"]}`
     );
 }
 
@@ -5639,20 +5650,6 @@ private ToolExecution runGlob(string args, string workspace, ToolCancellation ca
     return ToolExecution("glob", truncateOutput(builder.data), stopped || timedOut || (progress.value.errors > 0 && !matches.length));
 }
 
-private bool grepIgnoredDirectory(string directory)
-{
-    const name = toLower(baseName(directory));
-    switch (name)
-    {
-        case ".git", ".hg", ".svn", ".dub", ".cache", ".idea", ".vscode",
-            "build", "dist", "out", "target", "node_modules", "coverage",
-            "__pycache__":
-            return true;
-        default:
-            return false;
-    }
-}
-
 private bool grepIgnoredFile(string filePath)
 {
     const ext = toLower(extension(filePath));
@@ -5726,12 +5723,18 @@ private ToolExecution runGrep(string args, string workspace,
     string mode = "content";
     string outputFormat = "grouped";
     bool literal;
+    bool includeGenerated;
+    string searchScope = "auto";
     bool caseSensitive = true;
     size_t contextLines;
     size_t maxResults = 200;
     int timeoutMs = 10_000;
     if (value.type == JSONType.object)
     {
+        if (auto field = "scope" in value.object)
+            if (field.type == JSONType.string) searchScope = field.str;
+        if (auto field = "includeGenerated" in value.object)
+            includeGenerated = field.type == JSONType.true_;
         if (auto field = "pattern" in value.object)
             if (field.type == JSONType.string)
                 pattern = field.str;
@@ -5777,6 +5780,8 @@ private ToolExecution runGrep(string args, string workspace,
                 if (timeoutMs > 600_000) timeoutMs = 600_000;
             }
     }
+    if (searchScope != "auto" && searchScope != "contents")
+        return ToolExecution("grep", "Error: scope must be auto or contents.", true);
     if (pattern.length == 0)
         return ToolExecution("grep",
             "Error: grep requires a `pattern` argument.", true);
@@ -5796,6 +5801,34 @@ private ToolExecution runGrep(string args, string workspace,
     if (!exists(root) || (!isDir(root) && !isFile(root)))
         return ToolExecution("grep", "Error: search path not found: " ~ root,
             true);
+
+    const broadRoot = isDir(root) && comparableSearchPath(root) == comparableSearchPath(workspace);
+    if (broadRoot && !narrowsSearchInclude(include) && searchScope == "auto")
+    {
+        auto choices = discoverProjectScopes(root, pattern, cancellation is null ? null : &cancellation.cancelled);
+        if (cancellation !is null && cancellation.cancelled())
+            return ToolExecution("grep", "Stopped: search scope discovery cancelled.", true);
+        if (choices.length)
+        {
+            JSONValue result;
+            result["status"] = "scope_selection";
+            result["contentsSearched"] = false;
+            result["scope"] = root;
+            result["message"] = "Matching project folders found before scanning contents. Choose the relevant path and search there. These are directory hints, not content matches. For a deliberate cross-project content search, set scope=contents.";
+            result["suggestedSearches"] = JSONValue.emptyArray;
+            foreach (choice; choices)
+            {
+                auto next = JSONValue(value.object.dup);
+                next["path"] = choice;
+                next.object.remove("timeout");
+                result["suggestedSearches"].array ~= next;
+            }
+            return ToolExecution("grep", result.toString(), false);
+        }
+        // Raising a root-wide deadline alone must not turn discovery into a
+        // multi-minute monorepo scan. A chosen scope/filter can use more time.
+        if (timeoutMs > 10_000) timeoutMs = 10_000;
+    }
 
     Regex!(char) re;
     if (!literal)
@@ -5891,7 +5924,7 @@ private ToolExecution runGrep(string args, string workspace,
                 if (entry.isSymlink) ++progress.value.skippedLinks;
                 else if (entry.isDir)
                 {
-                    if (grepIgnoredDirectory(entry.name)) ++progress.value.skippedDirectories;
+                    if (!includeGenerated && generatedSearchDirectory(entry.name)) ++progress.value.skippedDirectories;
                     else if (discoverDirectory(entry.name, depth + 1)) return true;
                 }
                 else if (entry.isFile && addCandidate(entry.name)) return true;
@@ -6102,10 +6135,23 @@ private ToolExecution runGrep(string args, string workspace,
             to!string(progress.value.directories) ~ " directories, " ~
             to!string(progress.value.files) ~ " files, and " ~
             to!string(progress.value.lines) ~ " lines; found " ~
-            to!string(totalMatches) ~ " matches so far. Review this progress " ~
-            "and decide whether waiting longer is reasonable. Rerun the same " ~
-            "focused search with a larger `timeout` (up to 600000 ms), or " ~
-            "narrow `path`, `pattern`, or `include`.\n" ~ summary);
+            to!string(totalMatches) ~ " matches so far. Contents are incomplete. " ~
+            "Inspect the partial matches or choose a narrower path/include before retrying. " ~
+            "Increasing the deadline alone repeats the same work.\n" ~ summary);
+        string[] choices;
+        if (isDir(root)) choices = discoverProjectScopes(root, pattern, cancellation is null ? null : &cancellation.cancelled);
+        if (!choices.length && isDir(root))
+            foreach (folder; ["source", "src", "docs", "tests", "lib", "include"])
+                if (exists(buildPath(root, folder)) && isDir(buildPath(root, folder))) choices ~= buildPath(root, folder);
+        if (!choices.length && candidates.length)
+            choices ~= candidates[0 .. (candidates.length < 3 ? candidates.length : 3)];
+        foreach (choice; choices)
+        {
+            auto next = JSONValue(value.object.dup);
+            next["path"] = choice;
+            next.object.remove("timeout");
+            report.put("Suggested narrower search: " ~ next.toString() ~ "\n");
+        }
         foreach (hit; hits) report.put(hit ~ "\n");
         return ToolExecution("grep", truncateOutput(report.data), true);
     }
@@ -6147,12 +6193,11 @@ private bool endsWith(string value, string suffix)
 private bool fileMatchesInclude(string fileName, string include)
 {
     if (include.length == 0) return true;
-    try
-    {
-        if (!matchFirst(fileName, globToRegex(include)).empty) return true;
-    }
-    catch (Exception) {}
-    return endsWith(fileName, include);
+    import std.path : CaseSensitive, globMatch;
+    // Includes are file-name globs, not content regexes. The standard matcher
+    // handles brace alternatives and character classes without recompiling a
+    // regex for every candidate file.
+    return globMatch!(CaseSensitive.yes)(fileName, include) || endsWith(fileName, include);
 }
 
 // Optional project-local post-edit automation. A workspace opts in by adding
