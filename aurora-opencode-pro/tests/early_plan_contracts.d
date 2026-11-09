@@ -240,7 +240,7 @@ int main()
     root.setStrictPlanEnabledForTesting(false);
     fresh();
     root.setTaskStateForTesting("Write and optionally verify the phase document", "active", "not_required");
-    const phasePlan = `{"plan":[{"id":"inspect","step":"Inspect inputs","kind":"other","status":"in_progress"},{"id":"edit","step":"Write phase document","kind":"edit","status":"pending"},{"id":"check","step":"Verify phase document","kind":"verify","status":"pending"}]}`;
+    const phasePlan = `{"plan":[{"id":"inspect","step":"Inspect inputs","kind":"research","status":"in_progress"},{"id":"edit","step":"Write phase document","kind":"edit","status":"pending"},{"id":"check","step":"Verify phase document","kind":"verify","status":"pending"}]}`;
     record(phasePlan);
     run([readCall()]);
     const phaseFile = buildPath(state, "phase.md");

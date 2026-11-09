@@ -929,7 +929,8 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "process instead of starting it again. Emit flushed progress output " ~
             "(for Python verification use python -u -B -m unittest, or pytest). " ~
             "Use finite test deadlines, retain relevant regression tests, and inspect quiet processes. " ~
-            "A processId is not evidence that a check passed.",
+            "A processId is not evidence that a check passed. Custom scripts and Blender probes do not automatically " ~
+            "create accepted verification receipts; for final artifact checks, use the verify tool's saved-recipe example.",
             `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the program in the background"}},"required":["program"]}`
         ),
         processToolDefinition(),

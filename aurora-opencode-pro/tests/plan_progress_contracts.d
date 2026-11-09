@@ -44,6 +44,12 @@ void main()
     assert(!planProgressGuidance(session).length);
     append("tool", "Check passed", "verify");
     assert(planProgressGuidance(session).length, "Verification did not trigger a new phase checkpoint");
+    session.taskSteps[0].text = "Assemble handoff folder with assets and integration contract";
+    session.taskSteps[0].kind = "other";
+    append("tool", "Plan updated", "update_plan");
+    append("tool", "Written handoff README", "write");
+    assert(!planProgressGuidance(session).length,
+        "Unclassified assembly outcome was mistaken for a stale research step");
     append("tool", "Plan updated", "update_plan");
     session.taskSteps[0].kind = "verify";
     foreach (_; 0 .. planProgressWindow - 1) append("tool", "source", "read");

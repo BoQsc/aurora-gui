@@ -79,8 +79,8 @@ must match. Comparison is exact by default. Optional `channelTolerance` is 0..8;
 from independent expectations, never to hide a known defect. A mismatch attaches
 both reference and actual pixels to the next request, even on tool failure.
 
-Bounds: 64 KiB recipe, 16 steps, 64 input roots, 20,000 traversed entries, 64 MiB
-source inputs, 32 MiB encoded images, 16 million decoded pixels. Input symlinks
+Bounds: 64 KiB recipe, 16 steps, 64 input roots, 20,000 traversed entries, 8 GiB
+streamed source inputs (64 KiB buffer), 32 MiB encoded images, 16 million decoded pixels. Input symlinks
 and paths outside the task checkout are rejected. Failed, detached, cancelled or
 timed-out commands cannot certify success.
 

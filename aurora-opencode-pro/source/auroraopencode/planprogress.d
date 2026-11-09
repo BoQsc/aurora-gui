@@ -72,8 +72,14 @@ bool planPositionMissing(const ref ChatSession session, int phase)
     if (workTracksPhase(session, phase)) return false;
     foreach (step; session.taskSteps)
         if (step.status == "in_progress")
+        {
+            // "other" is an unclassified outcome, not evidence that work is
+            // still research. E.g. "Assemble the handoff" legitimately edits.
+            // Its normal upkeep window still applies.
+            if (!step.kind.length || step.kind == "other") return false;
             return (phase >= 1 && step.kind != "edit" && step.kind != "verify") ||
                 (phase >= 2 && step.kind != "verify");
+        }
     return true;
 }
 

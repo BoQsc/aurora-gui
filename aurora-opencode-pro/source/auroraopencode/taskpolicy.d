@@ -58,7 +58,7 @@ private string observedTaskWorkspace(const ref ChatSession session, string proje
         if (message.role != "user" || message.internal) continue;
         if (answerOnlyRequest(message.content) ||
             (session.contract.intent != "analysis" && requestIntent(message.content) == RequestIntent.analysis)) continue;
-        string messageRoot;
+        string messageRoot, messageWorkspace;
         bool ambiguous;
         foreach (match; matchAll(message.content, `(?<![:/A-Za-z0-9])(?:[A-Za-z]:[\\/]|/(?!/))(?:(?![A-Za-z]:[\\/]|[ \t]+/(?!/))[^\r\n<>"` ~ "`" ~ `])+`))
         {
@@ -78,6 +78,17 @@ private string observedTaskWorkspace(const ref ChatSession session, string proje
                         {
                             if (messageRoot.length && messageRoot != root) ambiguous = true;
                             messageRoot = root;
+                            const current = messageWorkspace.length ? messageWorkspace :
+                                selected.length ? selected : projectWorkspace;
+                            const base = canonicalPath(current);
+                            const target = canonicalPath(candidate);
+                            // Checkout identity owns leases and evidence, not the
+                            // command working directory. Preserve a configured
+                            // subproject and honor an explicitly named folder.
+                            if (target == base || target.startsWith(base ~ "/") || target.startsWith(base ~ "\\"))
+                                messageWorkspace = current;
+                            else if (!messageWorkspace.length)
+                                messageWorkspace = isDir(candidate) ? target : root;
                         }
                         break;
                     }
@@ -89,7 +100,7 @@ private string observedTaskWorkspace(const ref ChatSession session, string proje
                 candidate = candidate[0 .. cut - 1].strip();
             }
         }
-        if (!ambiguous && messageRoot.length) selected = messageRoot;
+        if (!ambiguous && messageWorkspace.length) selected = messageWorkspace;
     }
     if (selected.length)
     {

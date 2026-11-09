@@ -93,6 +93,12 @@ int main()
     writeln("PASS prompt state follows active/paused goals");
 
     session.goalStatus = "active";
+    session.verificationStatus = "required";
+    const recovery = goalCompletionError(session,
+        `{"summary":"Archive passed manual checks","evidence":["CRC and hashes PASS"]}`);
+    require(recovery.indexOf("Use the verify tool") >= 0 && recovery.indexOf("not a successful recorded result") < 0,
+        "Completion sent the agent hunting receipt IDs before reporting the actual remaining verification work");
+    session.verificationStatus = "not_required";
     require(goalCompletionError(session,
         `{"summary":"done","evidence":["call-1"]}`).length > 0,
         "invented completion evidence was accepted");

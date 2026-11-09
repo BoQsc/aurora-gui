@@ -429,6 +429,15 @@ public string goalCompletionError(const ref ChatSession session, string argument
     }
     if (!field("summary").length)
         return "goal_complete requires a concise summary of the verified result.";
+    // Report remaining work before asking the model to repair receipt IDs.
+    // Otherwise an already-finished archive sent the agent through thirteen
+    // history lookups only to discover it still needed an accepted check.
+    if (session.verificationStatus == "required" || session.verificationStatus == "failed")
+        return "Verification is still outstanding. Use the verify tool with a saved recipe containing the actual " ~
+            "deliverables and checker sources in inputs, and a tests step executing the relevant existing checker. " ~
+            "A custom script run may have succeeded without producing an accepted verification receipt. " ~
+            "The verify tool description includes a complete example; do not search Aurora source for its format. " ~
+            "Keep checked artifacts in inputs. Then call goal_complete with the accepted toolCallId.";
     const answerGoal = goalIsAnswerOnly(session.goal);
     // An answer-only goal is proved by the answer itself. Action goals still
     // need real receipts so prose cannot stand in for completed work.
@@ -455,8 +464,6 @@ public string goalCompletionError(const ref ChatSession session, string argument
     else if (auto evidence = "evidence" in value.object)
         if (evidence.type != JSONType.array)
             return "goal_complete evidence must be an array of tool-call IDs.";
-    if (session.verificationStatus == "required" || session.verificationStatus == "failed")
-        return "Verification is still outstanding. Run the required check, then call goal_complete.";
     foreach (step; session.taskSteps)
         if (step.status != "completed")
             return "The checklist still has unfinished outcomes. Finish them or update the plan, then call goal_complete.";

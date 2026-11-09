@@ -34,6 +34,8 @@ struct RecipeResult
     ChatImageAttachment[] images;
 }
 
+enum verificationInputMaxBytes = 8UL * 1024 * 1024 * 1024;
+
 OpenCodeToolDef verificationToolDefinition()
 {
     return OpenCodeToolDef("verify",
@@ -48,7 +50,12 @@ OpenCodeToolDef verificationToolDefinition()
         "command:{program,args,workdir,timeout}},{kind:render,reference,actual,referenceSource}]}. " ~
         "prepare captures/converts outputs without claiming a test passed. Paths resolve " ~
         "from the task checkout; keep generated outputs outside inputs. Wrong pixels " ~
-        "attach both reference and actual images for diagnosis. The full schema is in Aurora's docs/task-verification.md.",
+        "attach both reference and actual images for diagnosis. For a custom asset/archive checker, " ~
+        "save a recipe like {\"inputs\":[\"handoff.zip\",\"check_handoff.py\"],\"steps\":[{\"kind\":\"tests\", " ~
+        "\"command\":{\"program\":\"python\",\"args\":[\"-B\",\"check_handoff.py\",\"handoff.zip\"]}}]}. " ~
+        "The checker must exit nonzero on failure. Include actual deliverables and checker sources in inputs; " ~
+        "never omit a checked artifact to bypass input validation. Input bytes are streamed, up to 8 GiB total. " ~
+        "This tool description contains the format needed to use it; no Aurora source or documentation lookup is required.",
         `{"type":"object","properties":{"recipe":{"type":"string","description":"JSON recipe path within the task checkout"}},"required":["recipe"]}`);
 }
 
@@ -80,8 +87,9 @@ private string fingerprint(string workspace, JSONValue inputs, bool delegate() c
         else
         {
             enforce(isFile(path), "Missing verification input: " ~ path);
-            bytes += getSize(path);
-            enforce(bytes <= 64UL * 1024 * 1024, "Verification inputs exceed 64 MiB.");
+            const size = getSize(path);
+            enforce(size <= verificationInputMaxBytes - bytes, "Verification inputs exceed 8 GiB.");
+            bytes += size;
             paths ~= canonicalPath(path);
         }
     }
@@ -92,12 +100,29 @@ private string fingerprint(string workspace, JSONValue inputs, bool delegate() c
     }
     paths.sort();
     SHA256 hash;
+    auto buffer = new ubyte[64 * 1024];
+    ulong readBytes;
     foreach (path; paths)
     {
         enforce(cancelled is null || !cancelled(), "Verification cancelled.");
         hash.put(cast(const(ubyte)[]) path);
         hash.put(cast(const(ubyte)[]) "\0");
-        hash.put(cast(const(ubyte)[]) read(path));
+        const size = getSize(path);
+        const modified = timeLastModified(path);
+        auto input = File(path, "rb");
+        scope(exit) input.close();
+        ulong consumed;
+        while (!input.eof())
+        {
+            enforce(cancelled is null || !cancelled(), "Verification cancelled.");
+            const chunk = input.rawRead(buffer);
+            enforce(chunk.length <= verificationInputMaxBytes - readBytes, "Verification inputs exceed 8 GiB.");
+            consumed += chunk.length;
+            readBytes += chunk.length;
+            hash.put(chunk);
+        }
+        enforce(consumed == size && getSize(path) == size && timeLastModified(path) == modified,
+            "Verification input changed while hashing: " ~ path);
     }
     return hash.finish().toHexString().idup;
 }

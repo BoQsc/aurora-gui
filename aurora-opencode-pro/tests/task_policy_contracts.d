@@ -1,6 +1,7 @@
 module task_policy_contracts;
 
 import auroraopencode.core;
+import auroraopencode.checkout : canonicalPath;
 import auroraopencode.taskpolicy;
 import auroraopencode.taskcontinuation;
 import auroraopencode.tools;
@@ -33,6 +34,22 @@ int main(string[] arguments)
     foreach (root; [source, other]) mkdirRecurse(buildPath(root, ".git"));
     mkdirRecurse(buildPath(source, "src")); mkdirRecurse(scratch);
     setOpencodeStateDirectoryForTesting(buildPath(directory, "state"));
+    const nested = buildPath(source, "TerraForest");
+    mkdirRecurse(buildPath(nested, "models"));
+    const nestedFile = buildPath(nested, "models", "player.gd");
+    write(nestedFile, "extends Node3D\n");
+    ChatSession nestedTask;
+    nestedTask.id = "explicit-subproject";
+    append(nestedTask, "user", nested ~ " find and make a zip of the player model");
+    assert(taskWorkspace(nestedTask, scratch) == canonicalPath(nested),
+        "An explicitly requested project folder expanded to its enclosing Git root");
+    assert(taskWorkspace(nestedTask, nested) == nested,
+        "Configured subproject working directory was replaced by checkout identity");
+    append(nestedTask, "user", "Include the runtime adapter " ~ nestedFile);
+    assert(taskWorkspace(nestedTask, nested) == nested,
+        "A file inside the current project widened its command/search scope");
+    assert(sameCheckout(nested, source), "Subproject scope lost checkout-level evidence ownership");
+    writeln("PASS named and configured subprojects retain their working directory and checkout evidence identity");
     write(buildPath(source, "src", "fixture.d"), "import std.stdio; void main() { writeln(\"fixture passed\"); }\n");
     ChatSession session;
     session.id = "task-policy-fixture";
