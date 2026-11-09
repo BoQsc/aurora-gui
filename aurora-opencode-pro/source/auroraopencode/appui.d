@@ -6,7 +6,6 @@ import toolProgressPolicy = auroraopencode.toolprogresspolicy;
 
 import conversationEncoding = auroraopencode.conversationencode;
 import goalMutation = auroraopencode.goalmutation;
-import auroraopencode.answercontract : framedOutcomeText, openEndedFramingRequest;
 
 import auroraopencode.turnpolicy : TurnPolicy, TurnAction, decideTurn, hasIncompleteTaskSteps;
 import auroraopencode.requestpolicy : RequestPolicy, prepareAgentRequest;
@@ -12909,9 +12908,6 @@ private string _suggestExcludeId;
     // Explicit strict mode may defer one batch for an early plan. Default
     // upkeep is shared with conversation actors and never blocks useful tools.
     private bool[string] _planGateFired;
-    // One deferred batch asks an open-ended improvement request for its
-    // user-visible outcome before the model maps source or measures a proxy.
-    private bool[string] _framingGateFired;
     // Plan upkeep enforcement: the tool-result position of the last deferred
     // batch and how many deferrals this request received, so a checklist that
     // stays stale is reconciled once per window instead of on every batch or
@@ -21662,18 +21658,7 @@ private void pollButtonSuggestionRequest()
             name == "dshell";
     }
 
-    private static bool assistantFramedThisTurn(const ref ChatSession session)
-    {
-        foreach_reverse (index; activeMessagePath(session))
-        {
-            const ref message = session.messages[index];
-            if (message.role == "assistant" && !message.internal &&
-                message.content.strip.length > 0)
-                return framedOutcomeText(message.content);
-            if (message.role == "user" && !message.internal) return false;
-        }
-        return false;
-    }
+
 
     private static bool isCommentOnlyChangedLine(string body)
     {
@@ -22048,8 +22033,8 @@ private void pollButtonSuggestionRequest()
     /// - no plan recorded at all after the read-only exploration budget is
     ///   spent: a turn can otherwise investigate indefinitely without ever
     ///   calling update_plan.
-    /// The reminder repeats once per upkeep window and on a phase change until a
-    /// fresh plan resets it, so a long run is reconciled without per-round spam.
+    /// One reminder per revision, plus actual phase transitions, keeps the
+    /// plan visible without repeating the same lecture every upkeep window.
     /// Returns true when a reminder was queued.
     private static bool checklistStale(const ref ChatSession session)
     {
@@ -22266,36 +22251,6 @@ private void pollButtonSuggestionRequest()
         // actions and a plan that already tracks unfinished outcomes proceed.
         const planFirstMissing = (explorationExhausted || substantialMutation) &&
             !hasIncompleteTaskSteps(*session) && !planRecordedThisTurn(*session);
-        // An open-ended improvement request has no measurable outcome yet.
-        // Defer one batch so the model states the outcome (or asks) instead of
-        // starting with a source map, a model comparison or another proxy.
-        bool framingFired;
-        if (auto flag = session.id in _framingGateFired) framingFired = *flag;
-        if (!framingFired && openEndedFramingRequest(latestActualUserRequest(*session)) &&
-            !assistantFramedThisTurn(*session))
-        {
-            _framingGateFired[session.id] = true;
-            appendSkippedToolResults(*session, calls,
-                "Tool call deferred for problem framing. No command ran or failed. " ~
-                "State the user-visible outcome and its proof first, or ask one focused question.");
-            ChatMessage framing;
-            framing.role = "user";
-            framing.internal = true;
-            framing.content = "Problem-framing gate: this request is open-ended. Before any tool call, " ~
-                "state in one sentence the user-visible outcome and the evidence that will prove it. " ~
-                "If the requested outcome is not yet knowable, ask one focused question instead of " ~
-                "starting work. Do not start by mapping the source, comparing models, or measuring a " ~
-                "proxy. Then continue with the tools.";
-            appendMessage(*session, framing);
-            session.turnStatus = "running";
-            session.taskStatus = "active";
-            publishThreadUpdated(*session);
-            markDirty();
-            if (_current == sessionIndex) rebuildMessageColumn();
-            updateStatus("Framing the requested outcome…");
-            if (!_toolContinuationPaused) startChatRequest(sessionIndex, false);
-            return;
-        }
         const planGateKey = session.id ~ ":" ~ session.contract.id;
         if (experimentalStrictPlanEnabled() && (goalAcceptanceMissing || planFirstMissing) && !recordingPlan &&
             !(planGateKey in _planGateFired ? _planGateFired[planGateKey] : false))
@@ -22687,6 +22642,22 @@ private void pollButtonSuggestionRequest()
             if (session.taskStatus != "waiting_input" && !taskInvestigation(*session))
                 session.taskStatus = hasIncompleteTaskSteps(*session) ? "active" : "completed";
             publishThreadUpdated(*session);
+        }
+
+        // Removing scratch output must not force the same archive/check to run
+        // again when an explicit recipe still hashes to the checked inputs.
+        // Direct command receipts remain revision-bound. Missing/changed recipe
+        // inputs (including checker sources) cannot survive this revalidation.
+        if (!toolFailed && event.toolName == "remove" && session.verificationStatus == "required")
+        {
+            const coverage = verificationCoverage(*session);
+            if (coverage.length > "verify:".length && satisfiesEvidence(coverage, requiredEvidence(*session)))
+            {
+                session.verificationStatus = "passed";
+                if (session.taskStatus != "waiting_input" && !taskInvestigation(*session))
+                    session.taskStatus = hasIncompleteTaskSteps(*session) ? "active" : "completed";
+                publishThreadUpdated(*session);
+            }
         }
 
         if (!toolFailed && (event.toolName == "task_blocker" || event.toolName == "request_input"))
@@ -23348,8 +23319,8 @@ private void pollButtonSuggestionRequest()
         return false;
     }
 
-    /// Default behavior: the first message becomes the durable goal, so every
-    /// conversation starts goal-oriented. Later messages never replace it;
+    /// Opt-in behavior: adopt the first message as a durable goal. Ordinary
+    /// conversations use task continuity directly. Later messages never replace it;
     /// only an explicit /goal or the
     /// goal-row Set/Edit controls change the goal after this point.
     private bool maybeAdoptFirstMessageGoal(ref ChatSession session, string text)
@@ -25010,7 +24981,6 @@ private void pollButtonSuggestionRequest()
         {
             // A fresh user request clears the once-per-turn plan-first nudge.
             _planGateFired[_sessions[sessionIndex].id] = false;
-            _framingGateFired.remove(_sessions[sessionIndex].id);
             _planUpkeepGatedAt.remove(_sessions[sessionIndex].id);
             _planUpkeepGates.remove(_sessions[sessionIndex].id);
         }

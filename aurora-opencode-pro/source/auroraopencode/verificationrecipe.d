@@ -39,24 +39,15 @@ enum verificationInputMaxBytes = 8UL * 1024 * 1024 * 1024;
 OpenCodeToolDef verificationToolDefinition()
 {
     return OpenCodeToolDef("verify",
-        "Run a saved project verification recipe in one supervised operation. " ~
-        "The JSON recipe declares inputs, sequential command steps with kind " ~
-        "compile/tests/interaction, and render steps comparing current pixels " ~
-        "against an independently specified reference image. It records source " ~
-        "and recipe hashes, fails on changed inputs or a failing step, and stops " ~
-        "at the first failure. Locked compiler outputs use separate artifacts automatically, preserving the running app and recipe. Use this for build/test/render sequences instead " ~
-        "of separate model rounds. Compilation alone cannot verify rendering. " ~
-        "Recipe format: {inputs:[source paths],steps:[{kind:compile/tests/interaction/prepare," ~
-        "command:{program,args,workdir,timeout}},{kind:render,reference,actual,referenceSource}]}. " ~
-        "prepare captures/converts outputs without claiming a test passed. Paths resolve " ~
-        "from the task checkout; keep generated outputs outside inputs. Wrong pixels " ~
-        "attach both reference and actual images for diagnosis. For a custom asset/archive checker, " ~
-        "save a recipe like {\"inputs\":[\"handoff.zip\",\"check_handoff.py\"],\"steps\":[{\"kind\":\"tests\", " ~
-        "\"command\":{\"program\":\"python\",\"args\":[\"-B\",\"check_handoff.py\",\"handoff.zip\"]}}]}. " ~
-        "The checker must exit nonzero on failure. Include actual deliverables and checker sources in inputs; " ~
-        "never omit a checked artifact to bypass input validation. Input bytes are streamed, up to 8 GiB total. " ~
-        "This tool description contains the format needed to use it; no Aurora source or documentation lookup is required.",
-        `{"type":"object","properties":{"recipe":{"type":"string","description":"JSON recipe path within the task checkout"}},"required":["recipe"]}`);
+        "Run final checks once and record their result against the actual inputs. Provide inputs and steps inline " ~
+        "for one-off checks; recipe is an optional saved JSON path for reusable checks. " ~
+        "Example: {\"inputs\":[\"handoff.zip\",\"model.glb\"],\"steps\":[{\"kind\":\"tests\",\"command\":{\"program\":\"python\",\"args\":[\"-B\",\"-c\",\"import zipfile; z=zipfile.ZipFile('handoff.zip'); assert z.testzip() is None\"]}}]}. " ~
+        "Commands must exit nonzero on failed checks. Use compile/tests/interaction for relevant commands; prepare supplies no evidence. " ~
+        "Render steps use reference, actual and referenceSource for independent pixel comparison. " ~
+        "Inputs (up to 8 GiB, streamed) are hashed before and after; don't omit checked artifacts or put generated outputs in inputs. " ~
+        "Paths resolve from the task workspace. No additional verification framework or documentation lookup is needed.",
+        `{"type":"object","properties":{"recipe":{"type":"string","description":"Optional saved recipe path; use instead of inline inputs/steps"},"inputs":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64,"description":"Actual deliverables and relevant source/checker paths"},"steps":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object"},"description":"Sequential {kind,command:{program,args,workdir,timeout}} or render steps"}},"anyOf":[{"required":["recipe"]},{"required":["inputs","steps"]}]}`);
+
 }
 
 private string fingerprint(string workspace, JSONValue inputs, bool delegate() cancelled)
@@ -210,15 +201,24 @@ RecipeResult runVerificationRecipe(string arguments, string workspace,
     try
     {
         const args = parseJSON(arguments);
-        const path = absolutePath(args["recipe"].str, workspace);
-        const recipeCheckout = checkoutIdentity(path);
-        const taskCheckout = checkoutIdentity(workspace);
-        enforce(recipeCheckout == taskCheckout,
-            "Recipe " ~ path ~ " belongs to checkout " ~ recipeCheckout ~
-            ", but the task checkout is " ~ taskCheckout ~
-            ". Run verify from the recipe's checkout or move the recipe into the task checkout.");
-        enforce(getSize(path) <= 64 * 1024, "Recipe exceeds 64 KiB.");
-        const text = readText(path);
+        enforce(args.type == JSONType.object, "Verification requires an object.");
+        string path, text;
+        if (auto saved = "recipe" in args.object)
+        {
+            enforce(saved.type == JSONType.string && !("inputs" in args.object) && !("steps" in args.object),
+                "Use a saved recipe or inline inputs/steps, not both.");
+            path = absolutePath(saved.str, workspace);
+            const recipeCheckout = checkoutIdentity(path);
+            const taskCheckout = checkoutIdentity(workspace);
+            enforce(recipeCheckout == taskCheckout,
+                "Recipe " ~ path ~ " belongs to checkout " ~ recipeCheckout ~
+                ", but the task checkout is " ~ taskCheckout ~
+                ". Run verify from the recipe's checkout or move the recipe into the task checkout.");
+            enforce(getSize(path) <= 64 * 1024, "Recipe exceeds 64 KiB.");
+            text = readText(path);
+        }
+        else text = args.toString();
+        enforce(text.length <= 64 * 1024, "Recipe exceeds 64 KiB.");
         const recipeHash = sha256Of(text).toHexString().idup;
         const recipe = parseJSON(text);
         const inputs = recipe["inputs"];
@@ -251,7 +251,9 @@ RecipeResult runVerificationRecipe(string arguments, string workspace,
                 }
             }
         }
-        report["recipe"] = path;
+        report["recipe"] = path.length ? path : "inline";
+        report["inputs"] = inputs;
+        report["workspace"] = workspace;
         report["recipeSha256"] = recipeHash;
         report["inputsSha256"] = before;
         string[] kinds;
@@ -337,7 +339,7 @@ RecipeResult runVerificationRecipe(string arguments, string workspace,
             }
             if (kind != "prepare" && !kinds.canFind(kind)) kinds ~= kind;
         }
-        enforce(readText(path) == text && fingerprint(workspace, inputs, cancelled) == before,
+        enforce((!path.length || readText(path) == text) && fingerprint(workspace, inputs, cancelled) == before,
             "Source inputs or recipe changed during verification; results are stale.");
         foreach (reference, hash; references)
             enforce(sha256Of(cast(const(ubyte)[]) read(reference)).toHexString() == hash,
@@ -396,7 +398,7 @@ public string verificationInputsSignature(string workspace, JSONValue inputs, re
             void fileState(string current, ulong size, long modified)
             {
                 enforce(++entries <= 20_000, "Input inventory exceeds bound.");
-                bytes += size; enforce(bytes <= 64UL * 1024 * 1024, "Inputs exceed bound.");
+                bytes += size; enforce(bytes <= verificationInputMaxBytes, "Inputs exceed bound.");
                 states ~= current ~ " " ~ to!string(size) ~ " " ~ to!string(modified);
             }
             void directoryState(string current, size_t depth)

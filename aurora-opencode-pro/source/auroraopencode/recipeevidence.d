@@ -34,7 +34,13 @@ struct RecipeEvidenceCache
     string key(const ref ChatMessage message)
     {
         if (message.toolName != "verify") return "";
-        try { return canonicalPath(report(message)["recipe"].str); }
+        try
+        {
+            const value = report(message);
+            if (value["recipe"].str == "inline")
+                return canonicalPath(value["workspace"].str) ~ "\ninline:" ~ value["recipeSha256"].str;
+            return canonicalPath(value["recipe"].str);
+        }
         catch (Exception) { return ""; }
     }
     private string renderKey(JSONValue row, string workspace = "")
@@ -53,7 +59,9 @@ struct RecipeEvidenceCache
         const value = report(message);
         if (value.type != JSONType.object) return;
         const recipe = key(message);
-        const workspace = recipe.length ? checkoutIdentity(recipe) : "";
+        string workspace;
+        try { workspace = value["workspace"].str; } catch (Exception) {}
+        if (!workspace.length && recipe.length) workspace = checkoutIdentity(recipe);
         if (recipe.length && !(recipe in recipeVerdicts)) recipeVerdicts[recipe] = !message.failed;
         if (auto rows = "steps" in value.object)
             if (rows.type == JSONType.array)
@@ -95,12 +103,24 @@ struct RecipeEvidenceCache
             const path = key(message);
             if (auto verdict = path in recipeVerdicts) if (!*verdict) return false;
             const separator = ownerScope.indexOf('|');
-            if (separator <= 0 || checkoutIdentity(path) != ownerScope[0 .. separator]) return false;
-            if (fileHash(path, 64 * 1024) != value["recipeSha256"].str) return false;
+            if (separator <= 0) return false;
+            string workspace;
+            if (auto field = "workspace" in value.object) workspace = field.str;
+            if (!workspace.length) workspace = ownerScope[0 .. separator];
+            if (checkoutIdentity(workspace) != ownerScope[0 .. separator]) return false;
             JSONValue recipe;
-            if (auto cached = path in recipes) recipe = *cached;
-            else { recipe = parseJSON(readText(path)); recipes[path] = recipe; }
-            const workspace = ownerScope[0 .. separator];
+            if (value["recipe"].str == "inline")
+            {
+                recipe = parseJSON(message.toolArgs);
+                if (sha256Of(recipe.toString()).toHexString() != value["recipeSha256"].str) return false;
+            }
+            else
+            {
+                if (checkoutIdentity(path) != ownerScope[0 .. separator] ||
+                    fileHash(path, 64 * 1024) != value["recipeSha256"].str) return false;
+                if (auto cached = path in recipes) recipe = *cached;
+                else { recipe = parseJSON(readText(path)); recipes[path] = recipe; }
+            }
             const inputs = recipe["inputs"];
             const inputKey = workspace ~ "\n" ~ inputs.toString();
             string inputHash;

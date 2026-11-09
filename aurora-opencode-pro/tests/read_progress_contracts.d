@@ -31,6 +31,12 @@ int main()
     assert(last.terminal && last.totalKnown && last.fraction() == 1 && last.collected == 3 && events >= 2);
     assert(last.path == buildPath(workspace, "ordinary.txt") && last.preview[1] == "2: second");
     assert(last.phase.indexOf("end of file") >= 0 && last.bytesRead == 22);
+    write(buildPath(workspace, "media.bin"), "header\0binary payload\n");
+    auto binary = executeTool(OpenCodeToolCall("binary", "read", `{"filePath":"media.bin"}`),
+        workspace, null, ChangeContext.init, &observe);
+    assert(binary.failed && binary.output.indexOf("Binary file:") >= 0 &&
+        binary.output.indexOf("binary payload") < 0 && last.terminal && last.collected == 0,
+        "Binary data leaked into the transcript or left read progress running");
     result = executeTool(OpenCodeToolCall("page", "read", `{"filePath":"ordinary.txt","offset":2,"limit":1}`),
         workspace, null, ChangeContext.init, &observe);
     assert(!result.failed && last.offset == 2 && last.limit == 1 && last.collected == 1);

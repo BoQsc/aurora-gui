@@ -23,9 +23,8 @@ public bool goalNeedsHumanInput(const ref ChatSession session)
         taskAwaitingInput(session);
 }
 
-/// Every first message becomes the conversation's durable goal, so planning is
-/// goal-oriented from the first turn. Explicit /goal remains available for
-/// changing that completion condition later.
+/// Automatic first-message goals are an opt-in convenience. Ordinary tasks
+/// retain their own plan and continuation; /goal creates an explicit persistent objective.
 public bool automaticGoalRequest(string text)
 {
     return text.strip().length > 0;
@@ -209,7 +208,6 @@ public string goalPromptBlock(const ref ChatSession session)
 {
     if (session.goal.length == 0) return "";
     const status = session.goalStatus.length ? session.goalStatus : "active";
-    const answerGoal = goalIsAnswerOnly(session.goal);
     auto output = appender!string();
     output.put("\n\n# Persistent goal\n");
     output.put("Status: " ~ status ~ "\n");
@@ -219,29 +217,11 @@ public string goalPromptBlock(const ref ChatSession session)
     switch (status)
     {
         case "active":
-            output.put("Keep working toward this goal across turns. After each turn " ~
-                "audit the actual result and continue with useful tool work until the " ~
-                "completion condition is demonstrably true. Do not ask permission for " ~
-                "routine execution or verification. Treat the goal as the outcome, not " ~
-                "as a fixed step template, and keep it aligned with the current plan. " ~
-                "For substantial work, record a short outcome plan early with update_plan and " ~
-                "revise that plan whenever evidence changes the path; earlier revisions " ~
-                "are retained. When every outcome is complete and " ~
-                "checks pass, call `goal_complete` with a short summary and concrete " ~
-                "evidence (successful tool-call IDs or check receipts). Never call it " ~
-                "for an attempted action or unfinished work. " ~
-                (answerGoal
-                    ? "This goal asks for an answer rather than an artifact. Deliver the " ~
-                        "accurate answer, then call goal_complete with the summary; tool " ~
-                        "evidence is optional when no tool work was needed. "
-                    : "") ~
-                "If an essential user-owned fact is missing, finish independent work, then call request_input " ~
-                "with required_fact, checked sources and the dependent blocked_steps. This records a wait while " ~
-                "keeping the goal active. A question or Remaining note in prose does not record that wait; " ~
-                "do not guess the fact, repeat completed checks or keep issuing final summaries instead. " ~
-                "Before changing referenced specifications, identify their behavioral rules and boundary expectations, including exact file names and API signatures. " ~
-                "Reconcile the exact changed rule while preserving all unaffected rules; recover original read results with read_history if uncertain. " ~
-                "Passing generated tests does not prove those rules were implemented correctly.\n");
+            output.put("Complete this explicit goal while preserving the user's acceptance and newer corrections. " ~
+                "Use a short plan for substantial work and continue until the requested outcome and relevant checks are complete. " ~
+                "Call goal_complete with a concise summary and accepted toolCallId evidence for action goals; an answer-only goal needs no receipt. " ~
+                "If an essential user-owned fact is missing, finish independent work and call request_input with the fact and blocked steps. " ~
+                "Don't add hypothetical future work or repeat passing checks for completion bookkeeping.\n");
             break;
         case "paused":
             output.put("The user paused this goal. Preserve its state and do not start " ~
@@ -433,11 +413,9 @@ public string goalCompletionError(const ref ChatSession session, string argument
     // Otherwise an already-finished archive sent the agent through thirteen
     // history lookups only to discover it still needed an accepted check.
     if (session.verificationStatus == "required" || session.verificationStatus == "failed")
-        return "Verification is still outstanding. Use the verify tool with a saved recipe containing the actual " ~
-            "deliverables and checker sources in inputs, and a tests step executing the relevant existing checker. " ~
-            "A custom script run may have succeeded without producing an accepted verification receipt. " ~
-            "The verify tool description includes a complete example; do not search Aurora source for its format. " ~
-            "Keep checked artifacts in inputs. Then call goal_complete with the accepted toolCallId.";
+        return "Verification is still outstanding. Call verify with inline inputs naming the actual deliverables " ~
+            "and steps running the relevant check. A custom run may succeed without an accepted receipt. " ~
+            "Use the accepted toolCallId in goal_complete. No saved recipe, extra framework or history search is required.";
     const answerGoal = goalIsAnswerOnly(session.goal);
     // An answer-only goal is proved by the answer itself. Action goals still
     // need real receipts so prose cannot stand in for completed work.

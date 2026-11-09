@@ -47,7 +47,7 @@ public string durableTaskPrompt(const ref ChatSession session,
     {
         prompt.put("Required evidence (current source inputs):");
         foreach (kind; evidence) prompt.put(" " ~ kind);
-        prompt.put(". Use a saved verify recipe; a compiler check alone does not satisfy these outcomes.\n");
+        prompt.put(". Use verify with inline steps or a saved recipe for the required checks.\n");
     }
     if (sideRequestAnswered)
         prompt.put("The user's latest request has already been answered in this conversation. " ~
@@ -63,14 +63,8 @@ public string durableTaskPrompt(const ref ChatSession session,
             "do not stop at an explanation. Preserve the current objective and unfinished checklist, and do not " ~
             "resume desktop input that the user stopped. State the cause and the fix you applied, or the concrete blocker.\n");
     else
-        prompt.put("The latest user request defines the current deliverable. Background tasks and paused goals " ~
-            "are context, not additional work. Resolve references using saved history; use read_plan task_id " ~
-            "for exact earlier requirements. For an active goal, preserve unaffected requirements across amendments. " ~
-            "Use a short outcome plan for complex work; execute simple requests directly. " ~
-            "Verify the requested behavior in its real execution path: helper or headless checks alone do not prove GUI behavior. " ~
-            "Complete authorized execution and relevant verification before replying. State the result, useful evidence " ~
-            "and any concrete unresolved limitation briefly. Do not substitute repeated status summaries, permission " ~
-            "questions or offers to continue for available useful work.\n");
+        prompt.put("The current request owns the work. Background tasks and paused goals add no obligations. " ~
+            "Preserve applicable requirements; complete the deliverable and its relevant checks before the final reply.\n");
     return prompt.data;
 }
 

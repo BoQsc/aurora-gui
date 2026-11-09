@@ -5,6 +5,7 @@ import auroraopencode.planprogress;
 import auroraopencode.tools : executeTool, nativeOnlyToolDefinitions;
 import auroraopencode.goalmode : goalCompletionError;
 import auroraopencode.controlhistory : controlStateKind, ControlStateKind;
+import auroraopencode.requestpolicy : RequestPolicy, prepareAgentRequest;
 import std.json : parseJSON;
 import std.string : indexOf;
 import std.stdio : writeln;
@@ -37,19 +38,40 @@ void main()
     assert(planProgress(session).phase == 0, "Failed action advanced the phase");
     append("tool", "Written", "write");
     reminder = planProgressGuidance(session);
-    assert(reminder.indexOf("Work has moved into editing or verification") >= 0,
+    assert(reminder.indexOf("Work now includes editing or verification") >= 0,
         "Editing left the research checklist stale");
     assert(session.taskSteps[0].status == "in_progress", "Harness fabricated completion");
     append("user", reminder, "", false, true);
     assert(!planProgressGuidance(session).length);
+    append("assistant", "", "");
+    append("tool", "Useful edit kept", "edit");
+    assert(planReconciliationDue(session), "Ignored phase reminder did not get one reconciliation");
+    RequestPolicy policy;
+    policy.toolsEnabled = true; policy.contextLimit = 100_000;
+    policy.availableTools = nativeOnlyToolDefinitions();
+    auto prepared = prepareAgentRequest(session, policy);
+    assert(prepared.tools.length > 1 && prepared.messages[$ - 1].role == "system" &&
+        prepared.messages[$ - 1].content.indexOf("Your next action is update_plan") >= 0,
+        "Plan reconciliation either hid useful tools or disappeared into old context");
+    append("assistant", "Still investigating");
+    assert(!planReconciliationDue(session), "Plan reconciliation became an unbounded gate");
     append("tool", "Check passed", "verify");
     assert(planProgressGuidance(session).length, "Verification did not trigger a new phase checkpoint");
     session.taskSteps[0].text = "Assemble handoff folder with assets and integration contract";
     session.taskSteps[0].kind = "other";
     append("tool", "Plan updated", "update_plan");
     append("tool", "Written handoff README", "write");
-    assert(!planProgressGuidance(session).length,
+    assert(!planPositionMissing(session, 1),
         "Unclassified assembly outcome was mistaken for a stale research step");
+    reminder = planProgressGuidance(session);
+    assert(reminder.indexOf("next tool batch") >= 0,
+        "Actual phase transition did not request timely plan reconciliation");
+    append("user", reminder, "", false, true);
+    foreach (_; 0 .. planProgressWindow) append("tool", "source", "read");
+    assert(!planProgressGuidance(session).length, "Same phase repeated its transition reminder");
+    append("tool", "Check passed", "verify");
+    assert(planProgressGuidance(session).length,
+        "Unclassified active outcome hid a later verification transition");
     append("tool", "Plan updated", "update_plan");
     session.taskSteps[0].kind = "verify";
     foreach (_; 0 .. planProgressWindow - 1) append("tool", "source", "read");
@@ -65,7 +87,7 @@ void main()
     auto restored = session;
     assert(!planProgressGuidance(restored).length);
     foreach (_; 0 .. planProgressWindow) append("tool", "source", "read");
-    assert(planProgressGuidance(session).length, "Long phase lost periodic upkeep");
+    assert(!planProgressGuidance(session).length, "Long phase repeated an unchanged planning lecture");
     session.taskStatus = "waiting_input";
     assert(!planProgressGuidance(session).length);
     session.taskStatus = "active";

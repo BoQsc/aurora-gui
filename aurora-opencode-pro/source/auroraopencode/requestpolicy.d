@@ -5,6 +5,7 @@ import auroraopencode.contextcheckpoint : requestMessageBytes;
 import auroraopencode.contextpolicy;
 import auroraopencode.projectioncache : projectContext, RequestProjectionCache, ProjectionRevision;
 import auroraopencode.goalmode : goalActive;
+import auroraopencode.planprogress : planReconciliationDue;
 import auroraopencode.taskpolicy : diagnosticToolAllowed;
 import auroraopencode.completionhandoff : completionHandoffInstruction;
 import auroraopencode.orchestrator : experimentalOrchestratorFilterTools;
@@ -132,6 +133,7 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     if (policy.orchestratorEnabled)
         result.tools = experimentalOrchestratorFilterTools(result.tools, policy.orchestratorRouter);
 
+
     // The answer contract is fixed for this user request. Keep it ahead of
     // append-only tool history: the single-system compatibility projection
     // otherwise inserts each new checkpoint before it and rewrites the prefix.
@@ -157,5 +159,16 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     result.contextCompacted = policy.compactionEnabled &&
         (checkpointOnActivePath(session) || result.fallbackCompacted);
     result.messages ~= history;
+    if (policy.toolsEnabled && !policy.finalAnswer && !policy.summaryOnly &&
+        !policy.diagnosticReview && !policy.orchestratorEnabled && planReconciliationDue(session))
+    {
+        ChatRequestMessage reconcile;
+        reconcile.role = "system";
+        reconcile.content = "Application control: the phase-change reminder was skipped. Your next action is update_plan " ~
+            "to reconcile the visible checklist with the evidence already gathered: mark actually finished outcomes and " ~
+            "the current active outcome, preserving unfinished requirements. Do this before more execution. " ~
+            "Do not add scope or repeat checks. Normal execution resumes after this plan update.";
+        result.messages ~= reconcile;
+    }
     return result;
 }

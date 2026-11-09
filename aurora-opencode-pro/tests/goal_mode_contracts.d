@@ -56,8 +56,8 @@ int main()
     require(toUTF32(clamped).length == maxGoalLength,
         "goal clamp split or exceeded the character budget");
     Settings defaults;
-    require(defaults.autoGoalFromFirstMessage,
-        "the first message must become a persistent goal by default");
+    require(!defaults.autoGoalFromFirstMessage,
+        "ordinary chat must not acquire a persistent-goal completion protocol");
     // The previous release persisted the old off default, so the settings
     // migration must turn first-message goals on once. An explicit opt-out
     // saved by the current version stays off.
@@ -69,13 +69,17 @@ int main()
     const settingsPath = buildPath(migrationDir, "settings.json");
     write(settingsPath,
         `{"settingsVersion":2,"autoGoalFromFirstMessage":false}`);
-    require(loadSettings().autoGoalFromFirstMessage,
-        "an older settings file did not migrate to first-message goals");
+    require(!loadSettings().autoGoalFromFirstMessage,
+        "an older forced automatic-goal default was not removed");
     write(settingsPath,
         `{"settingsVersion":3,"autoGoalFromFirstMessage":false}`);
     require(!loadSettings().autoGoalFromFirstMessage,
         "an explicit opt-out was overwritten");
-    writeln("PASS goal commands set/show/pause/resume/clear");
+    write(settingsPath, `{"settingsVersion":3,"autoGoalFromFirstMessage":true}`);
+    require(!loadSettings().autoGoalFromFirstMessage, "Version 3 forced goals survived cleanup");
+    write(settingsPath, `{"settingsVersion":4,"autoGoalFromFirstMessage":true}`);
+    require(loadSettings().autoGoalFromFirstMessage, "Current explicit opt-in was lost");
+    writeln("PASS ordinary chat defaults and explicit goal controls");
 
     ChatSession session;
     session.goal = "Ship the goal bar";
@@ -96,7 +100,7 @@ int main()
     session.verificationStatus = "required";
     const recovery = goalCompletionError(session,
         `{"summary":"Archive passed manual checks","evidence":["CRC and hashes PASS"]}`);
-    require(recovery.indexOf("Use the verify tool") >= 0 && recovery.indexOf("not a successful recorded result") < 0,
+    require(recovery.indexOf("Call verify") >= 0 && recovery.indexOf("not a successful recorded result") < 0,
         "Completion sent the agent hunting receipt IDs before reporting the actual remaining verification work");
     session.verificationStatus = "not_required";
     require(goalCompletionError(session,

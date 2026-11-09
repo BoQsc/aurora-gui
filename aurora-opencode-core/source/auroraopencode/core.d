@@ -1833,10 +1833,9 @@ public struct Settings
     // request (a few tokens) instead of the raw first message. On by default;
     // an existing OpenCode settings file can turn it off.
     bool quickTitle = true;
-    // Write the persistent goal from the first user message. On by default so
-    // every conversation starts goal-oriented; later messages never replace it
-    // unless the user explicitly uses /goal, Set goal, or Edit.
-    bool autoGoalFromFirstMessage = true;
+    // Opt in to adopting the first message as a persistent goal. Ordinary
+    // chats already retain task state; explicit /goal remains available.
+    bool autoGoalFromFirstMessage = false;
     // Hide the `@@ -old,+new @@` hunk headers in rendered diffs: they carry no
     // information for a reader, only for the patch parser. On by default; set
     // false to restore the full unified diff.
@@ -2485,13 +2484,11 @@ public Settings loadSettings()
                 // from Settings after this one-time migration.
                 if (settingsVersion < 2)
                     settings.legacyTools = false;
-                // Version 3 adopts a persistent goal from the first message of
-                // every conversation so planning is goal-oriented from turn
-                // one. Older builds persisted the previous off default, so the
-                // behavior needs this one-time migration. Users can opt out
-                // from Settings afterwards.
-                if (settingsVersion < 3)
-                    settings.autoGoalFromFirstMessage = true;
+                // Version 3 forced automatic goals on existing chats. Ordinary
+                // task turns already retain plans and continuation; remove that
+                // extra completion protocol once. Explicit goals stay intact.
+                if (settingsVersion < 4)
+                    settings.autoGoalFromFirstMessage = false;
             }
         }
         catch (Exception error)
@@ -2555,7 +2552,7 @@ public void saveSettings(const ref Settings settings, bool strictIO = false)
 {
     ensureStateDirectory();
     JSONValue root;
-    root["settingsVersion"] = 3;
+    root["settingsVersion"] = 4;
     root["baseUrl"] = settings.baseUrl;
     root["apiKey"] = settings.apiKey;
     JSONValue providerKeys = JSONValue(string[].init);

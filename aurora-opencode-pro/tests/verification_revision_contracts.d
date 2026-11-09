@@ -6,7 +6,9 @@ import auroraopencode.core : Settings, saveSettings, setOpencodeStateDirectoryFo
 import auroraopencode.toolscheduler : toolWorkspaceRevision, invalidateToolWorkspace;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
-import std.file : mkdirRecurse;
+import std.file : mkdirRecurse, write, remove;
+import auroraopencode.verificationrecipe : runVerificationRecipe, VerificationRun;
+import std.json : JSONValue;
 import std.path : absolutePath, buildPath;
 import std.stdio : writeln;
 
@@ -68,6 +70,28 @@ int main()
     root.injectToolResultForTesting("goal_complete", "Done", false,
         `{"summary":"Finished","evidence":["call_inject"]}`);
     assert(root.goalStatusForTesting() == "completed", "Fresh evidence could not complete the goal");
+    root.newChatForTesting();
+    root.pauseToolContinuationForTesting();
+    root.addConversationForTesting(["user", "assistant"], ["Package and check the deliverable", ""]);
+    root.setTaskStateForTesting("Package and check the deliverable", "active", "required");
+    const deliverable = buildPath(workspace, "handoff.txt");
+    const scratch = buildPath(workspace, "scratch.txt");
+    write(deliverable, "unchanged delivered bytes"); write(scratch, "temporary extraction");
+    const inlineArgs = `{"inputs":["handoff.txt"],"steps":[{"kind":"tests","command":{"program":"checker"}}]}`;
+    const recipe = runVerificationRecipe(inlineArgs, workspace,
+        (JSONValue) => VerificationRun("OK", false, false));
+    assert(recipe.passed, recipe.output);
+    root.injectToolResultForTesting("verify", recipe.output, false, inlineArgs,
+        0, 0, "", null, recipe.check);
+    assert(root.verificationStatusForTesting() == "passed");
+    remove(scratch); invalidateToolWorkspace(workspace);
+    root.injectToolResultForTesting("remove", "Removed scratch.txt", false, `{"filePath":"scratch.txt"}`);
+    assert(root.verificationStatusForTesting() == "passed",
+        "Scratch cleanup discarded unchanged, explicitly hashed proof");
+    remove(deliverable); invalidateToolWorkspace(workspace);
+    root.injectToolResultForTesting("remove", "Removed handoff.txt", false, `{"filePath":"handoff.txt"}`);
+    assert(root.verificationStatusForTesting() == "required",
+        "Deleting the actual checked artifact retained a passing receipt");
     writeln("PASS stale recipe/direct receipt rejection, completion-time invalidation and fresh-check recovery");
     return 0;
 }

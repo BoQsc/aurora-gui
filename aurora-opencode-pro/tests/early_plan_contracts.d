@@ -191,8 +191,8 @@ int main()
     context(9);
     assert(root.userMessageCountForTesting() == usersBefore + 1, "Plan upkeep repeated inside its window");
     context(1);
-    assert(root.userMessageCountForTesting() == usersBefore + 2,
-        "A still-stale plan stopped receiving upkeep reminders");
+    assert(root.userMessageCountForTesting() == usersBefore + 1,
+        "An unchanged work phase received repeated upkeep lectures");
     record(advanced);
     assert(root.toolResultsSincePlanUpdateForTesting() == 0,
         "A refreshed plan kept its stale tool-result count");
@@ -247,7 +247,7 @@ int main()
     const beforeEdit = root.userMessageCountForTesting();
     run([OpenCodeToolCall("phase_write", "write", `{"filePath":` ~ JSONValue(phaseFile).toString ~ `,"content":"phase complete"}`)]);
     assert(root.userMessageCountForTesting() == beforeEdit + 1 &&
-        root.lastUserMessageForTesting().indexOf("Work has moved into editing or verification") >= 0);
+        root.lastUserMessageForTesting().indexOf("Work now includes editing or verification") >= 0);
     assert(root.taskStepStatusForTesting(0) == "in_progress", "A phase reminder fabricated completion");
     run([readCall(), readCall()]);
     assert(root.userMessageCountForTesting() == beforeEdit + 1, "Phase guidance repeated without a phase change");
@@ -265,7 +265,7 @@ int main()
         0, 0, "", null, "unittest");
     assert(root.verificationStatusForTesting() == "passed", "An accepted optional check could not satisfy a recorded verification outcome");
     assert(root.userMessageCountForTesting() == beforeCheck + 1 &&
-        root.lastUserMessageForTesting().indexOf("Work has moved into editing or verification") >= 0);
+        root.lastUserMessageForTesting().indexOf("Work now includes editing or verification") >= 0);
     foreach (ref step; phaseAdvanced["plan"].array) step["status"] = "completed";
     record(phaseAdvanced.toString());
     foreach (i; 0 .. 3) assert(root.taskStepStatusForTesting(i) == "completed");
@@ -299,8 +299,8 @@ int main()
     assert(exists(smoothFile), "Default upkeep still deferred authorized work");
     assert(root.taskStepStatusForTesting(0) == "in_progress", "Upkeep fabricated completed research");
     auto prompt = buildSystemPrompt(true, state, "win32");
-    assert(prompt.indexOf("Simple edits, quick lookups and direct answers") >= 0);
-    assert(prompt.indexOf("Update during the work, not retrospectively at the end") >= 0);
+    assert(prompt.indexOf("Simple edits, lookups and answers") >= 0);
+    assert(prompt.indexOf("mark it done and advance") >= 0);
     assert(prompt.indexOf("Call update_plan before the first substantive action on every request") < 0);
     writeln("PASS default stale-plan upkeep permits useful edits and keeps unfinished work honest");
     window.close();

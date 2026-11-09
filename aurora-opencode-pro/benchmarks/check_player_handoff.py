@@ -109,10 +109,15 @@ def check(directory):
         if message.get('toolName') != 'verify' or message.get('failed'): continue
         try:
             receipt = json.loads(message['content'])
-            recipe_path = Path(receipt['recipe'])
-            recipe = json.loads(recipe_path.read_text(encoding='utf-8'))
-            base = workspaces[message['toolCallId']]
-            paths = [(base/value).resolve() for value in recipe['inputs']]
+            if 'inputs' in receipt and 'workspace' in receipt:
+                base = Path(receipt['workspace'])
+                values = receipt['inputs']
+            else:
+                recipe_path = Path(receipt['recipe'])
+                recipe = json.loads(recipe_path.read_text(encoding='utf-8'))
+                base = workspaces[message['toolCallId']]
+                values = recipe['inputs']
+            paths = [(base/value).resolve() for value in values]
             verification_inputs.append({'toolCallId': message['toolCallId'], 'paths': [str(p) for p in paths]})
             for archive in archives:
                 for path in paths:
@@ -123,7 +128,8 @@ def check(directory):
     require(all(str(p.resolve()) in tracked_archives for p in archives),
             'An archive was omitted from every accepted verifier input set')
     require(header.get('taskStatus') == 'completed', 'Task did not complete')
-    require(header.get('goalStatus') == 'completed', 'Persistent goal did not complete')
+    if header.get('goal'):
+        require(header.get('goalStatus') == 'completed', 'Explicit persistent goal did not complete')
     require(all(r.get('status') == 'completed' for r in header.get('taskSteps', [])), 'Final checklist stale')
     effort = next((r.get('effort') for r in settings.get('reasoningControls', [])
                    if r.get('model') == header.get('model') and r.get('baseUrl') == settings.get('baseUrl')), None)
