@@ -15,6 +15,8 @@ import std.algorithm.searching : canFind;
 import std.process : environment;
 import std.string : strip, toLower;
 
+import auroraopencode.nativetooldefs : nativeOperationReadOnly;
+
 /// Only these values enable the mode, so an unset variable (the common case)
 /// leaves it off.
 private enum enableValues = ["1", "on", "true", "yes", "y", "enabled", "enable"];
@@ -39,6 +41,79 @@ public __gshared bool strictPlanEnabledBySetting = false;
 public void setStrictPlanSetting(bool value)
 {
     strictPlanEnabledBySetting = value;
+}
+
+// ---------------------------------------------------------------------------
+// experimental: plan mode - user-triggered propose-before-editing
+//
+// Removable drop-in: delete this region, the `experimentalPlanMode` fields in
+// core.d, the Plan controls in appui.d and the gate imports in tools.d and
+// conversationactor.d, and the feature is gone. The user arms it per
+// conversation with the composer's Plan toggle; this switch only controls
+// whether that toggle exists. ON by default.
+// ---------------------------------------------------------------------------
+
+/// Set by the host app from the persisted Settings checkbox. Defaults to on.
+public __gshared bool planModeEnabledBySetting = true;
+
+/// Whether the user-triggered Plan control exists. Read on every call so the
+/// prompt builder and the gate always agree with the current Settings value.
+public bool experimentalPlanModeEnabled()
+{
+    return planModeEnabledBySetting;
+}
+
+/// Apply the Settings choice.
+public void setPlanModeSetting(bool value)
+{
+    planModeEnabledBySetting = value;
+}
+
+/// Tools that cannot change the workspace or run a program. Everything else is
+/// refused while the conversation is in plan mode, so a prompt-ignoring model
+/// cannot bypass the gate.
+private enum planModeTools = ["read", "grep", "glob", "read_plan",
+    "read_history", "webfetch", "websearch", "calculate", "environment",
+    "tool_status", "process", "request_input", "task_blocker", "update_plan",
+    "update_subplan", "retire_images", "dshell"];
+
+/// True when a call must be refused because the conversation is in plan mode.
+public bool planBlocksTool(string name, string arguments)
+{
+    if (name.length == 0) return false;
+    if (planModeTools.canFind(name)) return false;
+    // data/archive mutate only for their write actions; their read-only actions
+    // stay available so the model can inspect JSON or list an archive.
+    return !nativeOperationReadOnly(name, arguments);
+}
+
+/// Guidance appended only while the user has armed Plan mode. It states the
+/// gate and the expected shape of the proposal; it never invents a step
+/// template.
+public string planModePromptBlock()
+{
+    return "\n# Plan mode\n" ~
+        "The user turned Plan mode on. Investigate read-only and propose; do " ~
+        "not change anything yet. Editing, writing, patching, removing, " ~
+        "moving, renaming, running commands, verifying, syncing and " ~
+        "rebuilding are refused until the user approves the plan.\n" ~
+        "Record the intended work with update_plan: each step names the files " ~
+        "or symbols it touches and a done criterion the user can check, plus " ~
+        "the acceptance rule taken from the request. Then stop and summarize " ~
+        "the proposal in one or two sentences. Nothing has been changed yet, " ~
+        "so never claim work is done.\n" ~
+        "If the request is only a question, answer it directly and skip the " ~
+        "plan. If a fact only the user can supply is missing, use " ~
+        "request_input instead of guessing.\n";
+}
+
+/// The refusal text a blocked call returns. Explicit so the model stops
+/// instead of retrying the same mutation.
+public string planModeRefusal(string name)
+{
+    return "Plan mode is on: nothing is changed yet, so `" ~ name ~
+        "` was not run. Record the intended steps with update_plan and stop; " ~
+        "the user will approve or adjust the plan.";
 }
 
 /// The system-prompt block appended only while tracked plan mode is on. It

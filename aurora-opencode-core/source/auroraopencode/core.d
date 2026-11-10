@@ -1321,6 +1321,10 @@ public struct ChatSession
     TaskContract contract;
     string[] taskArchive; // Immutable JSON snapshots; transcript history stays intact.
     string taskStatus; // "idle" | "active" | "reviewing" | "verifying" | "completed" | "blocked"
+    // experimental: planmode - user-armed "propose before editing" state. While
+    // true, mutating tools are refused until the user approves the plan. Owned
+    // by the composer Plan toggle and persisted with the conversation.
+    bool planMode;
     // Transport/execution lifecycle is intentionally separate from the
     // durable objective. A turn can finish successfully while its objective
     // remains active, and an interrupted turn does not make the objective a
@@ -1757,6 +1761,11 @@ public struct Settings
     // experimental: planmode - stricter, non-templating plan upkeep. Off by
     // default; the Settings dialog owns this switch.
     bool experimentalStrictPlan; // opt-in tracked-plan checklists
+    // experimental: plan mode - user-triggered "propose a plan, no edits" mode.
+    // ON by default. The composer's Plan toggle arms it per conversation; this
+    // switch only hides/disables that control. Fully removable with
+    // source/auroraopencode/planmode.d.
+    bool experimentalPlanMode = true;
     // Highly experimental opt-in: expose the `computer` tool that drives the
     // local desktop (screen/click/type/key/scroll). Off by default; the Settings
     // dialog owns this switch.
@@ -2249,6 +2258,10 @@ public Settings loadSettings()
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.experimentalStrictPlan =
                             found.type == JSONType.true_;
+                if (auto found = "experimentalPlanMode" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.experimentalPlanMode =
+                            found.type == JSONType.true_;
                 if (auto found = "experimentalComputerUse" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.experimentalComputerUse =
@@ -2591,6 +2604,7 @@ public void saveSettings(const ref Settings settings, bool strictIO = false)
     root["experimentalFollowUpDivider"] = settings.experimentalFollowUpDivider;
     root["experimentalNestedPlans"] = settings.experimentalNestedPlans;
     root["experimentalStrictPlan"] = settings.experimentalStrictPlan;
+    root["experimentalPlanMode"] = settings.experimentalPlanMode;
     root["experimentalComputerUse"] = settings.experimentalComputerUse;
     root["experimentalComputerUseVirtualPointer"] =
         settings.experimentalComputerUseVirtualPointer;

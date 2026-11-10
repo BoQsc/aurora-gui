@@ -145,6 +145,7 @@ public JSONValue sessionMetaToJson(const ref ChatSession session, bool includePl
     if (session.turnStatus.length > 0)
         root["turnStatus"] = session.turnStatus;
     if (session.unread) root["unread"] = true;
+    if (session.planMode) root["planMode"] = true;
     if (session.verificationStatus.length > 0)
         root["verificationStatus"] = session.verificationStatus;
     if (session.taskSteps.length > 0)
@@ -256,6 +257,7 @@ public JSONValue runtimeThreadJson(const ref ChatSession session, bool complete 
     payload["goalHistory"] = goalHistoryToJson(session.goalHistory);
     payload["taskStatus"] = session.taskStatus;
     payload["turnStatus"] = session.turnStatus;
+    payload["planMode"] = session.planMode;
     payload["verificationStatus"] = session.verificationStatus;
     // History is recorded only when it changes. Do not build hundreds of
     // revisions just to remove them from every ordinary metadata event.

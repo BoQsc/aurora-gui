@@ -50,6 +50,8 @@ public void decodeSessionMetadata(JSONValue sessionValue,
         session.turnStatus = field.str;
     if (auto field = "unread" in sessionValue.object)
         session.unread = field.type == JSONType.true_;
+    if (auto field = "planMode" in sessionValue.object)
+        session.planMode = field.type == JSONType.true_;
     if (auto field = "verificationStatus" in sessionValue.object)
         session.verificationStatus = field.str;
     readTaskContract(session, sessionValue);

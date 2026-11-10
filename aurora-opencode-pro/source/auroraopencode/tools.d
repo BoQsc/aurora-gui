@@ -1,5 +1,6 @@
 module auroraopencode.tools;
-import auroraopencode.planmode : experimentalStrictPlanEnabled;
+import auroraopencode.planmode : experimentalStrictPlanEnabled, planBlocksTool,
+    planModeRefusal;
 import auroraopencode.toolstate : ToolState;
 import auroraopencode.inputcontract : requestInputSchema;
 import auroraopencode.verificationrecipe : verificationToolDefinition;
@@ -2833,6 +2834,8 @@ public struct ChangeContext
     bool diagnosticReadOnly;
     bool developerCaptured;
     DeveloperToolPolicy developer;
+    // experimental: planmode - refuse mutations until the user approves.
+    bool planMode;
 }
 
 /// One filesystem path in Aurora's append-only mutation journal. File contents
@@ -6525,6 +6528,10 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
     {
         if (cancellation !is null && cancellation.cancelled())
             return ToolExecution(call.name, "Stopped: tool cancelled before it started.", true);
+        // experimental: planmode - the user armed Plan mode for this
+        // conversation, so nothing may change until the plan is approved.
+        if (changeContext.planMode && planBlocksTool(call.name, call.arguments))
+            return ToolExecution(call.name, planModeRefusal(call.name), true);
         const developerSource = changeContext.developerCaptured ? changeContext.developer.source : developerToolSourceDirectory();
         auto targets = mutationTargetPaths(call, workspace);
         auto leasePaths = targets.dup;

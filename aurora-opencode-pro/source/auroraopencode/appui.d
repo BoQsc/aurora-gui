@@ -101,7 +101,8 @@ import auroraopencode.orchestrator : setOrchestratorSetting,
     experimentalOrchestratorSubagents,
     OrchestratorAssignment, OrchestrationBatch;
 // experimental: planmode - delete with source/auroraopencode/planmode.d
-import auroraopencode.planmode : experimentalStrictPlanEnabled,
+import auroraopencode.planmode : experimentalPlanModeEnabled,
+    experimentalStrictPlanEnabled, planModePromptBlock, setPlanModeSetting,
     setStrictPlanSetting, trackedPlanPromptBlock;
 import auroraopencode.requestintent : diagnosticFollowUpRequest, explanationOnlyRequest, answerOnlyRequest;
 import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateError, incrementalPlan,
@@ -12724,6 +12725,11 @@ public final class OpenCodeRoot : VBox
     private Button _modelButton;
     private ThinkingControl _thinkingBox;
     private CheckBox _toolsBox;
+    // experimental: planmode - user-triggered propose-before-editing.
+    private CheckBox _planModeBox;
+    private Button _approvePlanButton;
+    private Button _adjustPlanButton;
+    private Button _rejectPlanButton;
     private KeyStatusBadge _keyBadge;
     private Label _status;
     private TextField _filterField;
@@ -13620,6 +13626,7 @@ private string _suggestExcludeId;
         // experimental: planmode - apply the persisted switch before any
         // prompt build.
         setStrictPlanSetting(_settings.experimentalStrictPlan);
+        setPlanModeSetting(_settings.experimentalPlanMode);
         // The subagent action needs the provider; hand it over with the switch.
         setComputerUseProvider(_settings.baseUrl, _settings.apiKey,
             _settings.model);
@@ -16211,6 +16218,23 @@ private string _suggestExcludeId;
                 : "Tools disabled.");
         };
 
+        // experimental: planmode - the user arms Plan mode for this
+        // conversation. While armed, mutating tools are refused and the agent
+        // stops after proposing. Delete with planmode.d.
+        _planModeBox = composerControls.add(new CheckBox("Plan"));
+        _planModeBox.setId("oc-planmode");
+        hugCheckBoxLabel(_planModeBox, "Plan");
+        _planModeBox.onChanged = delegate(bool value) { togglePlanMode(value); };
+        _approvePlanButton = composerControls.add(new Button("Approve"));
+        _approvePlanButton.setId("oc-plan-approve");
+        _approvePlanButton.onClick = delegate() { approvePlanMode(); };
+        _adjustPlanButton = composerControls.add(new Button("Adjust"));
+        _adjustPlanButton.setId("oc-plan-adjust");
+        _adjustPlanButton.onClick = delegate() { adjustPlanMode(); };
+        _rejectPlanButton = composerControls.add(new Button("Reject"));
+        _rejectPlanButton.setId("oc-plan-reject");
+        _rejectPlanButton.onClick = delegate() { rejectPlanMode(); };
+
         // Push the conversation timer to the right edge of the footer so it is
         // always visible, even when a long model name and the toggles fill the
         // row (it was easy to miss tucked in after the "?").
@@ -16649,6 +16673,8 @@ private string _suggestExcludeId;
         _goalCenter.layoutHints().preferredHeight = GoalBar.layoutHeight;
         _goalCenter.layoutHints().minHeight = GoalBar.layoutHeight;
         updateGoalBar();
+
+        updatePlanControls();
 
         chatPanel.add(_messagesScroll);
         chatPanel.add(_goalCenter);
@@ -17864,6 +17890,7 @@ private string _suggestExcludeId;
         refreshUsageBadge();
         refreshTimerBadge(true);
         updateGoalBar();
+        updatePlanControls();
         // A saved input pause that no longer names an essential fact must not
         // leave an active goal looking idle. Retry the startup recovery now
         // that this conversation is visible; lazy history retries it in
@@ -19013,6 +19040,7 @@ private string _suggestExcludeId;
     /// actually has checklist steps.
     private void updatePlanPanel()
     {
+        updatePlanControls();
         if (_planPanel is null) return;
         if (!_settings.detachedPlan || _current < 0)
         {
@@ -19025,6 +19053,102 @@ private string _suggestExcludeId;
             _settings.experimentalNestedPlans, checklistStale(*session),
             subagentEntriesFor(*session), conversationPlans(*session),
             _settings.planHistoryStrip);
+    }
+
+    // experimental: planmode - the gate's composer UI. Delete with planmode.d.
+    private ChatSession* planModeSession()
+    {
+        if (_current < 0 || _current >= cast(int) _sessions.length) return null;
+        return &_sessions[_current];
+    }
+
+    /// Reflect the armed conversation in the composer: the Plan switch, the
+    /// approval controls once a plan exists, and the placeholder hint.
+    private void updatePlanControls()
+    {
+        if (_planModeBox is null) return;
+        const available = experimentalPlanModeEnabled();
+        _planModeBox.setVisible(available);
+        const session = planModeSession();
+        const armed = available && session !is null && session.planMode;
+        _planModeBox.setChecked(armed, false);
+        const proposing = armed && session.taskSteps.length > 0;
+        _approvePlanButton.setVisible(proposing);
+        _adjustPlanButton.setVisible(proposing);
+        _rejectPlanButton.setVisible(proposing);
+        if (_input !is null && !turnIsBusy())
+            _input.setPlaceholder(armed
+                ? "Plan mode: investigate and propose — no edits yet…"
+                : "Ask anything…  @file · /goal · /btw · /review");
+    }
+
+    private void togglePlanMode(bool value)
+    {
+        if (!experimentalPlanModeEnabled())
+        {
+            _planModeBox.setChecked(false, false);
+            return;
+        }
+        auto session = planModeSession();
+        if (session is null) return;
+        if (turnIsBusy())
+        {
+            _planModeBox.setChecked(session.planMode, false);
+            updateStatus("Finish or stop the current turn before changing Plan mode.");
+            return;
+        }
+        session.planMode = value;
+        publishThreadUpdated(*session);
+        markDirty();
+        updatePlanControls();
+        updateStatus(value
+            ? "Plan mode on: the agent investigates and proposes; edits wait for approval."
+            : "Plan mode off.");
+    }
+
+    /// Approval lifts the gate and resumes the agent on the same branch, so the
+    /// approved plan actually runs instead of leaving the conversation idle.
+    private void approvePlanMode()
+    {
+        auto session = planModeSession();
+        if (session is null || !session.planMode) return;
+        session.planMode = false;
+        publishThreadUpdated(*session);
+        markDirty();
+        updatePlanControls();
+        int reply = -1;
+        foreach_reverse (index; activeMessagePath(*session))
+            if (session.messages[index].role == "assistant" &&
+                !session.messages[index].failed)
+            {
+                reply = cast(int) index;
+                break;
+            }
+        if (reply >= 0 && prepareContinue(_current, reply))
+        {
+            startChatRequest(_current);
+            return;
+        }
+        updateStatus("Plan approved. Send a message to start the approved work.");
+    }
+
+    private void adjustPlanMode()
+    {
+        if (_input is null) return;
+        _input.setText("Change the plan: ");
+        _input.requestFocus();
+        updateStatus("Describe the change; the revised plan still needs approval.");
+    }
+
+    private void rejectPlanMode()
+    {
+        auto session = planModeSession();
+        if (session is null) return;
+        session.planMode = false;
+        publishThreadUpdated(*session);
+        markDirty();
+        updatePlanControls();
+        updateStatus("Plan rejected. Nothing was changed.");
     }
 
     private void toggleNestedPlan(size_t parent)
@@ -22268,6 +22392,8 @@ private void pollButtonSuggestionRequest()
         changeContext.conversationId = _sessions[sessionIndex].id;
         changeContext.turnId = to!string(requestId);
         changeContext.diagnosticReadOnly = _execution.diagnosticActive;
+        changeContext.planMode = _sessions[sessionIndex].planMode &&
+            experimentalPlanModeEnabled();
         changeContext.developerCaptured = true;
         changeContext.developer.source = developerSourceDirectory();
         changeContext.developer.requireLatest = _settings.developerRequireLatestSource;
@@ -24901,7 +25027,9 @@ private void pollButtonSuggestionRequest()
         policy.contextLimit = diagnosticReview && normalContextLimit > 64_000 ? 64_000 : normalContextLimit;
         policy.imageLimit = experimentalImageHistoryLimit();
         policy.contextAnchor = multiAgentContextAnchor(*session, orchestratorSpeaker);
-        policy.planPrompt = trackedPlanPromptBlock();
+        policy.planPrompt = trackedPlanPromptBlock() ~
+            (session.planMode && experimentalPlanModeEnabled()
+                ? planModePromptBlock() : "");
         policy.reviewPrompt = responsePlanReviewPrompt();
         policy.verbosity = promptVerbosityDirective(_settings.verbosity);
         if (policy.orchestratorEnabled && orchestratorSpeaker.length)
@@ -27424,6 +27552,25 @@ private void pollButtonSuggestionRequest()
         };
         strictPlanRow.add(strictPlanCheck);
         optionsBody.add(strictPlanRow);
+
+        // experimental: planmode - user-triggered propose-before-editing. On by
+        // default; this switch controls whether the composer Plan control
+        // exists. Delete with planmode.d.
+        auto planModeRow = new HBox(8);
+        planModeRow.layoutHints().preferredHeight = 32;
+        auto planModeCheck = new CheckBox("Plan mode (propose before edits)");
+        planModeCheck.setId("oc-planmode-setting");
+        planModeCheck.setChecked(_settings.experimentalPlanMode, false);
+        planModeCheck.onChanged = delegate(bool value)
+        {
+            _settings.experimentalPlanMode = value;
+            setPlanModeSetting(value);
+            saveSettingsNow();
+            updatePlanControls();
+            if (_current >= 0) rebuildMessageColumn();
+        };
+        planModeRow.add(planModeCheck);
+        optionsBody.add(planModeRow);
 
         // experimental: computer use - delete with
         // source/auroraopencode/computeruse.d. Highly experimental and off by
@@ -36254,6 +36401,39 @@ private void pollButtonSuggestionRequest()
         _settings.experimentalStrictPlan = value;
         setStrictPlanSetting(value);
         if (_current >= 0) rebuildMessageColumn();
+    }
+
+    // experimental: planmode - drive the real switch headlessly, exactly as
+    // the composer Plan control and the Settings checkbox do.
+    public void setExperimentalPlanModeForTesting(bool value)
+    {
+        _settings.experimentalPlanMode = value;
+        setPlanModeSetting(value);
+        updatePlanControls();
+    }
+
+    /// Test-only: toggle the active conversation's Plan mode through the same
+    /// path the composer control uses.
+    public void setPlanModeForTesting(bool value)
+    {
+        togglePlanMode(value);
+    }
+
+    public bool planModeForTesting()
+    {
+        const session = planModeSession();
+        return session !is null && session.planMode;
+    }
+
+    /// Test-only: the approval controls' visibility, in Approve/Adjust/Reject
+    /// order, so a headless run can prove the gate is offered exactly when a
+    /// plan is waiting.
+    public string planApprovalControlsForTesting()
+    {
+        if (_approvePlanButton is null) return "";
+        return (_approvePlanButton.visible() ? "A" : "-") ~
+            (_adjustPlanButton.visible() ? "d" : "-") ~
+            (_rejectPlanButton.visible() ? "R" : "-");
     }
 
     // >>> pet:begin (test-only hooks; drive the real switch headlessly, exactly

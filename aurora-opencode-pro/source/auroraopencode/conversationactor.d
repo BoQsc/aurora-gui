@@ -39,6 +39,8 @@ import auroraopencode.taskmutation : applyTaskPlan, applyTaskSubplan;
 import auroraopencode.taskpolicy : verificationScope;
 import auroraopencode.goalmode : goalActive, recordGoalSet, recordGoalOutcome, clampGoalText, goalContinuationInstruction;
 import auroraopencode.planhistory : recordPlanHistory;
+// experimental: planmode - delete with source/auroraopencode/planmode.d
+import auroraopencode.planmode : experimentalPlanModeEnabled, planModePromptBlock;
 import auroraopencode.goalmutation : resetTaskForNewGoal, restoreGoalTask;
 import auroraopencode.outputrecovery : answerReplayed, goalAuditStalled, taskAuditStalled, outputRecoveryCount, maxOutputRecoveries, unfinishedTaskRecoveryInstruction;
 import auroraopencode.outputguard : outputRecoveryMarker;
@@ -52,7 +54,7 @@ import std.conv : to;
 import std.format : format;
 import std.json : JSONValue, JSONType, parseJSON;
 import std.path : buildPath;
-import std.string : toLower, strip;
+import std.string : indexOf, toLower, strip;
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 
@@ -591,6 +593,10 @@ public final class ConversationActor
         refreshVerification();
         if (images.prepare(session, config.request.imageLimit)) engine.invalidateProjection();
         auto policy = config.request;
+        // experimental: planmode - the armed conversation's proposal rules.
+        if (session.planMode && experimentalPlanModeEnabled() &&
+            policy.planPrompt.indexOf(planModePromptBlock()) < 0)
+            policy.planPrompt ~= planModePromptBlock();
         if (config.turn.orchestratorEnabled)
         {
             experimentalOrchestratorEnsureRoster(session);
@@ -1110,6 +1116,7 @@ public final class ConversationActor
         const workspace = batchConfig.workspace;
         ChangeContext context; context.conversationId = session.id; context.turnId = to!string(id);
         context.diagnosticReadOnly = batchConfig.request.diagnosticReview;
+        context.planMode = session.planMode && experimentalPlanModeEnabled();
         context.developerCaptured = true; context.developer = batchConfig.developer;
         context.computer = ComputerUseContext(true, sessionRoutingKey(session),
             batchConfig.baseUrl, batchConfig.apiKey, roundModel, false, cast(uint) id);
