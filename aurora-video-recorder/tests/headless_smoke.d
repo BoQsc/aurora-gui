@@ -16,7 +16,12 @@ module headless_smoke;
 import aurorarecorder.encoder : RecorderPhase, RecordingJob, ScreenEncoder,
     buildCommandLine, encoderArguments, quoteArgument;
 import aurorarecorder.ffmpeg : findFfmpeg;
+import aurorarecorder.hotkey : GlobalHotkey, HotkeyChord, chordFromText,
+    defaultHotkey, describeHotkey, hotkeyAlt, hotkeyControl, hotkeyKeyAllowed,
+    hotkeyShift, hotkeyWin;
+import aurorarecorder.recorder : RecorderOptions;
 import aurorarecorder.settings;
+import aurorarecorder.settingsfile : parseSettings, serializeSettings;
 
 import core.thread : Thread, dur;
 import std.array : join;
@@ -140,6 +145,71 @@ private void checkSettings()
     check(ensureMp4Extension("a.mp4") == "a.mp4", "existing extension kept");
 }
 
+private void checkHotkeyModel()
+{
+    const parsed = chordFromText("Ctrl+Shift+R");
+    check(parsed.valid(), "Ctrl+Shift+R parses");
+    check(parsed.modifiers == (hotkeyControl | hotkeyShift), "modifiers parsed");
+    check(parsed.virtualKey == 0x52, "R maps to VK 0x52");
+    check(describeHotkey(parsed) == "Ctrl+Shift+R", "display text round-trips");
+
+    check(chordFromText("  alt + f5 ").virtualKey == 0x74, "case/spacing ignored");
+    check(chordFromText("win+shift+5").modifiers == (hotkeyWin | hotkeyShift),
+        "Win modifier parsed");
+    check(chordFromText("f12").virtualKey == 0x7B, "F12 maps to VK 0x7B");
+    check(chordFromText("F1").virtualKey == 0x70, "F1 maps to VK 0x70");
+
+    check(!chordFromText("R").valid(), "a bare letter is not a hotkey");
+    check(!chordFromText("ctrl+shift").valid(), "modifiers alone are invalid");
+    check(!chordFromText("ctrl+r+t").valid(), "two plain keys are invalid");
+    check(!chordFromText("ctrl+").valid(), "trailing plus is invalid");
+    check(!chordFromText("").valid(), "empty text is invalid");
+    check(!chordFromText("ctrl+f25").valid(), "F25 does not exist");
+
+    check(hotkeyKeyAllowed(0x74, 0), "function keys may stand alone");
+    check(!hotkeyKeyAllowed(0x52, hotkeyShift),
+        "Shift alone would swallow typing and is refused");
+    check(hotkeyKeyAllowed(0x52, hotkeyAlt), "Alt+letter is allowed");
+    check(!hotkeyKeyAllowed(0x10, hotkeyControl), "a modifier is not a key");
+
+    check(defaultHotkey == chordFromText("Ctrl+Shift+R"),
+        "documented default is Ctrl+Shift+R");
+}
+
+private void checkSettingsFile()
+{
+    RecorderOptions defaults;
+    defaults.fps = 60;
+    defaults.quality = 18;
+    defaults.drawCursor = false;
+    defaults.outputFolder = "C:\\Clips";
+    defaults.target = CaptureTarget.primaryMonitor;
+    const chord = chordFromText("Alt+F9");
+
+    const text = serializeSettings(defaults, chord);
+    const stored = parseSettings(text, RecorderOptions.init);
+    check(stored.options.fps == 60, "fps survives a round trip");
+    check(stored.options.quality == 18, "quality survives a round trip");
+    check(!stored.options.drawCursor, "cursor flag survives a round trip");
+    check(stored.options.outputFolder == "C:\\Clips", "folder survives");
+    check(stored.options.target == CaptureTarget.primaryMonitor,
+        "capture target survives");
+    check(stored.hasHotkey && stored.hotkey == chord, "hotkey survives");
+
+    // A disabled hotkey is stored as an empty value, not a default.
+    const off = parseSettings(serializeSettings(defaults, HotkeyChord.init),
+        RecorderOptions.init);
+    check(off.hasHotkey && !off.hotkey.valid(), "empty hotkey means disabled");
+
+    // Garbage and unknown keys leave the defaults alone.
+    const broken = parseSettings("fps=abc\nquality=999\nhotkey=ctrl+q+r\nnonsense=1",
+        defaults);
+    check(broken.options.fps == defaults.fps, "bad fps keeps the default");
+    check(broken.options.quality == 28, "out-of-range quality snaps to a preset");
+    check(broken.hasHotkey && !broken.hotkey.valid(),
+        "an unusable stored chord disables the hotkey");
+}
+
 private void checkCommandLine()
 {
     RecordingJob job;
@@ -166,14 +236,12 @@ private void checkCommandLine()
     auto withCursor = job;
     withCursor.drawCursor = true;
     const cursorLine = encoderArguments(withCursor).join(" ");
-    check(cursorLine.indexOf("-f gdigrab -draw_mouse 1") >= 0,
-        "cursor mode captures through gdigrab with the pointer drawn");
-    check(cursorLine.indexOf("-t 2") >= 0,
-        "gdigrab mode carries a hard time cap");
-    check(cursorLine.indexOf("-i desktop") >= 0,
-        "gdigrab captures the desktop by name");
-    check(cursorLine.indexOf("-i pipe:0") < 0,
-        "gdigrab mode does not read stdin");
+    // The pointer is composited into the frames by this app, so both modes
+    // read frames from stdin and stop by closing it.
+    check(cursorLine == line, "cursor mode uses the same stdin input");
+    check(cursorLine.indexOf("-i pipe:0") >= 0, "cursor mode reads stdin");
+    check(cursorLine.indexOf("gdigrab") < 0,
+        "capture never moves into ffmpeg (it could not be stopped cleanly)");
 
     const commandLine = buildCommandLine("C:\\Program Files\\ffmpeg.exe",
         ["-i", "pipe:0", "C:\\My Videos\\rec.mp4"]);
@@ -191,6 +259,60 @@ private void checkCommandLine()
 // ---------------------------------------------------------------------------
 // Live recording
 // ---------------------------------------------------------------------------
+
+/**
+ * Register a real global hotkey, simulate the chord with SendInput and confirm
+ * the recorder sees the press. Uses F13 (rarely bound) so the test does not
+ * steal a shortcut a user is likely to hold.
+ */
+private void checkHotkeyLive()
+{
+    version (Windows)
+    {
+        import core.sys.windows.windows : INPUT, INPUT_KEYBOARD, KEYBDINPUT,
+            KEYEVENTF_KEYUP, SendInput, VK_F13;
+
+        __gshared int pressed;
+        auto hotkey = new GlobalHotkey({ pressed++; });
+        const result = hotkey.apply(chordFromText("Ctrl+F13"));
+        check(result.ok, format("Ctrl+F13 registers with Windows (error=%s)",
+            result.error));
+        if (!result.ok)
+        {
+            hotkey.shutdown();
+            return;
+        }
+
+        // Order: Ctrl down, F13 down, F13 up, Ctrl up.
+        INPUT[4] inputs;
+        foreach (i; 0 .. 4)
+            inputs[i].type = INPUT_KEYBOARD;
+        inputs[0].ki.wVk = 0x11;
+        inputs[0].ki.dwFlags = 0;
+        inputs[1].ki.wVk = VK_F13;
+        inputs[1].ki.dwFlags = 0;
+        inputs[2].ki.wVk = VK_F13;
+        inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+        inputs[3].ki.wVk = 0x11;
+        inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+
+        if (SendInput(4, &inputs[0], INPUT.sizeof) != 4)
+        {
+            writeln("  (SendInput unavailable; hotkey press not simulated)");
+            hotkey.shutdown();
+            return;
+        }
+
+        // `pressed` is the onPressed callback; `takePressed` is the recorder's
+        // read-and-clear. Both must see the same press.
+        const deadline = Clock.currTime + dur!"seconds"(3);
+        while (!hotkey.takePressed() && Clock.currTime < deadline)
+            Thread.sleep(dur!"msecs"(10));
+        check(pressed > 0, "the registered hotkey fires on a simulated chord");
+        check(!hotkey.takePressed(), "taking a press clears the flag");
+        hotkey.shutdown();
+    }
+}
 
 /**
  * Record a short clip and verify the resulting MP4. `drawCursor` selects the
@@ -281,7 +403,10 @@ int main(string[] args)
         if (arg == "--require-live") requireLive = true;
 
     checkSettings();
+    checkHotkeyModel();
+    checkSettingsFile();
     checkCommandLine();
+    checkHotkeyLive();
 
     const ffmpeg = environment.get("AURORA_RECORDER_FFMPEG", "").length > 0 ?
         findFfmpeg("") : findFfmpeg(runExecutableDirectory());

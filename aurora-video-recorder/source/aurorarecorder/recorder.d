@@ -150,6 +150,12 @@ final class RecorderController
         }
 
         ensureFolder(_options.outputFolder);
+        if (!folderIsDir(_options.outputFolder))
+        {
+            _lastMessage = "Could not create the recording folder " ~
+                _options.outputFolder ~ ". Pick another folder with Change...";
+            return false;
+        }
         refreshMonitors();
         const rect = captureRect();
         if (!rect.valid())
@@ -258,14 +264,41 @@ final class RecorderController
 
     private static void ensureFolder(string folder)
     {
+        if (folder.length == 0 || folderIsDir(folder)) return;
         try
         {
-            if (!isDir(folder)) mkdirRecurse(folder);
+            mkdirRecurse(folder);
+            if (folderIsDir(folder)) return;
         }
         catch (Exception)
         {
-            // Creation failure surfaces as a failed recording start.
+            // std.file cannot create every shell folder (the per-user Videos
+            // directory fails with "cannot find the file specified"), so fall
+            // back to the Win32 call before giving up.
         }
+        version (Windows)
+        {
+            import core.sys.windows.windows : CreateDirectoryW, GetFileAttributesW;
+            import std.utf : toUTF16z;
+            // CreateDirectoryW only makes the last component, so build each
+            // parent in turn.
+            foreach (i; 0 .. folder.length)
+            {
+                if (folder[i] != '\\' && folder[i] != '/') continue;
+                if (i < 3) continue; // drive root ("C:\")
+                const prefix = folder[0 .. i];
+                if (GetFileAttributesW(toUTF16z(prefix)) == 0xFFFFFFFF)
+                    CreateDirectoryW(toUTF16z(prefix), null);
+            }
+            CreateDirectoryW(toUTF16z(folder), null);
+        }
+    }
+
+    /// `isDir` that never throws (a missing or locked folder is "not a dir").
+    private static bool folderIsDir(string folder)
+    {
+        try return isDir(folder);
+        catch (Exception) return false;
     }
 }
 

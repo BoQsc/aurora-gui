@@ -12,13 +12,18 @@ module aurorarecorder.app;
 import aurora;
 
 import aurorarecorder.encoder : RecorderPhase;
+import aurorarecorder.ffmpeg : executableDirectory;
+import aurorarecorder.hotkey : GlobalHotkey, HotkeyChord, HotkeyResult,
+    chordFromText, defaultHotkey, describeHotkey, hotkeyAlt, hotkeyControl,
+    hotkeyErrorAlreadyRegistered, hotkeyKeyAllowed, hotkeyShift, hotkeyWin;
 import aurorarecorder.recorder : RecorderController, RecorderOptions,
     RecorderSnapshot, locateFfmpeg;
 import aurorarecorder.settings : CaptureTarget, formatClock, isPreset,
     recordedSeconds, Timestamp;
+import aurorarecorder.settingsfile : loadSettings, saveSettings, settingsPath;
 
-import std.format : format;
 import std.datetime : Clock, LocalTime;
+import std.format : format;
 import std.string : startsWith;
 
 // ---------------------------------------------------------------------------
@@ -101,6 +106,16 @@ final class RecorderRoot : VBox
     private ChoiceRow _fpsRow;
     private ChoiceRow _qualityRow;
     private CheckBox _cursorBox;
+    private Button _hotkeyButton;
+    private Button _hotkeyClearButton;
+    private Label _hotkeyHint;
+
+    /// Global start/stop chord; null when the user turned it off.
+    private GlobalHotkey _hotkey;
+    private HotkeyChord _chord = defaultHotkey;
+    private bool _capturingChord;
+    /// Settings written on every change ("" disables persistence).
+    private string _settingsFile;
 
     // Last values painted, so a tick without a visible change is free.
     private RecorderPhase _shownPhase = RecorderPhase.idle;
@@ -109,11 +124,15 @@ final class RecorderRoot : VBox
     private string _shownTarget;
     private bool _shownCanPlay;
 
-    this(GuiWindow window, RecorderController controller)
+    this(GuiWindow window, RecorderController controller,
+        GlobalHotkey hotkey, HotkeyChord chord, string settingsFile)
     {
-        super(8, Insets(16));
+        super(6, Insets(14));
         _window = window;
         _controller = controller;
+        _hotkey = hotkey;
+        _chord = chord;
+        _settingsFile = settingsFile;
         const options = _controller.options();
 
         auto title = new Label("Aurora Video Recorder");
@@ -130,6 +149,9 @@ final class RecorderRoot : VBox
         _recordButton.setTextPixelSize(20);
         _recordButton.layoutHints().flex = 1.0;
         _recordButton.layoutHints().preferredWidth = 220;
+        // flex only grows the button horizontally; without a height hint it
+        // stretched over the whole free column.
+        _recordButton.layoutHints().preferredHeight = 48;
         _recordButton.setAccent(true);
         _recordButton.onClick = &onRecordPressed;
         actionRow.add(_recordButton);
@@ -139,12 +161,12 @@ final class RecorderRoot : VBox
         _timer.setPixelSize(34);
         _timer.setAlignment(HorizontalAlign.center);
         _timer.setColor(theme().text);
-        _timer.layoutHints().preferredHeight = 52;
+        _timer.layoutHints().preferredHeight = 46;
         add(_timer);
 
         _status = new Label("");
         _status.setColor(theme().textMuted);
-        _status.layoutHints().preferredHeight = 44;
+        _status.layoutHints().preferredHeight = 38;
         add(_status);
 
         add(new Separator());
@@ -182,6 +204,28 @@ final class RecorderRoot : VBox
             options.drawCursor);
         _cursorBox.onChanged = (bool value) { _controller.setDrawCursor(value); };
         add(_cursorBox);
+
+        // ---- Start/stop hotkey ----
+        add(new Label("Start/stop hotkey"));
+        auto hotkeyRow = new HBox(10);
+        hotkeyRow.layoutHints().preferredHeight = 36;
+        _hotkeyButton = new Button("");
+        _hotkeyButton.layoutHints().flex = 1.0;
+        _hotkeyButton.layoutHints().preferredWidth = 180;
+        _hotkeyButton.onClick = &onHotkeyButton;
+        hotkeyRow.add(_hotkeyButton);
+        _hotkeyClearButton = new Button("Off");
+        _hotkeyClearButton.onClick = () {
+            setChord(HotkeyChord.init);
+        };
+        hotkeyRow.add(_hotkeyClearButton);
+        add(hotkeyRow);
+
+        _hotkeyHint = new Label("");
+        _hotkeyHint.setColor(theme().textMuted);
+        add(_hotkeyHint);
+
+        refreshHotkeyText();
 
         add(new Separator());
 
@@ -232,11 +276,16 @@ final class RecorderRoot : VBox
             theme().danger : theme().textMuted);
         _targetHint.setColor(theme().textMuted);
         _folderLabel.setColor(theme().textMuted);
+        _hotkeyHint.setColor(theme().textMuted);
     }
 
     /// Called from the window tick. Cheap when nothing is recording.
     void poll()
     {
+        // A hotkey press toggles recording exactly like the button.
+        if (_hotkey !is null && _hotkey.takePressed())
+            onRecordPressed();
+
         if (!_controller.hasEncoder())
         {
             // One final refresh after the encoder finished on its own.
@@ -365,6 +414,125 @@ final class RecorderRoot : VBox
         applyStatus(_controller.poll(), true);
     }
 
+    // ---- Start/stop hotkey ----
+
+    /// The chord button either starts capture ("Press a key combination") or
+    /// cancels capture.
+    private void onHotkeyButton()
+    {
+        if (_capturingChord)
+        {
+            setCapturing(false);
+            return;
+        }
+        setCapturing(true);
+        _hotkeyButton.setText("Press a key combination...");
+        _hotkeyHint.setText("Use Ctrl, Alt or Win plus a letter or digit, " ~
+            "or a function key. Esc cancels.");
+        _hotkeyButton.requestFocus();
+    }
+
+    private void setCapturing(bool value)
+    {
+        _capturingChord = value;
+        if (!value) refreshHotkeyText();
+    }
+
+    /// Keyboard hook from the panel: capture the chord while the button is
+    /// waiting, otherwise leave the key for the rest of the UI.
+    override bool onKeyDown(ref Event event)
+    {
+        if (!_capturingChord) return super.onKeyDown(event);
+
+        if (event.key == Key.escape)
+        {
+            setCapturing(false);
+            return true;
+        }
+
+        uint modifiers;
+        if (event.control) modifiers |= hotkeyControl;
+        if (event.alt) modifiers |= hotkeyAlt;
+        if (event.shift) modifiers |= hotkeyShift;
+        if (event.meta) modifiers |= hotkeyWin;
+
+        const virtualKey = virtualKeyFromKey(event.key);
+        if (virtualKey == 0) return true; // modifier or unhandled printable
+        if (!hotkeyKeyAllowed(virtualKey, modifiers))
+        {
+            _hotkeyHint.setText("That combination needs Ctrl, Alt or Win " ~
+                "before a letter or digit (or use a function key).");
+            return true;
+        }
+
+        setCapturing(false);
+        setChord(HotkeyChord(modifiers, virtualKey));
+        return true;
+    }
+
+    /// Register `chord`, show it and save the setting.
+    private void setChord(HotkeyChord chord)
+    {
+        HotkeyResult result;
+        if (_hotkey !is null)
+            result = _hotkey.apply(chord);
+        else
+            result.ok = !chord.valid();
+
+        if (!result.ok)
+        {
+            _chord = chord;
+            refreshHotkeyText();
+            _hotkeyHint.setText(result.error == hotkeyErrorAlreadyRegistered ?
+                "That combination is already used by another application." :
+                "Windows refused that combination.");
+            _hotkeyHint.setColor(theme().danger);
+            return;
+        }
+
+        _chord = chord;
+        refreshHotkeyText();
+        if (chord.valid())
+            _hotkeyHint.setText("Press " ~ describeHotkey(chord) ~
+                " anywhere to start or stop recording.");
+        else
+            _hotkeyHint.setText("No global hotkey; use the Record button.");
+        _hotkeyHint.setColor(theme().textMuted);
+        saveCurrentSettings();
+    }
+
+    private void refreshHotkeyText()
+    {
+        _hotkeyButton.setText(describeHotkey(_chord));
+    }
+
+    /// Apply the stored chord once the window is live, and report a refusal.
+    void registerHotkey()
+    {
+        const result = _hotkey is null ? HotkeyResult(!_chord.valid(), 0) :
+            _hotkey.apply(_chord);
+        if (result.ok)
+        {
+            _hotkeyHint.setText(_chord.valid() ?
+                "Press " ~ describeHotkey(_chord) ~
+                    " anywhere to start or stop recording." :
+                "No global hotkey; use the Record button.");
+            return;
+        }
+        // A saved chord can be taken by another application between runs.
+        _hotkeyHint.setText(result.error == hotkeyErrorAlreadyRegistered ?
+            "The saved hotkey is already used by another application." :
+            "The saved hotkey could not be registered.");
+        _hotkeyHint.setColor(theme().danger);
+    }
+
+    private void saveCurrentSettings()
+    {
+        if (_settingsFile.length == 0) return;
+        const options = _controller.options();
+        saveSettings(_settingsFile, options, _chord);
+    }
+
     private void onChangeFolder()
     {
         FileDialogOptions options;
@@ -378,6 +546,38 @@ final class RecorderRoot : VBox
             return;
         _controller.setOutputFolder(path);
         refreshFolder();
+    }
+}
+
+/**
+ * Win32 virtual-key code for a key press detected by the panel. Modifier keys
+ * themselves map to 0: they are read from the event, never captured as the
+ * hotkey's key.
+ */
+uint virtualKeyFromKey(Key key) @safe pure nothrow
+{
+    // letter/digit keys are contiguous in `Key` and in Win32's A..Z, 0..9.
+    if (key >= Key.a && key <= Key.z)
+        return 0x41 + (cast(uint) key - cast(uint) Key.a);
+    if (key >= Key.digit0 && key <= Key.digit9)
+        return 0x30 + (cast(uint) key - cast(uint) Key.digit0);
+    if (key >= Key.f1 && key <= Key.f12)
+        return 0x70 + (cast(uint) key - cast(uint) Key.f1);
+
+    switch (key)
+    {
+        case Key.space: return 0x20;
+        case Key.pageUp: return 0x21;
+        case Key.pageDown: return 0x22;
+        case Key.end: return 0x23;
+        case Key.home: return 0x24;
+        case Key.left: return 0x25;
+        case Key.up: return 0x26;
+        case Key.right: return 0x27;
+        case Key.down: return 0x28;
+        case Key.insert: return 0x2D;
+        case Key.deleteKey: return 0x2E;
+        default: return 0;
     }
 }
 
@@ -407,6 +607,41 @@ void openInShell(string path)
     }
 }
 
+/**
+ * Open `folder` in Explorer with `file` selected and scrolled into view.
+ *
+ * `explorer.exe /select,"<path>"` is the documented way to do this. Plainly
+ * opening the folder only shows its contents, which is why the finished
+ * recording was not highlighted before.
+ */
+void openFolderSelecting(string folder, string file)
+{
+    version (Windows)
+    {
+        import core.sys.windows.shellapi : ShellExecuteW;
+        import std.utf : toUTF16z;
+        if (file.length == 0 || exists(file))
+        {
+            // Selecting needs the file to exist; an empty or missing result
+            // still opens the folder so the button never does nothing.
+            if (file.length > 0)
+            {
+                const arguments = "/select," ~ quoteForExplorer(file);
+                ShellExecuteW(null, toUTF16z("open"), toUTF16z("explorer.exe"),
+                    toUTF16z(arguments), toUTF16z(folder), 1);
+                return;
+            }
+        }
+        openInShell(folder);
+    }
+}
+
+/// Wrap a path for `explorer.exe /select,` so spaces and commas survive.
+private string quoteForExplorer(string path)
+{
+    return "\"" ~ path ~ "\"";
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -415,9 +650,13 @@ private WindowOptions recorderWindowOptions()
 {
     WindowOptions options;
     options.title = "Aurora Video Recorder";
-    options.width = 580;
+    // The panel lays out at ~720 logical pixels wide; a narrower window would
+    // clip the right-hand buttons (the click target would fall outside it).
+    // The panel's rows lay out at ~720 logical pixels; a narrower window clips
+    // the right-hand controls (and their click targets).
+    options.width = 760;
     // Fits a 1080p work area (taskbar visible) without being resized.
-    options.height = 860;
+    options.height = 812;
     options.resizable = false;
     options.decorated = true;
     options.darkTitleBar = true;
@@ -439,23 +678,37 @@ private string folderArgument(string[] args)
 
 int run(string[] args, string executablePath = "")
 {
+    // Settings live next to the executable so a portable copy keeps them.
+    const settingsFile = settingsPath(executableDirectory(executablePath));
+
     RecorderOptions options;
     options.outputFolder = folderArgument(args);
     RecorderController.normalizeOptions(options);
+    auto stored = loadSettings(settingsFile, options);
+    auto settings = stored.options;
+    if (options.outputFolder.length > 0)
+        settings.outputFolder = options.outputFolder; // command line wins
+    const chord = stored.hasHotkey ? stored.hotkey : defaultHotkey;
 
     auto window = new GuiWindow(recorderWindowOptions(), Theme.dark());
-    auto controller = new RecorderController(options,
+    auto controller = new RecorderController(settings,
         locateFfmpeg(executablePath));
-    auto root = new RecorderRoot(window, controller);
+    // The hotkey thread only records the press; the panel tick acts on it.
+    auto hotkey = new GlobalHotkey(null);
+    auto root = new RecorderRoot(window, controller, hotkey, chord,
+        settingsFile);
     window.setRoot(root);
     root.refreshTheme(); // Colors resolve once the widget is attached.
+    root.registerHotkey(); // After setRoot so the result can be shown.
     window.applicationService = (double delta) { root.poll(); };
     window.onCloseRequested = () {
+        hotkey.shutdown();
         controller.shutdown();
         return true;
     };
 
     const code = window.run();
+    hotkey.shutdown();
     controller.shutdown();
     return code;
 }

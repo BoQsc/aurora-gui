@@ -42,7 +42,7 @@ version (Windows)
         LPWSTR, OPEN_ALWAYS, PROCESS_INFORMATION, SECURITY_ATTRIBUTES,
         SetHandleInformation, SetInformationJobObject, STARTF_USESHOWWINDOW,
         STARTF_USESTDHANDLES, STARTUPINFOW, SW_HIDE, TRUE,
-        WaitForSingleObject, WriteFile, CREATE_NO_WINDOW, TerminateProcess,
+        WaitForSingleObject, WriteFile, CREATE_NO_WINDOW,
         AssignProcessToJobObject;
     import std.utf : toUTF16, toUTF16z;
 
@@ -182,29 +182,15 @@ final class RecorderStatus
 string[] encoderArguments(RecordingJob job)
 {
     string[] args = ["-hide_banner", "-loglevel", "warning", "-y"];
-    // Capture with gdigrab so ffmpeg can composite the pointer itself
-    // (`draw_mouse 1`); plain GDI BitBlt frames never contain the cursor.
-    if (job.drawCursor)
-    {
-        args ~= [
-            "-f", "gdigrab", "-draw_mouse", "1",
-            "-framerate", text(job.fps),
-            "-offset_x", text(job.rect.x),
-            "-offset_y", text(job.rect.y),
-            "-video_size", text(job.rect.width, "x", job.rect.height),
-            "-i", "desktop",
-        ];
-    }
-    else
-    {
-        // Raw BGRA frames on stdin, captured by this app's own thread.
-        args ~= [
-            "-f", "rawvideo", "-pixel_format", "bgra",
-            "-video_size", text(job.rect.width, "x", job.rect.height),
-            "-framerate", text(job.fps),
-            "-i", "pipe:0",
-        ];
-    }
+    // Raw BGRA frames on stdin, captured by this app's own thread (the cursor
+    // is composited into them). stdin is the only input, so closing it is an
+    // unambiguous "stop" that ffmpeg finalizes cleanly.
+    args ~= [
+        "-f", "rawvideo", "-pixel_format", "bgra",
+        "-video_size", text(job.rect.width, "x", job.rect.height),
+        "-framerate", text(job.fps),
+        "-i", "pipe:0",
+    ];
     args ~= [
         "-an",
         "-c:v", "libx264",
@@ -213,10 +199,6 @@ string[] encoderArguments(RecordingJob job)
         "-crf", text(job.quality),
         "-pix_fmt", "yuv420p",
     ];
-    // gdigrab reads the desktop on its own clock and never sees stdin close,
-    // so the only safe stop is a hard cap; the worker stops it at that point.
-    if (job.drawCursor)
-        args ~= ["-t", text(job.maxSeconds > 0 ? job.maxSeconds : stopMarginSeconds)];
     args ~= ["-movflags", "+faststart", job.outputPath];
     return args;
 }
@@ -400,6 +382,7 @@ final class ScreenEncoder
                     _job.rect.width, "x", _job.rect.height, "."));
                 return;
             }
+            surface.setDrawCursor(_job.drawCursor);
 
             HANDLE logHandle = openLog(_job.outputPath ~ ".log");
             HANDLE writeEnd;
@@ -429,27 +412,13 @@ final class ScreenEncoder
 
             long frames;
             string writeError;
-            bool selfFinished;   // gdigrab hit its cap and exited by itself
             if (!cancelled)
-            {
-                if (_job.drawCursor)
-                    selfFinished = waitForGdigrab(process.hProcess, job,
-                        frames);
-                else
-                    recordLoop(surface, writeEnd, frames, writeError);
-            }
+                recordLoop(surface, writeEnd, frames, writeError);
 
-            // Closing stdin makes the rawvideo reader flush the last frames
-            // and write the MP4 trailer. gdigrab ignores stdin and stops on
-            // Stop (we kill the child) or on its own time cap.
+            // Closing stdin makes ffmpeg flush the last frames and write the
+            // MP4 trailer; only then is the file playable.
             CloseHandle(writeEnd);
             _status.set(RecorderPhase.stopping, frames, _job.outputPath, "");
-            if (_job.drawCursor && !cancelled && !selfFinished)
-            {
-                // Stop: gdigrab cannot be told to finish, so end it; ffmpeg
-                // then writes a complete MP4 before exiting.
-                TerminateProcess(process.hProcess, 0);
-            }
             WaitForSingleObject(process.hProcess, INFINITE);
             surface.close();
             CloseHandle(process.hProcess);
@@ -497,28 +466,6 @@ final class ScreenEncoder
                 frames++;
                 _status.setFrames(frames);
             }
-        }
-
-        /**
-         * Cursor mode: ffmpeg grabs the desktop itself, so wait until Stop is
-         * pressed (false) or ffmpeg reaches its own `-t` cap (true). The frame
-         * counter is derived from elapsed time; this process never sees the
-         * frames themselves.
-         */
-        private bool waitForGdigrab(HANDLE processHandle, HANDLE job,
-            ref long frames)
-        {
-            const started = MonoTime.currTime;
-            frames = 0;
-            while (!stopRequested())
-            {
-                if (WaitForSingleObject(processHandle, 50) == 0)
-                    return true;
-                const elapsed = MonoTime.currTime - started;
-                frames = elapsed.total!"nsecs" / 1_000_000_000L * _job.fps;
-                _status.setFrames(frames);
-            }
-            return false;
         }
 
         /// Write one frame to ffmpeg's stdin; false when the pipe closed.

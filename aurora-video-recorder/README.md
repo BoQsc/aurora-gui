@@ -39,6 +39,10 @@ If none is found the Record button stays disabled and the status line says so.
 - **Frame rate** - 15 / 24 / 30 / 60 fps.
 - **Quality** - High (CRF 18), Balanced (23) or Small (28).
 - **Draw the mouse cursor in the video** - on by default.
+- **Start/stop hotkey** - works anywhere, even while another window has focus.
+  Click the chord button and press the combination you want (Ctrl, Alt or Win
+  plus a letter or digit, or a function key); it is saved immediately. **Off**
+  disables it. The default is `Ctrl+Shift+R`.
 - **Change...** - choose the recording folder (default
   `<Videos>\Aurora Recorder`).
 - **Open folder** / **Play last** - open the folder, or the last finished file.
@@ -50,15 +54,20 @@ same second gets a ` (2)` suffix instead of overwriting.
 
 Video only (no audio), H.264 in MP4 with `yuv420p` and a fast-start index.
 
-- **Cursor off** - the app captures the screen itself, 32-bit BGRA frames from
-  a GDI `BitBlt`, on a worker thread and pipes them into ffmpeg's stdin. The
-  frame rate is paced on a monotonic clock; a late frame is skipped rather than
-  duplicated, so audio-free timing stays correct.
-- **Cursor on** (default) - the pointer cannot be captured with `BitBlt`, so
-  ffmpeg captures the desktop with its `gdigrab` input and `draw_mouse 1`.
-  Stopping ends that capture; ffmpeg then writes the MP4 trailer.
+The app captures the screen itself: 32-bit BGRA frames from a GDI `BitBlt` on a
+worker thread, piped into ffmpeg's stdin. The frame rate is paced on a monotonic
+clock; a late frame is skipped rather than duplicated, so audio-free timing
+stays correct. `BitBlt` never includes the pointer, so when the cursor is
+enabled it is composited into each frame with `DrawIconEx`.
 
-Both paths run ffmpeg in a Windows job object with
+Capture deliberately stays in this process: ffmpeg's `gdigrab` input can only be
+stopped by killing ffmpeg, which leaves an MP4 with no `moov` atom (unplayable).
+Closing the stdin pipe instead makes ffmpeg finalize the file cleanly.
+
+Settings (folder, frame rate, quality, cursor, hotkey) are written to
+`aurora-video-recorder.ini` next to the executable.
+
+ffmpeg also runs in a Windows job object with
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so ffmpeg cannot outlive the recorder and
 keep writing a file. ffmpeg's diagnostics go to `<recording>.mp4.log`.
 
@@ -69,11 +78,12 @@ RUN-HEADLESS-SMOKE.bat
 ```
 
 Checks the pure logic (capture geometry, even dimensions for `yuv420p`, naming,
-command-line quoting, both ffmpeg argument sets) and then, when ffmpeg is
-available, records two short clips - one through each capture path - and verifies
-with `ffprobe` that each is an H.264 MP4 of the expected size, then decodes it
-end to end. Pass `--require-live` to fail instead of skipping when ffmpeg is
-missing.
+command-line quoting, the hotkey chord model, the settings file round-trip and
+the ffmpeg argument set) and then, when ffmpeg is available, records two short
+clips (cursor drawn and not drawn) and verifies with `ffprobe` that each is an
+H.264 MP4 of the expected size, then decodes it end to end. It also registers a
+real global hotkey and confirms a simulated chord fires it. Pass
+`--require-live` to fail instead of skipping when ffmpeg is missing.
 
 ## Limitations
 

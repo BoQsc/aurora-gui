@@ -21,11 +21,12 @@ import aurorarecorder.settings : CaptureRect;
 version (Windows)
 {
     import core.sys.windows.windows : BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-        BitBlt, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
-        DeleteDC, DeleteObject, GdiFlush, GetDC, GetSystemMetrics, HBITMAP,
-        HDC, HGDIOBJ, ReleaseDC, SRCCOPY, SM_CXVIRTUALSCREEN,
-        SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-        SelectObject;
+        BitBlt, CreateCompatibleDC, CreateDIBSection, CURSORINFO,
+        CURSOR_SHOWING, DrawIconEx, DI_NORMAL, DIB_RGB_COLORS,
+        DeleteDC, DeleteObject, GdiFlush, GetCursorInfo, GetDC,
+        GetSystemMetrics, HBITMAP, HDC, HGDIOBJ, ReleaseDC, SRCCOPY,
+        SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN, SelectObject;
 }
 
 /// A screen-sized top-down BGRA surface shared with GDI. Create once per
@@ -100,10 +101,39 @@ final class ScreenSurface
         if (BitBlt(_memoryDc, 0, 0, _rect.width, _rect.height, _screenDc,
             _rect.x, _rect.y, SRCCOPY) == 0)
             return false;
+        if (_drawCursor) drawCursor();
         // GDI flushes lazily; the pixels are read right after this returns,
         // from the same thread, so wait for the copy to land.
         GdiFlush();
         return true;
+    }
+
+    /// Include the mouse pointer in captured frames.
+    void setDrawCursor(bool value) { _drawCursor = value; }
+
+    private bool _drawCursor;
+
+    /**
+     * Composite the current pointer into the frame with `DrawIconEx`.
+     *
+     * `BitBlt` never includes the pointer, and asking ffmpeg's gdigrab to draw
+     * it would hand the capture to a child process that cannot be stopped
+     * without losing the MP4 trailer. Drawing it here keeps capture in this
+     * process, where closing stdin ends the recording cleanly.
+     */
+    private void drawCursor()
+    {
+        CURSORINFO info;
+        info.cbSize = CURSORINFO.sizeof;
+        if (GetCursorInfo(&info) == 0) return;
+        if ((info.flags & CURSOR_SHOWING) == 0) return;
+        if (info.hCursor is null) return;
+
+        // Screen coordinates to frame coordinates.
+        int x = cast(int) info.ptScreenPos.x - _rect.x;
+        int y = cast(int) info.ptScreenPos.y - _rect.y;
+        if (x < 0 || y < 0 || x >= _rect.width || y >= _rect.height) return;
+        DrawIconEx(_memoryDc, x, y, info.hCursor, 0, 0, 0, null, DI_NORMAL);
     }
 
     void close()
