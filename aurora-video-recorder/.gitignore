@@ -1,0 +1,6 @@
+/aurora-video-recorder.exe
+/aurora-video-recorder.pdb
+/build/
+/tests/*.exe
+/tests/*.obj
+/tests/*.pdb

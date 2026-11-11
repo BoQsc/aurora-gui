@@ -1,0 +1,42 @@
+{
+  "name": "aurora-video-recorder",
+  "description": "Aurora Video Recorder - quick MP4 screen recording with a single Record button.",
+  "authors": [
+    "aurora-gui contributors"
+  ],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
+  "targetType": "executable",
+  "targetName": "aurora-video-recorder",
+  "mainSourceFile": "source/app.d",
+  "sourcePaths": [
+    "source",
+    "..\\vendor\\aurora-d-0.4.5\\source"
+  ],
+  "libs-windows": [
+    "user32",
+    "gdi32",
+    "shell32",
+    "wininet"
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
+  "version": "0.1.0"
+}
