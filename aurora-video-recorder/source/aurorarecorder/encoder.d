@@ -37,7 +37,7 @@ version (Windows)
 {
     import core.sys.windows.windows :
         BOOL, CloseHandle, CreateFileW, CreatePipe, CreateProcessW, DWORD,
-        FALSE, FILE_APPEND_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE, HANDLE,
+        FALSE, FILE_APPEND_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE, HANDLE, HWND,
         HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, INFINITE,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOBOBJECTINFOCLASS,
         LPWSTR, OPEN_ALWAYS, PROCESS_INFORMATION, SECURITY_ATTRIBUTES,
@@ -99,6 +99,8 @@ struct RecordingJob
     bool systemAudio;
     uint systemAudioRate;
     uint systemAudioChannels;
+    /// Window to follow while recording (0 = a fixed region).
+    size_t windowHandle;
 }
 
 /** Read-only view of a `RecorderStatus`, copied for the UI thread. */
@@ -583,6 +585,20 @@ final class ScreenEncoder
             if (tail.length > 0) writeFrame(audioEnd, tail.ptr, tail.length);
         }
 
+        /**
+         * Window recording follows the window: when it moves or is resized the
+         * captured rectangle changes, and the surface is reopened for the new
+         * size. The stream keeps its original dimensions so ffmpeg never sees
+         * a size change mid-recording; a differently sized window is scaled
+         * into it.
+         */
+        private static CaptureRect followedRect(size_t handle, CaptureRect current)
+        {
+            import aurorarecorder.windowpicker : windowCaptureRect;
+            const rect = windowCaptureRect(cast(HWND) handle);
+            return rect.valid() ? rect : current;
+        }
+
         /// Pace, capture and write frames until `stop()`.
         private void recordLoop(ScreenSurface surface, HANDLE writeEnd,
             ref long frames, ref string writeError)
@@ -603,6 +619,18 @@ final class ScreenEncoder
                     if (next > now) Thread.sleep(next - now);
                 }
 
+                // A recorded window can move while it is being recorded.
+                if (_job.windowHandle != 0)
+                {
+                    const target = followedRect(_job.windowHandle,
+                        surface.rect());
+                    if (target.x != surface.rect().x ||
+                        target.y != surface.rect().y)
+                    {
+                        if (surface.open(target))
+                            surface.setDrawCursor(_job.drawCursor);
+                    }
+                }
                 if (!surface.captureInto())
                     continue; // A skipped frame is never fatal.
                 if (!writeFrame(writeEnd, surface.pixels(), frameBytes))

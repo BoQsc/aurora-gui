@@ -39,6 +39,10 @@ If none is found the Record button stays disabled and the status line says so.
 - **Frame rate** - 15 / 24 / 30 / 60 fps.
 - **Quality** - High (CRF 18), Balanced (23) or Small (28).
 - **Draw the mouse cursor in the video** - on by default.
+- **Choose window...** - pick one window to record instead of the screen; the
+  recording follows that window if it moves, and its size is the video size.
+  Click the window when prompted (Esc cancels). The choice is remembered by
+  title and process name.
 - **Microphone** - click the button to switch between the detected
   microphones and **No microphone** (silent video). The choice is saved, and
   a device that has been unplugged falls back to silent video instead of
@@ -107,8 +111,11 @@ real global hotkey and confirms a simulated chord fires it. Pass
 ## Limitations
 
 - Windows only.
+- Window capture records a window's client area. A minimised window cannot be
+  recorded, and a window that changes size keeps the recording's original
+  dimensions (frames are cropped rather than scaled).
 - Whole-desktop capture records a single image of every monitor, so monitors
   with different heights are padded rather than recorded separately.
-- No audio, no region selector; this is meant to be the fastest path to an MP4.
+- No region selector; this is meant to be the fastest path to an MP4.
 - The recorder's own window is not hidden during a recording; minimise it to keep
   it out of the frames.

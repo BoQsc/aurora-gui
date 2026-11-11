@@ -20,6 +20,11 @@ import std.file : exists, isDir, mkdirRecurse, tempDir;
 import std.format : format;
 import std.path : baseName, buildPath;
 
+version (Windows)
+{
+    import core.sys.windows.windows : HWND;
+}
+
 /// Settings shown in the UI and applied to the next recording.
 struct RecorderOptions
 {
@@ -32,6 +37,12 @@ struct RecorderOptions
     string audioDevice;
     /// Record what the speakers play (WASAPI loopback).
     bool systemAudio = true;
+    /// Recorded window when `target` is `window`: HWND as an integer (0 = no
+    /// window chosen yet). The title/process let the window be found again on
+    /// the next run, when the handle differs.
+    size_t windowHandle;
+    string windowTitle;
+    string windowProcess;
 }
 
 /// What the UI needs to know once per frame.
@@ -78,6 +89,14 @@ final class RecorderController
     RecorderOptions options() const { return _options; }
 
     void setTarget(CaptureTarget target) { _options.target = target; }
+    /// Choose the window to record and switch to window capture.
+    void setWindow(size_t handle, string title, string process)
+    {
+        _options.windowHandle = handle;
+        _options.windowTitle = title;
+        _options.windowProcess = process;
+        if (handle != 0) _options.target = CaptureTarget.window;
+    }
     void setFps(int fps) { _options.fps = nearestPreset(fps, frameRatePresets); }
     void setQuality(int quality)
     {
@@ -130,6 +149,17 @@ final class RecorderController
     /// The rectangle the configured target would capture right now.
     CaptureRect captureRect()
     {
+        version (Windows)
+        {
+            if (_options.target == CaptureTarget.window)
+            {
+                import aurorarecorder.windowpicker : windowCaptureRect;
+                const rect = windowCaptureRect(
+                    cast(HWND) _options.windowHandle);
+                return rect.valid() ? evenCaptureRect(rect) :
+                    CaptureRect.init;
+            }
+        }
         int vx, vy, vw, vh;
         virtualScreenBounds(vx, vy, vw, vh);
         if (_monitors.length == 0 && vw > 0 && vh > 0)
@@ -165,10 +195,35 @@ final class RecorderController
             return false;
         }
         refreshMonitors();
+        // A remembered window's handle does not survive a restart; find it
+        // again before deciding the recording region.
+        version (Windows)
+        {
+            if (_options.target == CaptureTarget.window)
+            {
+                import aurorarecorder.windowpicker : findWindow,
+                    windowRecordable;
+                HWND window = cast(HWND) _options.windowHandle;
+                if (!windowRecordable(window))
+                {
+                    window = findWindow(_options.windowTitle,
+                        _options.windowProcess);
+                    _options.windowHandle = cast(size_t) window;
+                }
+                if (!windowRecordable(window))
+                {
+                    _lastMessage = "The window to record is closed. Choose " ~
+                        "it again with \"Choose window...\".";
+                    return false;
+                }
+            }
+        }
         const rect = captureRect();
         if (!rect.valid())
         {
-            _lastMessage = "Could not determine the screen size to record.";
+            _lastMessage = _options.target == CaptureTarget.window ?
+                "The window to record is minimised or has no visible area." :
+                "Could not determine the screen size to record.";
             return false;
         }
 
@@ -177,6 +232,8 @@ final class RecorderController
         RecordingJob job;
         job.outputPath = path;
         job.rect = rect;
+        job.windowHandle = _options.target == CaptureTarget.window ?
+            _options.windowHandle : 0;
         job.fps = _options.fps;
         job.quality = _options.quality;
         job.drawCursor = _options.drawCursor;

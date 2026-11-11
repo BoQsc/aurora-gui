@@ -24,7 +24,8 @@ immutable int[] qualityPresets = [18, 23, 28];
 enum CaptureTarget : ubyte
 {
     wholeScreen,  ///< every monitor as one virtual-desktop image
-    primaryMonitor
+    primaryMonitor,
+    window        ///< one application window, as picked by the user
 }
 
 /// Upper bound for a cursor-enabled recording. gdigrab captures the desktop

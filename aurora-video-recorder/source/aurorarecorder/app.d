@@ -60,6 +60,19 @@ final class ChoiceRow : HBox
 
     int selected() const { return _selected; }
 
+    /**
+     * Show a chosen window as the active capture target. Passing "" restores
+     * the monitor presets (the window mode leaves both unhighlighted, since
+     * neither describes what is recorded).
+     */
+    void setWindowMode(string title)
+    {
+        _windowTitle = title;
+        restyle();
+    }
+
+    private string _windowTitle;
+
     void select(int value)
     {
         if (!isPreset(value, _values)) return;
@@ -77,6 +90,16 @@ final class ChoiceRow : HBox
 
     private void restyle()
     {
+        if (_windowTitle.length > 0)
+        {
+            // A window is recorded: no monitor preset is selected.
+            foreach (button; _buttons)
+            {
+                button.setAccent(false);
+                button.setEnabled(enabled());
+            }
+            return;
+        }
         foreach (i, value; _values)
         {
             _buttons[i].setAccent(value == _selected);
@@ -109,6 +132,12 @@ final class RecorderRoot : VBox
     private ChoiceRow _fpsRow;
     private ChoiceRow _qualityRow;
     private CheckBox _cursorBox;
+    private HBox _windowRow;
+    private Button _windowButton;
+    private bool _pickingWindow;
+    private bool _pickWasDown;
+    /// This application's window (as an integer), hidden during the pick.
+    private size_t _ownHwnd;
     private CheckBox _systemAudioBox;
     private Button _microphoneButton;
     private Label _microphoneHint;
@@ -196,6 +225,15 @@ final class RecorderRoot : VBox
         _targetHint.setColor(theme().textMuted);
         add(_targetHint);
 
+        // ---- Focused recording: one window ----
+        _windowRow = new HBox(10);
+        _windowRow.layoutHints().preferredHeight = 36;
+        _windowButton = new Button("Choose window...", IconKind.folder);
+        _windowButton.layoutHints().flex = 1.0;
+        _windowButton.onClick = &onChooseWindow;
+        _windowRow.add(_windowButton);
+        add(_windowRow);
+
         add(new Label("Frame rate"));
         _fpsRow = new ChoiceRow([15, 24, 30, 60], ["15", "24", "30 fps", "60"],
             options.fps);
@@ -224,6 +262,7 @@ final class RecorderRoot : VBox
         add(_systemAudioBox);
 
         // ---- Microphone ----
+
         add(new Label("Microphone"));
         auto microphoneRow = new HBox(10);
         microphoneRow.layoutHints().preferredHeight = 36;
@@ -328,6 +367,9 @@ final class RecorderRoot : VBox
     /// Called from the window tick. Cheap when nothing is recording.
     void poll()
     {
+        // Picking a window happens while the pointer is over other apps.
+        if (_pickingWindow && !_controller.isRecording()) pollWindowPick();
+
         // A hotkey press toggles recording exactly like the button.
         if (_hotkey !is null && _hotkey.takePressed())
             onRecordPressed();
@@ -359,6 +401,7 @@ final class RecorderRoot : VBox
             _recordButton.setIcon(active ? IconKind.power : IconKind.clock);
             _recordButton.setAccent(!active);
             _monitorRow.setEnabled(!active);
+            _windowButton.setEnabled(!active);
             _fpsRow.setEnabled(!active);
             _qualityRow.setEnabled(!active);
             _cursorBox.setEnabled(!active);
@@ -431,10 +474,25 @@ final class RecorderRoot : VBox
 
     private void refreshTarget()
     {
+        const options = _controller.options();
+        const isWindow = options.target == CaptureTarget.window;
+        // Keep the Capture buttons honest: a chosen window is the target, so
+        // neither monitor preset may stay highlighted.
+        if (isWindow && _monitorRow !is null)
+            _monitorRow.setWindowMode(options.windowTitle);
+        else if (_monitorRow !is null)
+            _monitorRow.setWindowMode("");
+        if (_windowButton !is null)
+            _windowButton.setText(isWindow && options.windowTitle.length > 0 ?
+                options.windowTitle : "Choose window...");
         const rect = _controller.captureRect();
-        const text = rect.valid() ?
-            format("%d x %d video, H.264 MP4", rect.width, rect.height) :
-            "Screen size could not be determined.";
+        string text;
+        if (isWindow && !rect.valid())
+            text = "That window is closed or minimised; choose it again.";
+        else if (!rect.valid())
+            text = "Screen size could not be determined.";
+        else
+            text = format("%d x %d video, H.264 MP4", rect.width, rect.height);
         if (text != _shownTarget)
         {
             _shownTarget = text;
@@ -584,6 +642,111 @@ final class RecorderRoot : VBox
     private void refreshHotkeyText()
     {
         _hotkeyButton.setText(describeHotkey(_chord));
+    }
+
+    // ---- Focused recording: choose a window ----
+
+    /**
+     * Start picking a window: the next left click anywhere (including over
+     * other applications) records the window underneath it.
+     *
+     * The app keeps the click to itself so the chosen window is not also
+     * activated by it; the same tick that reads the click ends picking.
+     */
+    private void onChooseWindow()
+    {
+        if (_pickingWindow)
+        {
+            stopPickingWindow();
+            return;
+        }
+        // Remember our own window so the next click can be hit-tested with it
+        // out of the way (it may be topmost).
+        version (Windows)
+        {
+            import core.sys.windows.windows : GetForegroundWindow;
+            _ownHwnd = cast(size_t) GetForegroundWindow();
+        }
+        _pickingWindow = true;
+        _windowButton.setText("Click the window to record (or press Esc)");
+        _targetHint.setText("Click any window to record only that window.");
+    }
+
+    private void stopPickingWindow()
+    {
+        _pickingWindow = false;
+        refreshTarget();
+    }
+
+    /**
+     * True when the window belongs to this process, so picking never selects
+     * the recorder's own window.
+     */
+    private static bool isOwnProcessWindow(size_t window)
+    {
+        version (Windows)
+        {
+            import core.sys.windows.windows : DWORD, GetCurrentProcessId,
+                GetWindowThreadProcessId;
+            DWORD pid;
+            GetWindowThreadProcessId(cast(void*) window, &pid);
+            return pid == GetCurrentProcessId();
+        }
+        else
+            return false;
+    }
+
+    /// While picking, read the global mouse state from the tick.
+    private void pollWindowPick()
+    {
+        version (Windows)
+        {
+            import aurorarecorder.windowpicker : topLevelWindowAt,
+                windowRecordable, windowProcessName, windowTitle;
+
+            import core.sys.windows.windows : GetAsyncKeyState, GetCursorPos,
+                HWND, POINT, VK_ESCAPE, VK_LBUTTON;
+            if (GetAsyncKeyState(VK_ESCAPE) & 0x8000)
+            {
+                stopPickingWindow();
+                return;
+            }
+            // Bit 0 of `GetAsyncKeyState` latches "pressed since last read",
+            // so a press+release between two ticks is still seen. Polling the
+            // level (bit 15) alone drops a fast click entirely.
+            const short state = GetAsyncKeyState(VK_LBUTTON);
+            const bool latched = (state & 1) != 0;
+            const bool down = (state & 0x8000) != 0;
+            if (!latched && !down) return;
+            if (!latched && _pickWasDown) return; // still the same hold
+            _pickWasDown = true;
+
+            POINT cursor;
+            if (GetCursorPos(&cursor) == 0)
+            {
+                stopPickingWindow();
+                return;
+            }
+            // The recorder window may be topmost while picking, so it can sit
+            // under the pointer. Hide it for this one hit test so the window
+            // the user is actually pointing at wins, then show it again.
+            import core.sys.windows.windows : SW_HIDE, SW_SHOW, ShowWindow;
+            ShowWindow(cast(HWND) _ownHwnd, SW_HIDE);
+            HWND target = topLevelWindowAt(cursor.x, cursor.y);
+            ShowWindow(cast(HWND) _ownHwnd, SW_SHOW);
+            // Ignore a click on this application's own window.
+            if (target is null || !windowRecordable(target) ||
+                isOwnProcessWindow(cast(size_t) target))
+            {
+                _targetHint.setText("That is not a window that can be " ~
+                    "recorded. Click another window.");
+                return;
+            }
+            _controller.setWindow(cast(size_t) target, windowTitle(target),
+                windowProcessName(target));
+            stopPickingWindow();
+            saveCurrentSettings();
+        }
     }
 
     // ---- Microphone ----

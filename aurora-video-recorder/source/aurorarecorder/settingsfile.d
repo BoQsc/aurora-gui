@@ -42,7 +42,14 @@ string serializeSettings(const ref RecorderOptions options, HotkeyChord hotkey)
 {
     string text;
     text ~= format("capture=%s\n", options.target == CaptureTarget.primaryMonitor ?
-        "primary" : "all");
+        "primary" : options.target == CaptureTarget.window ? "window" : "all");
+    // The window is remembered by title and process: handles do not survive a
+    // restart. Only written when a window is actually recorded.
+    if (options.target == CaptureTarget.window)
+    {
+        text ~= format("window_title=%s\n", options.windowTitle);
+        text ~= format("window_process=%s\n", options.windowProcess);
+    }
     text ~= format("fps=%d\n", options.fps);
     text ~= format("quality=%d\n", options.quality);
     text ~= format("cursor=%s\n", options.drawCursor ? "on" : "off");
@@ -78,8 +85,18 @@ StoredSettings parseSettings(string text, RecorderOptions defaults)
         {
             if (value == "primary")
                 stored.options.target = CaptureTarget.primaryMonitor;
+            else if (value == "window")
+                stored.options.target = CaptureTarget.window;
             else if (value == "all")
                 stored.options.target = CaptureTarget.wholeScreen;
+        }
+        else if (key == "window_title")
+        {
+            stored.options.windowTitle = value;
+        }
+        else if (key == "window_process")
+        {
+            stored.options.windowProcess = value;
         }
         else if (key == "fps")
         {

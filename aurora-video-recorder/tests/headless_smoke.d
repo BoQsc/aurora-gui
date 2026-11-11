@@ -108,6 +108,14 @@ private void checkSettings()
     check(!resolveCaptureRect(CaptureTarget.wholeScreen, null, 0, 0, 0, 0).valid(),
         "an unknown desktop size resolves to an invalid rect");
 
+    // Window capture is resolved from the window itself, never from monitors.
+    version (Windows)
+    {
+        import aurorarecorder.windowpicker : windowCaptureRect;
+        check(!windowCaptureRect(null).valid(),
+            "a null window has no capture rect");
+    }
+
     const odd = evenCaptureRect(CaptureRect(0, 0, 1367, 769));
     check(odd.width == 1366 && odd.height == 768,
         "odd sizes are cropped to even dimensions for yuv420p");
@@ -237,6 +245,20 @@ private void checkSettingsFile()
         "microphone name survives a round trip");
     check(parseSettings("microphone=\n", defaults).options.audioDevice.length == 0,
         "an empty microphone setting means no audio");
+
+    // A chosen window is remembered by title and process (handles change).
+    RecorderOptions withWindow = defaults;
+    withWindow.target = CaptureTarget.window;
+    withWindow.windowTitle = "Notepad - notes.txt";
+    withWindow.windowProcess = "notepad.exe";
+    const windowRoundTrip = parseSettings(
+        serializeSettings(withWindow, chord), RecorderOptions.init);
+    check(windowRoundTrip.options.target == CaptureTarget.window,
+        "window capture target survives");
+    check(windowRoundTrip.options.windowTitle == "Notepad - notes.txt",
+        "window title survives");
+    check(windowRoundTrip.options.windowProcess == "notepad.exe",
+        "window process survives");
 
     // A disabled hotkey is stored as an empty value, not a default.
     const off = parseSettings(serializeSettings(defaults, HotkeyChord.init),
