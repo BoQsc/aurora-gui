@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy the companion fixes: tool-window overlay (no taskbar task), friendlier smiley face, and working click-to-talk with the revealed focused input.",
+  "reason": "Deploy the fix that preserves the rebuild resume note until the helper writes a verdict, so the post-build relaunch always continues the interrupted plan or chat.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-11 08:28:30.9670751 UTC",
-  "finishedAt": "2026-11-11 08:29:29.7021817 UTC",
-  "durationMs": 58734,
+  "startedAt": "2026-11-11 08:56:23.1410562 UTC",
+  "finishedAt": "2026-11-11 08:57:21.0549975 UTC",
+  "durationMs": 57913,
   "exitCode": 0,
   "errors": [],
-  "publishStatus": "published",
-  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (d1881c6d5ad2).",
+  "publishStatus": "failed",
+  "publishDetail": "Publishing with installed runtime required: MSVCR120.dll",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

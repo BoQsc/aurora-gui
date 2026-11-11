@@ -17,7 +17,7 @@ import auroraopencode.core : loadSettings, saveSettings,
 import auroraopencode.pet : PetHost, PetMood, PetScene, PetScreenWatch,
     petBubbleLine, petIdleLine, petNote, petNoteLineLimit, petNotesPath,
     petSceneDigest, sampleForegroundScene;
-import aurora.types : Rect;
+import aurora.types : Point, Rect;
 import std.conv : to;
 import std.file : exists, mkdirRecurse, readText, remove, tempDir, write;
 import std.path : buildPath;
@@ -103,6 +103,21 @@ int main()
     assert(root.petTakePromptForTesting().length == 0,
         "a typed pet request must be delivered exactly once");
     writeln("PASS a typed pet request reaches the UI thread exactly once");
+
+    // 2d2. The companion writes in its own conversation and its own project,
+    // never in the chat or project the reader happens to have open.
+    const companionTitle = root.petCompanionSessionForTesting();
+    assert(companionTitle == "Companion",
+        "the companion needs its own conversation, got: " ~ companionTitle);
+    const companionProject = root.petCompanionProjectForTesting();
+    assert(companionProject.length > 0 && exists(companionProject),
+        "the companion project folder must exist, got: " ~ companionProject);
+    assert(companionProject.indexOf(buildPath("pet", "project")) >= 0,
+        "the companion project must live under the pet state folder, got: " ~
+        companionProject);
+    assert(root.petCompanionSessionForTesting() == "Companion",
+        "the companion conversation must be reused, not recreated");
+    writeln("PASS the companion has its own conversation and project");
 
     // 2e. The bubble mirrors the conversation the pet was asked in: the user's
     // line first, then the reply, and the idle line when there is nothing yet.
@@ -323,6 +338,9 @@ int main()
             "the input row must start collapsed so the resting pet stays small");
         assert(overlay.faceMoodForTesting() == PetMood.idle,
             "a resting creature must be idle, not signalling work");
+        overlay.clickBodyForTesting(Point(200, 60));
+        assert(overlay.inputVisibleForTesting(),
+            "a left click anywhere on the companion must reveal the input");
         overlay.clickFaceForTesting();
         assert(overlay.inputVisibleForTesting(),
             "clicking the creature must reveal the input row");

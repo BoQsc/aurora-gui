@@ -926,6 +926,13 @@ final class PetOverlay : VBox
             showPetMenu(event.position);
             return true;
         }
+        if (event.button == MouseButton.left)
+        {
+            // Anywhere on the companion is a write target; the buttons and the
+            // creature layer consume their own presses before this runs.
+            revealInput();
+            return true;
+        }
         return super.onMouseDown(event);
     }
 
@@ -1083,6 +1090,16 @@ final class PetOverlay : VBox
     {
         showPetMenu(Point(10, 10));
         return _lastMenuLabels;
+    }
+
+    /// Test-only: a left press on the companion body, away from the face.
+    void clickBodyForTesting(Point at)
+    {
+        Event event;
+        event.type = EventType.mouseDown;
+        event.button = MouseButton.left;
+        event.position = at;
+        onMouseDown(event);
     }
 
     /// Test-only: the current input text.

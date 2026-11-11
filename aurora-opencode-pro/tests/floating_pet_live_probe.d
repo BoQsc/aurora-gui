@@ -57,10 +57,10 @@ int main()
             writeln("client: ", client[2], "x", client[3], " at ",
                 bounds[0], ",", bounds[1]);
 
-            // Real pointer click on the creature's slot (32,58 logical; the
-            // window is 1.25x scaled here, so use the physical offset).
-            const x = bounds[0] + 40;
-            const y = bounds[1] + 40;
+            // A real pointer click on the companion BODY, away from the 48x48
+            // face: any left click must open the input, not just the face.
+            const x = bounds[0] + 200;
+            const y = bounds[1] + 60;
             SetCursorPos(x, y);
             Thread.sleep(100.msecs);
             mouse_event(0x0002, 0, 0, 0, 0);

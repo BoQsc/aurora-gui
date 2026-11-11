@@ -14587,16 +14587,63 @@ private string _suggestExcludeId;
         newChat();
         if (cast(int) _sessions.length == before) return -1;
         _sessions[$ - 1].title = "Companion";
+        // Its own project, so prompts and any file work never land in the
+        // reader's project or its last conversation.
+        _sessions[$ - 1].projectId = petCompanionProjectId();
         _petSession = cast(int) _sessions.length - 1;
         return _petSession;
+    }
+
+    /// The companion's own project, under <state>/pet/project. Created once and
+    /// reused; the active project is never switched.
+    private string petCompanionProjectId()
+    {
+        import std.file : exists, mkdirRecurse;
+        import std.path : buildPath;
+
+        foreach (project; _projectState.projects)
+            if (project.name == "Companion") return project.id;
+        const path = buildPath(opencodeStateDirectory(), "pet", "project");
+        if (!exists(path)) mkdirRecurse(path);
+        Project project;
+        project.id = newProjectId();
+        project.name = "Companion";
+        project.path = path;
+        _projectState.projects ~= project;
+        _projectsWriter.save(_projectState);
+        return project.id;
     }
 
     /// experimental: floating pet - test-only. Title of the companion's own
     /// conversation (created if needed); empty when one cannot be made yet.
     public string petCompanionSessionForTesting()
     {
-        const index = petConversationSession();
-        return index >= 0 ? _sessions[index].title : "";
+        // History loading is asynchronous; a fixture has no saved history to
+        // restore, so create the companion conversation regardless.
+        const pending = _startupLoadPending;
+        _startupLoadPending = false;
+        try
+        {
+            const index = petConversationSession();
+            return index >= 0 ? _sessions[index].title : "";
+        }
+        finally _startupLoadPending = pending;
+    }
+
+    /// experimental: floating pet - test-only. The companion's own project
+    /// folder (created if needed), or "" when unavailable.
+    public string petCompanionProjectForTesting()
+    {
+        const pending = _startupLoadPending;
+        _startupLoadPending = false;
+        try
+        {
+            if (petConversationSession() < 0) return "";
+        }
+        finally _startupLoadPending = pending;
+        foreach (project; _projectState.projects)
+            if (project.name == "Companion") return project.path;
+        return "";
     }
 
     /// A scene comment is due at most once every ten minutes, and only when the
