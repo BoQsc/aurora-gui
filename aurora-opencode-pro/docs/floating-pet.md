@@ -1,43 +1,72 @@
 # Floating pet (experimental, removal-first)
 
-Status: **scaffold implemented, dormant and off by default.**
+Status: **implemented, dormant and off by default.**
 
-Shipped in this build (compile-verified: `dub test --config=application`,
-50 modules passed):
+Shipped in this build:
 
 - `source/auroraopencode/pet.d` - the whole feature. Gate, budgeted proposal
-  ledger, formatting, and the always-on-top overlay host.
-- `tests/floating_pet_smoke.d` - headless behavioral test: dormant while off,
-  starts and proposes when on, stops and returns to dormant when off, and
-  renders the overlay to a PPM for visual inspection.
+  ledger, formatting, the always-on-top overlay (creature face, bubble,
+  click-to-write input, Notes and Pause), text-only scene sampling, and the
+  bounded notes file.
+- `tests/floating_pet_smoke.d` - headless behavioral suite: dormant while off,
+  starts and proposes when on, typed prompt reaches the UI thread once, bubble
+  mirrors the request and reply, notes are bounded, sampling is text-only and
+  throttled, proactive comments are slow, pause records nothing, settings
+  round-trip, computer-use hint, placement, and click-reveals-input.
 - `tests/floating_pet_env_smoke.d` - the `AURORA_FLOATING_PET` enable path.
   Asserts that an unrecognised value leaves the pet **off**: the gate fails
   closed, so a typo can never enable it.
+- `tests/floating_pet_scene_probe.d`, `tests/floating_pet_live_probe.d` -
+  manual probes: the real foreground sampler, and the real overlay window.
 - `tools/check-pet-removal.py` - enforces the removal contract by deleting
   `pet.d`, cutting the marked regions, and compiling the result.
-- `aurora-opencode-core/source/auroraopencode/core.d` - the
-  `experimentalFloatingPet` settings switch plus its load/save lines.
-- `source/auroraopencode/appui.d` - one import block, the host fields,
-  `setPetEnabled` / `runPetObservation` / `publishPetProposal`, the Settings
-  checkbox (`oc-floatingpet`), and one `onTick` call.
+- `aurora-opencode-core/source/auroraopencode/core.d` - `experimentalFloatingPet`,
+  `petScreenWatching` and `petCommentaryMinutes` plus their load/save lines.
+- `source/auroraopencode/appui.d` - the pet regions: host, observation,
+  typed-prompt hand-off, conversation mirroring, computer-use hint, and the
+  Settings checkboxes (`oc-floatingpet`, `oc-petscreen`).
 
-What it does today: it observes two signals and raises at most one suggestion
-for each.
+What it does:
 
-- **Repeated tool failures (the main purpose).** When the same tool call has
-  failed twice in a row, it offers *"2 failed. Want me to take another look and
-  retry?"* This reuses the failure counter the app already keeps
-  (`_lastFailureRepeatCount`); the pet reads only the count, never the command
-  or its output.
-- **Idleness.** After ~15s quiet with a conversation open, it offers a next step.
+- **Creature.** Bottom-right above the taskbar (16px inset), and above the mini
+  chat overlay when both are visible. Clicking it opens the input row; Send
+  hands the text to `submitOverlayPrompt`, the same path as the main composer.
+- **Answers.** After a pet-typed prompt the bubble mirrors the conversation it
+  was asked in: `You: …` and then the reply, up to three short lines.
+- **Notes.** `<state>/pet/notes.md`, one markdown bullet per observation, capped
+  at the newest 400 lines. The Notes button opens that file.
+- **Screen awareness (opt-out).** The foreground app name and window title, as
+  text, clipped to a 60/80 character digest and sampled at most every 20s. It
+  never captures pixels and never reads file contents; `petScreenWatching` off
+  means no capture at all.
+- **Proactive but sparing.** A scene comment at most every
+  `petCommentaryMinutes` (default 10) and only when the scene digest changed; an
+  idle comment once per quiet stretch after ten minutes; the repeated-failure
+  offer is unchanged. The 4-per-minute ceiling and duplicate suppression still
+  apply to all of them.
+- **Pause.** Pause/Resume in the overlay stops notes, sampling and commentary
+  while the pet stays visible, and the watching line reads `Paused`.
+- **Repeated tool failures.** When the same tool call has failed twice in a row
+  it offers *"2 failed. Want me to take another look and retry?"*, reading only
+  the failure counter, never the command or its output.
+- **Chained computer use.** Requests go through `submitOverlayPrompt`, so
+  computer-use tools stay behind the existing approval gate. With computer use
+  off, a screen-style request shows *"Computer use is off in Settings; I'll stay
+  with text."*
 
 Rate-limited to 4 proposals per rolling minute with duplicate suppression, and
-each failure count is reported once. It has no execution path: the proposal is
+each failure count is reported once. It has no execution path: a proposal is
 inert text the user must act on, and any retry flows through the normal tool
-pipeline and its existing approval gate. Observation kinds are intentionally
-minimal so the safety story is easy to review before more are added.
+pipeline and its existing approval gate.
 
 ### Overlay rendering constraint
+
+In this toolkit build the overlay window only rasterises text and the panel
+chrome: custom-painted shapes (the drawn creature, even the `TitleBar`) never
+reach its surface. The visible face is therefore a `Label` glyph (`•‿•`) in the
+creature column, while `PetFace` keeps the mood, blink/bob state and the click
+target. Revisit this if the vendored renderer starts honouring draws in that
+window; the vector body is still in `paintPetFace`.
 
 The vendored `Label` has no word-wrap, so text that does not fit is clipped with
 an ellipsis. Two consequences are deliberate:

@@ -1,7 +1,7 @@
 module auroraopencode.requestintent;
 
 import std.algorithm : canFind;
-import std.string : toLower, split, join, startsWith;
+import std.string : toLower, split, join, startsWith, strip;
 
 enum RequestIntent { conversation, clarification, diagnosis, analysis, implementation, continuation }
 
@@ -101,6 +101,7 @@ RequestIntent requestIntent(string text)
         if (["fix", "repair", "implement", "apply", "change", "refactor", "optimize", "optimise",
                 "create", "add", "remove", "delete", "replace", "rename", "move", "save", "commit",
                 "ship", "publish", "deploy", "install", "launch", "play", "run", "try",
+                "start", "begin",
                 "select", "update", "build", "resolve", "improve", "make", "write", "rebuild", "test", "verify",
                 "redesign", "generate", "code", "rewrite", "integrate", "upgrade", "migrate", "enable", "disable",
                 "extract", "convert", "configure", "connect", "download", "open", "copy"].canFind(word))
@@ -193,8 +194,37 @@ bool actionApprovalRequest(string text)
     if (phrase.length == 4 && phrase[0] == "take" && phrase[1] == "care" &&
         phrase[2] == "of" && phrase[3] == "it")
         return true;
-    if (["yes", "yeah", "yep", "sure", "ok", "okay", "proceed"].canFind(phrase[0]))
-        return phrase.length == 1 || ["now", "then"].canFind(phrase[1]);
+    if (["yes", "yeah", "yep", "sure", "ok", "okay", "proceed"].canFind(phrase[0]) &&
+        (phrase.length == 1 || (phrase.length == 2 && ["now", "then"].canFind(phrase[1]))))
+        return true;
+    // An approval can introduce the next concrete step ("Go ahead, start with
+    // the creature widget."). The exact forms above accept an approval on its
+    // own; a following directive is the same authorization. A question,
+    // diagnosis or explanation after the approval still asks for an answer.
+    const normalized = text.toLower.strip;
+    static immutable string[] approvalPrefixes = ["go ahead", "carry on",
+        "yes", "yeah", "yep", "sure", "ok", "okay", "proceed"];
+    foreach (prefix; approvalPrefixes)
+    {
+        if (!normalized.startsWith(prefix)) continue;
+        auto rest = normalized[prefix.length .. $];
+        if (!rest.length) return true;
+        if (rest[0] != ',' && rest[0] != ':' && rest[0] != ';' && rest[0] != '.')
+            continue;
+        auto directive = rest[1 .. $].strip;
+        while (directive.length &&
+            (directive[$ - 1] == '.' || directive[$ - 1] == '!' ||
+             directive[$ - 1] == ',' || directive[$ - 1] == ';' ||
+             directive[$ - 1] == ':'))
+            directive = directive[0 .. $ - 1].strip;
+        if (!directive.length) return true;
+        if (directive[$ - 1] == '?') continue;
+        const directiveIntent = requestIntent(directive);
+        if (directiveIntent == RequestIntent.clarification ||
+            directiveIntent == RequestIntent.diagnosis ||
+            directiveIntent == RequestIntent.analysis) continue;
+        return true;
+    }
     return false;
 }
 

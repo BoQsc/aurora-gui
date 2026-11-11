@@ -3,6 +3,7 @@ import auroraopencode.core;
 import auroraopencode.taskcontinuation;
 import auroraopencode.taskflow : acceptTaskRequest;
 import auroraopencode.requestintent;
+import auroraopencode.turnpolicy : decideTurn, TurnPolicy, TurnAction;
 import std.conv : to;
 import std.stdio : writeln;
 
@@ -207,6 +208,32 @@ int main()
     assert(taskContinuation(approved, true).action ==
         TaskContinuationAction.continueWork,
         "Approval after a permission question did not resume work");
+
+    // An approval that names the next concrete step is still authorization,
+    // not casual conversation.
+    assert(requestIntent("Go ahead, start with the creature widget.") ==
+        RequestIntent.implementation);
+    assert(actionApprovalRequest("Go ahead, start with the creature widget."));
+    assert(actionApprovalRequest("Yes, please begin."));
+    assert(!actionApprovalRequest("Go ahead, what should happen next?"));
+    ChatSession approvedStep;
+    append(approvedStep, "user", "Build the screen-aware pet companion.");
+    acceptTaskRequest(approvedStep, approvedStep.messages[$ - 1].content,
+        approvedStep.messages[$ - 1].id);
+    approvedStep.taskStatus = "active";
+    approvedStep.taskSteps = [TaskStep("Draw the creature", "completed"),
+        TaskStep("Show bubble replies", "pending")];
+    append(approvedStep, "user", "Go ahead, start with the creature widget.");
+    acceptTaskRequest(approvedStep, approvedStep.messages[$ - 1].content,
+        approvedStep.messages[$ - 1].id);
+    assert(approvedStep.contract.currentIntent == "continuation");
+    assert(taskContinuation(approvedStep, true).action ==
+        TaskContinuationAction.continueWork,
+        "An approval naming the next step settled unfinished plan work");
+    TurnPolicy nextTurn;
+    nextTurn.toolsEnabled = true;
+    assert(decideTurn(approvedStep, nextTurn).action == TurnAction.request,
+        "The next done event still settled instead of scheduling the approved plan");
 
     foreach (reply; ["Would you like me to continue?",
             "Should I run the tests now?",

@@ -14,13 +14,21 @@ import aurora;
 import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : loadSettings, saveSettings,
     setOpencodeStateDirectoryForTesting, opencodeTheme;
-import auroraopencode.pet : PetHost;
+import auroraopencode.pet : PetHost, PetMood, PetScene, PetScreenWatch,
+    petBubbleLine, petNote, petNoteLineLimit, petNotesPath, petSceneDigest,
+    sampleForegroundScene;
 import aurora.types : Rect;
 import std.conv : to;
-import std.file : mkdirRecurse, tempDir, write;
+import std.file : exists, mkdirRecurse, readText, remove, tempDir, write;
 import std.path : buildPath;
 import std.stdio : writeln;
-import std.string : indexOf;
+import std.string : indexOf, splitLines;
+
+
+final class FakeScene
+{
+    PetScene scene;
+}
 
 int main()
 {
@@ -87,6 +95,155 @@ int main()
         "A disabled floating pet must persist as off");
     writeln("PASS the floating pet setting round-trips through settings.json");
 
+    // 2d. A request typed into the overlay reaches the UI thread exactly once,
+    // through the same submitOverlayPrompt path the main composer uses.
+    root.petPromptForTesting("open notepad and type hi");
+    assert(root.petTakePromptForTesting() == "open notepad and type hi",
+        "a typed pet request must reach the UI thread intact");
+    assert(root.petTakePromptForTesting().length == 0,
+        "a typed pet request must be delivered exactly once");
+    writeln("PASS a typed pet request reaches the UI thread exactly once");
+
+    // 2e. The bubble mirrors the conversation the pet was asked in: the user's
+    // line first, then the reply, and the idle line when there is nothing yet.
+    if (root.sessionCountForTesting() == 0) root.forceNewChatForTesting();
+    root.tickTree(0.02);
+    assert(root.sessionCountForTesting() > 0,
+        "the fixture needs one conversation to mirror");
+    root.addConversationForTesting(["user", "assistant"],
+        ["open notepad and type hi", "Notepad is open with your text."]);
+    const petLines = root.petConversationLines(3);
+    assert(petLines.length >= 2,
+        "the bubble must show the request and its reply, got " ~
+        to!string(petLines.length));
+    assert(petLines[$ - 2] == "You: open notepad and type hi",
+        "the user's line must be labelled, got: " ~ petLines[$ - 2]);
+    assert(petLines[$ - 1] == "Notepad is open with your text.",
+        "the reply must reach the bubble, got: " ~ petLines[$ - 1]);
+    writeln("PASS the pet bubble shows the request and then the reply");
+
+    // 2f. Notes live in the pet's own file: one line per observation, and the
+    // file is trimmed to the newest lines so it cannot grow without bound.
+    const notesPath = petNotesPath();
+    if (exists(notesPath)) remove(notesPath);
+    petNote("first observation");
+    petNote("second observation");
+    auto noteLines = readText(notesPath).splitLines();
+    assert(noteLines.length == 2,
+        "two observations must produce two lines, got " ~
+        to!string(noteLines.length));
+    assert(noteLines[0] == "- first observation",
+        "notes are markdown bullets, got: " ~ noteLines[0]);
+    assert(notesPath.indexOf(buildPath("pet", "notes.md")) >= 0,
+        "notes must live in the pet's own folder, got: " ~ notesPath);
+    foreach (i; 0 .. 1200) petNote("observation " ~ to!string(i));
+    noteLines = readText(notesPath).splitLines();
+    assert(noteLines.length == petNoteLineLimit,
+        "notes must stay capped at " ~ to!string(petNoteLineLimit) ~
+        ", got " ~ to!string(noteLines.length));
+    assert(noteLines[$ - 1] == "- observation 1199",
+        "the cap must keep the newest note, got: " ~ noteLines[$ - 1]);
+    writeln("PASS notes stay in the pet's own file and stay capped");
+
+    // 2g. Scene awareness is text-only, bounded and throttled: no pixels, no
+    // file contents, and an unchanged scene is not reported as a change.
+    auto fake = new FakeScene;
+    fake.scene = PetScene("code.exe", "notes.txt - Code");
+    auto watch = new PetScreenWatch(delegate() { return fake.scene; });
+    const firstScene = watch.sample(0);
+    assert(firstScene.digest == "code.exe | notes.txt - Code",
+        "the digest is app plus title, got: " ~ firstScene.digest);
+    assert(!firstScene.changed, "the first sample is not a change");
+    char[] longText;
+    longText.length = 400;
+    longText[] = 'z';
+    fake.scene.title = longText.idup;
+    assert(watch.sample(1000).digest.length == 0,
+        "samples must be throttled to the slow cadence");
+    const changedScene = watch.sample(20_000);
+    assert(changedScene.changed, "a different title must read as a change");
+    assert(changedScene.digest.length <= 60 + 3 + 81,
+        "the digest must stay bounded, got " ~
+        to!string(changedScene.digest.length));
+    // 60 and 80 character caps plus " | " and two three-byte ellipses.
+    assert(petSceneDigest(longText.idup, longText.idup).length <= 149,
+        "long app names and titles must be clipped");
+    // The real sampler must not invent text, and must report the same bounded
+    // shape as the injected one.
+    const realScene = sampleForegroundScene();
+    assert(realScene.digest.length <= 145,
+        "the real scene digest must stay bounded");
+    writeln("foreground scene: ", realScene.digest);
+    writeln("PASS screen sampling stays text-only, bounded and throttled");
+
+    // 2h. Proactive rules are slow and silent by default: a scene comment needs
+    // an actual change and ten minutes; an idle comment happens once per quiet
+    // stretch, and only after ten minutes.
+    assert(!root.petSceneCommentDue("a | b", "a | b", 60),
+        "an unchanged scene must stay silent");
+    assert(!root.petSceneCommentDue("a | b", "c | d", 9.9),
+        "scene comments must wait ten minutes");
+    assert(root.petSceneCommentDue("a | b", "c | d", 10),
+        "a changed scene after ten minutes is due");
+    assert(!root.petIdleCommentDue(9, false),
+        "idle comments must wait ten minutes");
+    assert(root.petIdleCommentDue(10, false),
+        "a long idle stretch is due once");
+    assert(!root.petIdleCommentDue(60, true),
+        "one idle comment per idle stretch");
+    writeln("PASS proactive comments are slow, change-driven and once per stretch");
+
+    // 2i. Pause stops recording while the pet stays visible, and resumes.
+    const pausePath = petNotesPath();
+    if (exists(pausePath)) remove(pausePath);
+    root.petNoteForTesting("before pause");
+    assert(readText(pausePath).splitLines().length == 1,
+        "a note is recorded before pausing");
+    root.petPauseForTesting(true);
+    assert(root.petPausedForTesting(), "pause must be a real host flag");
+    root.petNoteForTesting("while paused");
+    assert(readText(pausePath).splitLines().length == 1,
+        "a paused pet must record nothing");
+    root.petPauseForTesting(false);
+    root.petNoteForTesting("after resume");
+    assert(readText(pausePath).indexOf("after resume") >= 0,
+        "unpausing must record again");
+    writeln("PASS pause stops notes and resume records again");
+
+    // 2j. The screen-watching sub-switch persists and reaches the running host;
+    // the commentary cadence persists beside it.
+    auto watchSettings = loadSettings();
+    watchSettings.petScreenWatching = false;
+    watchSettings.petCommentaryMinutes = 20;
+    saveSettings(watchSettings);
+    const reloaded = loadSettings();
+    assert(!reloaded.petScreenWatching,
+        "the screen-watching sub-switch must persist as off");
+    assert(reloaded.petCommentaryMinutes == 20,
+        "the commentary cadence must persist, got " ~
+        to!string(reloaded.petCommentaryMinutes));
+    root.petScreenWatchingForTesting(false);
+    assert(!root.petScreenWatchingEnabledForTesting(),
+        "switching watching off must reach the host");
+    root.petScreenWatchingForTesting(true);
+    assert(root.petScreenWatchingEnabledForTesting(),
+        "switching watching on must reach the host");
+    watchSettings.petScreenWatching = true;
+    watchSettings.petCommentaryMinutes = 10;
+    saveSettings(watchSettings);
+    writeln("PASS screen watching and cadence settings round-trip and reach the host");
+
+    // 2k. A pet-typed screen task goes through the same submitOverlayPrompt path
+    // (so the approval gate applies) and hints when computer use is off.
+    const offHint = root.petComputerUseHint("open notepad and type hi", false);
+    assert(offHint.indexOf("Computer use is off") >= 0,
+        "a screen task must hint when computer use is off, got: " ~ offHint);
+    assert(root.petComputerUseHint("open notepad and type hi", true).length == 0,
+        "no hint is needed when computer use is on");
+    assert(root.petComputerUseHint("summarise this", false).length == 0,
+        "a text-only request must not hint");
+    writeln("PASS computer use off shows a hint, and on stays silent");
+
     // 3. Turning it off stops the overlay and returns to dormant.
     root.setFloatingPetForTesting(false);
     assert(!root.floatingPetEnabledForTesting(),
@@ -105,22 +262,22 @@ int main()
         writeln("saved overlay render to build/pet-smoke/floating-pet-overlay.ppm");
 
         // 5. Placement: with an injected work area, the overlay must sit in the
-        // bottom-left with a 16px margin. This asserts the real geometry rather
-        // than trusting that "bottom-left" was coded correctly.
+        // bottom-right with a 16px margin, above the taskbar. This asserts the
+        // real geometry rather than trusting that "bottom-right" was coded.
         auto driver = new UiTestDriver(overlayWindow);
         driver.setTestWorkArea(Rect(0, 0, 1920, 1040));
         probe.placeForTesting(overlayWindow);
         Rect placed;
         assert(driver.lastWindowBounds(placed), "window position was not recorded");
-        assert(placed.x == 16,
-            "overlay must sit 16px from the left edge, got x=" ~
-            to!string(placed.x));
+        assert(placed.right() == 1920 - 16,
+            "overlay must sit 16px from the right edge, got right=" ~
+            to!string(placed.right()));
         assert(placed.bottom() == 1040 - 16,
             "overlay must sit 16px above the work-area bottom, got bottom=" ~
             to!string(placed.bottom()));
-        assert(placed.right() <= 1920 && placed.y >= 0,
+        assert(placed.x >= 0 && placed.y >= 0,
             "overlay must stay inside the work area");
-        writeln("PASS overlay places itself in the bottom-left, inside the work area");
+        writeln("PASS overlay places itself in the bottom-right, inside the work area");
     }
 
     // 6. Render the retry offer too. It is the headline behaviour of this
@@ -136,6 +293,48 @@ int main()
     }
     else
         writeln("overlay window unavailable in this environment (no display)");
+
+    // 7. The creature itself: drawn, clickable, and the click reveals the input
+    // row that starts collapsed. This is the "click me and start writing"
+    // gesture, so it is asserted rather than assumed from the layout code.
+    auto creatureProbe = new PetHost();
+    auto creatureWindow = creatureProbe.renderForTesting(proposal);
+    if (creatureWindow !is null)
+    {
+        creatureWindow.saveScreenshot(
+            "build/pet-smoke/floating-pet-creature.ppm");
+        writeln("saved creature render to build/pet-smoke/floating-pet-creature.ppm");
+        auto overlay = creatureProbe.renderedOverlayForTesting();
+        assert(overlay !is null, "the rendered overlay must be reachable for the test");
+        const faceBounds = overlay.faceBoundsForTesting();
+        writeln("creature bounds: ", faceBounds.width, "x", faceBounds.height);
+        assert(faceBounds.width >= 32 && faceBounds.height >= 32,
+            "the creature needs a real box, got " ~ to!string(faceBounds.width) ~
+            "x" ~ to!string(faceBounds.height));
+        writeln("creature paints: ", overlay.facePaintCountForTesting());
+        assert(overlay.facePaintCountForTesting() > 0,
+            "the creature must reach the paint pass, not just the layout pass");
+        const painted = overlay.facePaintBoxForTesting();
+        writeln("creature painted at: ", painted.x, ",", painted.y, " ",
+            painted.width, "x", painted.height);
+        assert(painted.width >= 32 && painted.height >= 32,
+            "the creature must be painted into a real box");
+        assert(!overlay.inputVisibleForTesting(),
+            "the input row must start collapsed so the resting pet stays small");
+        assert(overlay.faceMoodForTesting() == PetMood.idle,
+            "a resting creature must be idle, not signalling work");
+        overlay.clickFaceForTesting();
+        assert(overlay.inputVisibleForTesting(),
+            "clicking the creature must reveal the input row");
+        assert(overlay.faceMoodForTesting() == PetMood.listening,
+            "the creature must show it is listening while the input is open");
+        overlay.setInputForTesting("open notepad");
+        assert(overlay.inputTextForTesting() == "open notepad",
+            "typed text must reach the input without keystrokes");
+        writeln("PASS clicking the creature reveals the collapsed input row");
+    }
+    else
+        writeln("creature window unavailable in this environment (no display)");
 
     root.shutdownClient();
     writeln("floating pet smoke passed");

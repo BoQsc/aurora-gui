@@ -9,6 +9,11 @@ module auroraopencode.pet;
 // tool pipeline and its existing approval gate. Observation is off until the
 // user opts in, and the window shows an unmistakable "watching" indicator.
 //
+// The visible pet is a drawn creature (PetFace), not an image: a tinted body
+// with blinking eyes. Clicking it opens the input row, and the bubble above it
+// shows at most three short lines - short because the vendored Label has no
+// word wrap, so anything longer is clipped mid-sentence.
+//
 // Removable drop-in. To drop the feature: delete this file, the
 // `experimentalFloatingPet` switch in core.d (its load/save lines), the
 // Settings checkbox and the two guarded hooks in appui.d, and the feature is
@@ -34,17 +39,35 @@ module auroraopencode.pet;
 // ===========================================================================
 
 import aurora;
-import auroraopencode.core : opencodeBorder, opencodeMuted, opencodePanel,
-    opencodeTheme;
+import auroraopencode.core : opencodeAccent, opencodeBorder, opencodeMuted,
+    opencodePanel, opencodeStateDirectory, opencodeText, opencodeTheme;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import std.array : array;
 import std.algorithm : canFind, sort, uniq;
 import std.conv : to;
 import std.datetime : Clock, SysTime;
+import std.math : sin;
 import std.process : environment;
 import std.string : strip, toLower;
 import std.utf : toUTF8;
+
+version (Windows)
+{
+    private extern (Windows) int ShellExecuteW(void* hwnd, const(wchar)* op,
+        const(wchar)* file, const(wchar)* params, const(wchar)* dir,
+        int show);
+    private extern (Windows)
+    {
+        void* GetForegroundWindow();
+        int GetWindowTextW(void* hwnd, wchar* text, int max);
+        uint GetWindowThreadProcessId(void* hwnd, uint* processId);
+        void* OpenProcess(uint access, int inherit, uint processId);
+        int QueryFullProcessImageNameW(void* process, uint flags, wchar* name,
+            uint* size);
+        int CloseHandle(void* handle);
+    }
+}
 
 /// Only these environment values enable the pet, so an unset variable (the
 /// common case) leaves it off.
@@ -126,6 +149,13 @@ public PetObservation petFailureObservation(int count)
 {
     return PetObservation("failures",
         to!string(count) ~ " tool call(s) failed in a row", count);
+}
+
+/// A ready-made observation: the foreground app changed to `app`. The caller
+/// passes only a bounded name, never pixels or file contents.
+public PetObservation petSceneObservation(string app)
+{
+    return PetObservation("scene", app, 1);
 }
 
 /// Guards the ledger below. A class object, because `synchronized` cannot be
@@ -254,6 +284,11 @@ public string formatPetProposal(in PetObservation observation)
             // way to retry anything itself, and the text must not imply it does.
             return to!string(weighted) ~ " failed. Want me to take another " ~
                 "look and retry?";
+        case "scene":
+            // Names the app without a paragraph: the bubble is one short line.
+            return "You're in " ~
+                (observation.detail.length ? observation.detail : "another app") ~
+                ". Want notes or a next step?";
         default:
             return "";
     }
@@ -325,13 +360,410 @@ unittest
 // Overlay window (created only while enabled, on its own thread).
 // ---------------------------------------------------------------------------
 
+/// How the creature looks. Mood only changes its tint and eyes; it never
+/// implies the pet is doing something on its own.
+public enum PetMood
+{
+    idle,
+    listening,
+    thinking,
+    alert,
+    paused,
+}
+
+/// The pet's face, drawn with the canvas rather than loaded from an image: a
+/// rounded body, two eyes that blink, a mouth and an antenna. Clicking it is
+/// the "start writing" gesture, so the widget itself handles mouse-down and
+/// exposes a hand cursor.
+final class PetFace : Widget
+{
+    private double _time;
+    private PetMood _mood = PetMood.idle;
+    private int _bob;
+    private bool _blinking;
+    private int _paintCount;
+    private Rect _lastBox;
+    /// Fired on a left click. Set by the overlay.
+    void delegate() onClick;
+
+    this()
+    {
+        setId("pet-face");
+        // Added as the last child so it paints after the bubble and input rows;
+        // paint order is why the creature lives in a full-size transparent
+        // layer instead of a normal row child.
+        layoutHints().overlayFillParent = true;
+        setCursor(CursorKind.hand);
+    }
+
+    PetMood mood() const { return _mood; }
+
+    void setMood(PetMood mood)
+    {
+        if (_mood == mood) return;
+        _mood = mood;
+        invalidate();
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button != MouseButton.left) return false;
+        if (!petFaceRect(bounds()).contains(event.position)) return false;
+        if (onClick !is null) onClick();
+        return true;
+    }
+
+    /// Animate from the overlay's tick. Repaint only when the visible pose
+    /// changes (a whole pixel of bob or a blink), so an idle pet costs a few
+    /// repaints per second rather than a continuous 60 fps redraw.
+    protected override void onTick(double deltaSeconds)
+    {
+        _time += deltaSeconds;
+        const blinking = (_time % 4.2) > 3.95;
+        const bob = cast(int) (sin(_time * 2.0) * 1.5);
+        if (blinking == _blinking && bob == _bob) return;
+        _blinking = blinking;
+        _bob = bob;
+        invalidate();
+    }
+
+    /// Drawing lives in this top layer: the root's own paint was covered by its
+    /// rows, and a child in the first column was covered by the ones after it.
+    protected override void onPaint(ref Canvas canvas)
+    {
+        ++_paintCount;
+        _lastBox = petFaceRect(bounds());
+        paintPetFace(canvas, _lastBox, _mood, _blinking, _bob);
+    }
+
+    int paintCountForTesting() const { return _paintCount; }
+    Rect lastBoxForTesting() const { return _lastBox; }
+
+    /// The creature is painted by the overlay root, not here: in the floating
+    /// window a child widget's fill output never reached the frame, while the
+    /// root panel's did. The face keeps the animation state and hit testing.
+    bool blinking() const { return _blinking; }
+    int bob() const { return _bob; }
+}
+
+/// The creature's box inside a full-window layer.
+private Rect petFaceRect(Rect layerBounds)
+{
+    return Rect(layerBounds.x + petFaceInset, layerBounds.y + petFaceTop,
+        petFaceSize, petFaceSize);
+}
+
+/// Paint the creature into `box`, in the canvas's own coordinates. Uses only
+/// rect fills and lines, the primitives the overlay already proves it renders.
+private void paintPetFace(ref Canvas canvas, Rect box, PetMood mood,
+    bool blinking, int bob)
+{
+    const width = box.width;
+    const height = box.height;
+    const radius = (width < height ? width : height) / 2 - 4;
+    if (radius < 6) return;
+    const cx = box.x + width / 2;
+    const cy = box.y + height / 2 - bob;
+
+    const tint = petMoodTint(mood);
+    // Shaped with fill == border and thickness 1: in this window a rounded rect
+    // with a contrasting border drew nothing, while a solid one renders. That
+    // is also the shape the overlay's own panel border uses.
+    canvas.drawRoundedRect(
+        Rect(cx - radius, cy - radius, radius * 2, radius * 2), radius / 2,
+        tint, tint, 1);
+    // A lighter belly reads as volume at this size, where a gradient would be a
+    // handful of pixels.
+    canvas.drawRoundedRect(
+        Rect(cx - radius / 2, cy, radius, radius * 2 / 3), radius / 3,
+        petLighten(tint), petLighten(tint), 1);
+    // Antenna: the readable "it's alive" cue when the face is tiny.
+    canvas.drawLine(Point(cx, cy - radius), Point(cx, cy - radius - 5),
+        opencodeMuted, 1);
+    canvas.drawRoundedRect(Rect(cx - 2, cy - radius - 7, 4, 4), 2,
+        petLighten(tint), petLighten(tint), 1);
+
+    const eyeY = cy - radius / 4;
+    const eyeDX = radius / 2;
+    const eyeR = radius / 6 < 2 ? 2 : radius / 6;
+    if (blinking || mood == PetMood.paused)
+    {
+        canvas.drawLine(Point(cx - eyeDX - eyeR, eyeY),
+            Point(cx - eyeDX + eyeR, eyeY), opencodePanel, 2);
+        canvas.drawLine(Point(cx + eyeDX - eyeR, eyeY),
+            Point(cx + eyeDX + eyeR, eyeY), opencodePanel, 2);
+    }
+    else
+    {
+        canvas.drawRoundedRect(
+            Rect(cx - eyeDX - eyeR, eyeY - eyeR, eyeR * 2, eyeR * 2),
+            eyeR, opencodePanel, opencodePanel, 1);
+        canvas.drawRoundedRect(
+            Rect(cx + eyeDX - eyeR, eyeY - eyeR, eyeR * 2, eyeR * 2),
+            eyeR, opencodePanel, opencodePanel, 1);
+    }
+
+    const mouthY = cy + radius / 3;
+    if (mood == PetMood.alert)
+    {
+        canvas.drawLine(Point(cx - 4, mouthY + 2), Point(cx, mouthY),
+            opencodePanel, 1);
+        canvas.drawLine(Point(cx, mouthY), Point(cx + 4, mouthY + 2),
+            opencodePanel, 1);
+    }
+    else
+    {
+        canvas.drawLine(Point(cx - 4, mouthY), Point(cx, mouthY + 2),
+            opencodePanel, 1);
+        canvas.drawLine(Point(cx, mouthY + 2), Point(cx + 4, mouthY),
+            opencodePanel, 1);
+    }
+}
+
+private Color petMoodTint(PetMood mood)
+{
+    final switch (mood)
+    {
+        case PetMood.idle: return opencodeAccent;
+        case PetMood.listening: return Color.rgb(0x74, 0xa9, 0xf2);
+        case PetMood.thinking: return Color.rgb(0x9a, 0x8f, 0xe8);
+        case PetMood.alert: return Color.rgb(0xe6, 0x9a, 0x5a);
+        case PetMood.paused: return opencodeBorder;
+    }
+}
+
+
+private Color petLighten(Color color, int amount = 26)
+{
+    static int lift(int channel, int by)
+    {
+        const value = channel + by;
+        return value > 255 ? 255 : value;
+    }
+    return Color.rgb(lift(color.r, amount), lift(color.g, amount),
+        lift(color.b, amount));
+}
+
+
+/// Longest bubble line that fits the overlay without being clipped. The Label
+/// cannot wrap, so the limit is a real layout bound, not a style preference.
+public enum int petBubbleLineCharacters = 44;
+
+/// The pet's notes are one markdown file in its own state folder, capped so a
+/// long-running pet cannot grow it without bound.
+public enum int petNoteLineLimit = 400;
+
+/// <state>/pet/notes.md
+public string petNotesPath()
+{
+    import std.path : buildPath;
+    return buildPath(opencodeStateDirectory(), "pet", "notes.md");
+}
+
+/// Append one observation as a markdown bullet, then trim to the newest
+/// `petNoteLineLimit` lines. Best effort: a read-only state folder must not take
+/// the app down over a note.
+public void petNote(string text)
+{
+    import std.array : join;
+    import std.file : exists, mkdirRecurse, readText, write;
+    import std.path : dirName;
+    import std.string : splitLines;
+
+    const line = petBubbleLine(text, 160);
+    if (line.length == 0) return;
+    try
+    {
+        const path = petNotesPath();
+        const dir = dirName(path);
+        if (!exists(dir)) mkdirRecurse(dir);
+        string[] lines;
+        if (exists(path)) lines = readText(path).splitLines();
+        lines ~= "- " ~ line;
+        if (lines.length > petNoteLineLimit)
+            lines = lines[$ - petNoteLineLimit .. $];
+        write(path, lines.join("\n") ~ "\n");
+    }
+    catch (Exception)
+    {
+        // Notes are a convenience; losing one is better than a failed overlay.
+    }
+}
+
+/// Open the notes file in the user's editor, creating it first when needed.
+public void openPetNotes()
+{
+    version (Windows)
+    {
+        import std.file : exists, mkdirRecurse, write;
+        import std.path : dirName;
+        import std.utf : toUTF16z;
+
+        try
+        {
+            const path = petNotesPath();
+            const dir = dirName(path);
+            if (!exists(dir)) mkdirRecurse(dir);
+            if (!exists(path)) write(path, "");
+            ShellExecuteW(null, "open".toUTF16z, path.toUTF16z, null, null, 1);
+        }
+        catch (Exception)
+        {
+            // No shell handler is not an error worth interrupting the pet for.
+        }
+    }
+}
+
+/// One coarse observation of the foreground window: which app, which window,
+/// and a bounded text digest of both. Never pixels, never file contents.
+public struct PetScene
+{
+    string app;
+    string title;
+    string digest;
+    bool changed;
+}
+
+/// Test seam: returns what the screen currently shows, as text.
+alias PetSceneSampler = PetScene delegate();
+
+/// Flatten and bound the scene text, so a long window title cannot smuggle a
+/// wall of text into the pet and digests compare stable strings.
+public string petSceneDigest(string app, string title)
+{
+    return petBubbleLine(app, 60) ~ " | " ~ petBubbleLine(title, 80);
+}
+
+/// Samples the foreground window at most once per interval, keeping text only.
+public final class PetScreenWatch
+{
+    private PetSceneSampler _sampler;
+    private string _lastDigest;
+    private long _lastSampleMs = -1;
+
+    this(PetSceneSampler sampler = null)
+    {
+        _sampler = sampler;
+    }
+
+    /// An empty digest means the interval has not elapsed and nothing was read.
+    PetScene sample(long nowMs, long intervalMs = 20_000)
+    {
+        if (_lastSampleMs >= 0 && nowMs - _lastSampleMs < intervalMs)
+            return PetScene.init;
+        _lastSampleMs = nowMs;
+        auto scene = _sampler is null ? sampleForegroundScene() : _sampler();
+        scene.digest = petSceneDigest(scene.app, scene.title);
+        scene.changed = _lastDigest.length > 0 && scene.digest != _lastDigest;
+        _lastDigest = scene.digest;
+        return scene;
+    }
+
+    string lastDigest() const
+    {
+        return _lastDigest;
+    }
+}
+
+/// The foreground app and window title, empty when there is no foreground
+/// window (for example on a locked desktop).
+public PetScene sampleForegroundScene()
+{
+    version (Windows)
+    {
+        import std.utf : toUTF8;
+
+        auto hwnd = GetForegroundWindow();
+        if (hwnd is null) return PetScene.init;
+        wchar[512] buffer;
+        const length = GetWindowTextW(hwnd, buffer.ptr, cast(int) buffer.length);
+        const title = length > 0 ? toUTF8(buffer[0 .. length]) : "";
+        uint processId;
+        GetWindowThreadProcessId(hwnd, &processId);
+        return PetScene(foregroundAppName(processId), title);
+    }
+    return PetScene.init;
+}
+
+private string foregroundAppName(uint processId)
+{
+    version (Windows)
+    {
+        import std.path : baseName, stripExtension;
+        import std.utf : toUTF8;
+
+        // PROCESS_QUERY_LIMITED_INFORMATION: enough for the image name, and it
+        // works for processes the user can query but not fully open.
+        auto handle = OpenProcess(0x1000, 0, processId);
+        if (handle is null) return "";
+        scope (exit) CloseHandle(handle);
+        wchar[512] buffer;
+        uint size = cast(uint) buffer.length;
+        if (QueryFullProcessImageNameW(handle, 0, buffer.ptr, &size) == 0)
+            return "";
+        return stripExtension(baseName(toUTF8(buffer[0 .. size])));
+    }
+    return "";
+}
+
+/// The creature's fixed slot in the overlay: inset 8, directly under the 26px
+/// titlebar, 48x48. The overlay's chrome is fixed, so this stays aligned with
+/// the layout without depending on a child's measured box.
+private enum int petFaceInset = 8;
+private enum int petFaceTop = 34;
+private enum int petFaceSize = 48;
+
+/// Flatten arbitrary text to one short bubble line: whitespace runs collapse,
+/// and the tail is replaced by an ellipsis past `limit` visible characters.
+public string petBubbleLine(string raw, int limit = petBubbleLineCharacters)
+{
+    dstring text;
+    bool pendingSpace;
+    foreach (dchar ch; raw)
+    {
+        if (ch == '\n' || ch == '\r' || ch == '\t' || ch == ' ' ||
+            ch == '\u00a0')
+        {
+            if (text.length > 0) pendingSpace = true;
+            continue;
+        }
+        if (pendingSpace)
+        {
+            text ~= ' ';
+            pendingSpace = false;
+        }
+        text ~= ch;
+        if (limit > 0 && text.length >= limit)
+        {
+            text ~= '…';
+            break;
+        }
+    }
+    return toUTF8(text);
+}
+
+unittest
+{
+    assert(petBubbleLine("  hi   there ") == "hi there");
+    assert(petBubbleLine("line one\nline two") == "line one line two");
+    assert(petBubbleLine("abcdefghij", 5) == "abcde…");
+    assert(petBubbleLine("") == "");
+    // The render width assumes a bounded line; keep the limit honest.
+    assert(petBubbleLineCharacters > 0 && petBubbleLineCharacters <= 52);
+}
+
 /// The overlay's root widget. Built and ticked only on the dedicated overlay
 /// thread, so it never reads another thread's state directly.
 final class PetOverlay : VBox
 {
     private PetHost _host;
     private GuiWindow _window;
-    private VBox _body;
+    private PetFace _face;
+    private Label _faceGlyph;
+    private HBox _content;
+    private VBox _bubble;
+    private HBox _inputRow;
+    private TextField _input;
     /// Persistent footer. It is a separate row precisely so the approval notice
     /// can never be pushed out of view by a long suggestion.
     private Label _approval;
@@ -361,17 +793,73 @@ final class PetOverlay : VBox
         bar.onClose = delegate() { if (_window !is null) _window.close(); };
         add(bar);
 
-        _body = new VBox(4);
-        _body.setId("pet-body");
-        _body.layoutHints().flex = 1.0;
-        add(_body);
+        _content = new HBox(10);
+        _content.setId("pet-content");
+        _content.layoutHints().flex = 1.0;
+
+        // The creature's column. A glyph carries the face because only Label
+        // text reaches this window's surface; the drawn PetFace layer below
+        // keeps the animation state and the click target.
+        auto faceColumn = new VBox(0);
+        faceColumn.setId("pet-face-column");
+        faceColumn.layoutHints().preferredWidth = petFaceSize + 10;
+        _faceGlyph = new Label("•‿•");
+        _faceGlyph.setId("pet-face-glyph");
+        _faceGlyph.setScale(2);
+        _faceGlyph.setColor(opencodeAccent);
+        faceColumn.add(_faceGlyph);
+        _content.add(faceColumn);
+
+        _bubble = new VBox(3);
+        _bubble.setId("pet-body");
+        _bubble.layoutHints().flex = 1.0;
+        _content.add(_bubble);
+        add(_content);
+
+        // Hidden until the face is clicked, so the resting pet is small.
+        _inputRow = new HBox(6);
+        _inputRow.setId("pet-input-row");
+        _input = new TextField();
+        _input.setId("pet-input");
+        _input.setPlaceholder("Tell me what to do...");
+        _input.layoutHints().flex = 1.0;
+        _input.onSubmitted = &submit;
+        _inputRow.add(_input);
+        auto notes = new Button("Notes");
+        notes.setId("pet-notes");
+        notes.onClick = delegate() { if (_host !is null) _host.openNotes(); };
+        _inputRow.add(notes);
+        auto send = new Button("Send");
+        send.setId("pet-send");
+        send.onClick = &submit;
+        _inputRow.add(send);
+        _inputRow.setVisible(false);
+        add(_inputRow);
 
         // Always visible, independent of the suggestion's length.
         _approval = new Label("Nothing happens without your approval.");
         _approval.setId("pet-approval");
         _approval.setColor(opencodeMuted);
-        add(_approval);
-        setWatchText("I'm watching. Every suggestion needs your approval.");
+        _approval.layoutHints().flex = 1.0;
+        auto footer = new HBox(6);
+        footer.setId("pet-footer");
+        footer.add(_approval);
+        auto pause = new Button("Pause");
+        pause.setId("pet-pause");
+        pause.onClick = delegate()
+        {
+            if (_host is null) return;
+            _host.setPaused(!_host.paused());
+            pause.setText(_host.paused() ? "Resume" : "Pause");
+        };
+        footer.add(pause);
+        add(footer);
+
+        // Last child: paints and hit-tests the creature, so no row can cover it.
+        _face = new PetFace();
+        _face.onClick = delegate() { revealInput(); };
+        add(_face);
+        setLines(["I'm watching. Click me to talk."]);
     }
 
     void bindWindow(GuiWindow window)
@@ -379,14 +867,51 @@ final class PetOverlay : VBox
         _window = window;
     }
 
-    /// Replace the single status line. Runs on the overlay thread only.
-    private void setWatchText(string text)
+
+    /// Replace the bubble. At most three short lines are shown; anything more
+    /// would not fit the window, and silence falls back to the watch line.
+    /// Runs on the overlay thread only.
+    void setLines(string[] lines)
     {
-        _lastText = text;
-        _body.clearChildren();
+        _lastText = lines.length ? lines[0] : "";
+        _bubble.clearChildren();
+        const shown = lines.length > 3 ? 3 : lines.length;
+        foreach (line; lines[0 .. shown])
+        {
+            const text = petBubbleLine(line);
+            if (text.length == 0) continue;
+            addBubbleLine(text, opencodeText);
+        }
+        if (_bubble.children().length == 0)
+            addBubbleLine("I'm watching.", opencodeMuted);
+    }
+
+    private void addBubbleLine(string text, Color color)
+    {
         auto label = new Label(text);
-        label.setColor(opencodeMuted);
-        _body.add(label);
+        label.setColor(color);
+        label.setScale(1);
+        _bubble.add(label);
+    }
+
+    /// Show the input row and put the caret in it. Runs on the overlay thread.
+    void revealInput()
+    {
+        if (_inputRow is null) return;
+        _inputRow.setVisible(true);
+        _face.setMood(PetMood.listening);
+        if (_input !is null) _input.requestFocus();
+    }
+
+    private void submit()
+    {
+        if (_input is null) return;
+        const text = _input.textUtf8().strip();
+        if (text.length == 0) return;
+        _input.setText("");
+        _face.setMood(PetMood.thinking);
+        // The host owns the hand-off; the overlay never submits anything itself.
+        if (_host !is null) _host.publishPrompt(text);
     }
 
     protected override void onTick(double deltaSeconds)
@@ -397,16 +922,67 @@ final class PetOverlay : VBox
             _window.close();
     }
 
-    /// Show the newest proposal, or the standing watch notice. Overlay thread
-    /// only.
+    /// Show a single line (the newest proposal). Overlay thread only.
     void setText(string text)
     {
-        setWatchText(text.length ? text : "I'm watching.");
+        if (text.length == 0)
+        {
+            setLines([]);
+            return;
+        }
+        setLines([text]);
     }
 
     /// The text currently shown. Overlay thread only.
     string shownText() const { return _lastText; }
 
+    /// Test-only: whether the input row is revealed.
+    bool inputVisibleForTesting() const
+    {
+        return _inputRow !is null && _inputRow.visible();
+    }
+
+    /// Test-only: the current input text.
+    string inputTextForTesting() const
+    {
+        return _input is null ? "" : _input.textUtf8();
+    }
+
+    /// Test-only: fill the input without keystrokes.
+    void setInputForTesting(string text)
+    {
+        if (_input !is null) _input.setText(text);
+    }
+
+    /// Test-only: drive the same delegate the face's mouse-down invokes.
+    void clickFaceForTesting()
+    {
+        if (_face !is null && _face.onClick !is null) _face.onClick();
+    }
+
+    /// Test-only: the creature's current mood.
+    PetMood faceMoodForTesting() const
+    {
+        return _face is null ? PetMood.idle : _face.mood();
+    }
+
+    /// Test-only: the creature's painted box.
+    Rect faceBoundsForTesting() const
+    {
+        return _face is null ? Rect.init : _face.lastBoxForTesting();
+    }
+
+    /// Test-only: how many times the face layer painted.
+    int facePaintCountForTesting() const
+    {
+        return _face is null ? 0 : _face.paintCountForTesting();
+    }
+
+    /// Test-only: the overlay-local box the creature was last painted into.
+    Rect facePaintBoxForTesting() const
+    {
+        return _face is null ? Rect.init : _face.lastBoxForTesting();
+    }
 }
 
 /// Owns the overlay window, its thread, and the cross-thread hand-off.
@@ -414,13 +990,31 @@ final class PetHost
 {
     private Mutex _mutex;
     private Thread _thread;
-    private string _pendingText;
+    private string[] _pendingLines;
+    private string _pendingPrompt;
+    private bool _promptPending;
     private bool _textDirty;
     private bool _stop;
+    /// Lifts the overlay clear of the mini chat when both are visible.
+    private int _bottomOffset;
+    // Text-only foreground sampling, at most once per 20s.
+    private PetScreenWatch _watch;
+    private PetScene _scene;
+    // Pause stops observing, commenting and note-taking; the overlay stays.
+    private bool _paused;
+    private bool _pausedShown;
+    // The screen-watching sub-switch. Off means no foreground sampling at all.
+    private bool _screenWatching = true;
+    /// The overlay built by the last renderForTesting call, so a headless test
+    /// can drive the visible widget without creating a second window.
+    private PetOverlay _testOverlay;
 
-    this()
+    this(int bottomOffset = 0, bool screenWatching = true)
     {
         _mutex = new Mutex();
+        _bottomOffset = bottomOffset;
+        _screenWatching = screenWatching;
+        _watch = new PetScreenWatch();
     }
 
     /// Create the overlay window on its own thread and run its native loop.
@@ -467,7 +1061,7 @@ final class PetHost
             auto window = new GuiWindow(options, opencodeTheme());
             overlay.bindWindow(window);
             window.setRoot(overlay);
-            placeBottomLeft(window);
+            placeBottomRight(window);
             window.run();
             overlay.bindWindow(null);
         }
@@ -482,10 +1076,13 @@ final class PetHost
     /// so the geometry can be asserted against an injected work area.
     void placeForTesting(GuiWindow window)
     {
-        placeBottomLeft(window);
+        placeBottomRight(window);
     }
 
-    private void placeBottomLeft(GuiWindow window)
+    /// Put the overlay above the taskbar in the work area's bottom-right
+    /// corner, inset by 16px. `_bottomOffset` lifts it clear of the mini chat
+    /// overlay when both are on.
+    private void placeBottomRight(GuiWindow window)
     {
         Rect bounds;
         Rect work;
@@ -493,40 +1090,138 @@ final class PetHost
         if (work.empty) return;
         if (!window.windowBounds(bounds)) return;
         const margin = 16;
-        window.setWindowPosition(Point(work.x + margin,
-            work.bottom() - bounds.height - margin));
+        window.setWindowPosition(Point(work.right() - bounds.width - margin,
+            work.bottom() - bounds.height - margin - _bottomOffset));
     }
 
     /// UI thread: replace the text the overlay will render next tick.
     void publishText(string text)
     {
+        publishLines([text]);
+    }
+
+    /// UI thread: replace the bubble with up to three short lines.
+    void publishLines(string[] lines)
+    {
         synchronized (_mutex)
         {
-            _pendingText = text;
+            _pendingLines = lines.dup;
             _textDirty = true;
         }
     }
 
-    /// Overlay thread: apply pending text, if any.
+    /// Overlay thread: apply pending content, if any.
     void drain(PetOverlay overlay)
     {
-        string text;
+        if (paused())
+        {
+            if (!_pausedShown)
+            {
+                _pausedShown = true;
+                overlay.setLines(["Paused"]);
+            }
+            return;
+        }
+        if (_pausedShown)
+        {
+            _pausedShown = false;
+            overlay.setLines(["I'm watching. Click me to talk."]);
+        }
+        if (screenWatching())
+        {
+            const scene = _watch.sample(Clock.currTime.toUnixTime * 1000);
+            if (scene.digest.length)
+            {
+                synchronized (_mutex) _scene = scene;
+            }
+        }
+        string[] lines;
         bool have;
         synchronized (_mutex)
         {
             if (_textDirty)
             {
                 _textDirty = false;
-                text = _pendingText;
+                lines = _pendingLines;
                 have = true;
             }
         }
-        if (have) overlay.setText(text);
+        if (have) overlay.setLines(lines);
+    }
+
+    /// Overlay thread: hand a typed request to the UI thread exactly once.
+    void publishPrompt(string text)
+    {
+        synchronized (_mutex)
+        {
+            _pendingPrompt = text;
+            _promptPending = true;
+        }
+    }
+
+    /// UI thread: take the pending prompt, if one was typed.
+    bool takePrompt(out string text)
+    {
+        synchronized (_mutex)
+        {
+            if (!_promptPending) return false;
+            _promptPending = false;
+            text = _pendingPrompt;
+            _pendingPrompt = "";
+            return true;
+        }
+    }
+
+    /// Record one notable observation in the pet's own notes file.
+    void note(string text)
+    {
+        if (paused()) return;
+        petNote(text);
+    }
+
+    /// The notes file this pet writes.
+    string notesPath()
+    {
+        return petNotesPath();
+    }
+
+    /// Open the notes file in the user's editor.
+    void openNotes()
+    {
+        openPetNotes();
     }
 
     bool stopRequested()
     {
         synchronized (_mutex) return _stop;
+    }
+
+    /// Stop observing, commenting and taking notes while staying visible.
+    void setPaused(bool value)
+    {
+        synchronized (_mutex) _paused = value;
+    }
+
+    bool paused()
+    {
+        synchronized (_mutex) return _paused;
+    }
+
+    /// Turn foreground sampling on or off; off means no capture at all.
+    void setScreenWatching(bool value)
+    {
+        synchronized (_mutex) _screenWatching = value;
+    }
+
+    bool screenWatching()
+    {
+        synchronized (_mutex) return _screenWatching;
+    }
+
+    /// The most recent scene sample (empty until the first 20s tick).
+    PetScene lastScene()
+    {
+        synchronized (_mutex) return _scene;
     }
 
     // Test-only: build the overlay's window on the CALLING thread and paint one
@@ -539,21 +1234,36 @@ final class PetHost
     GuiWindow renderForTesting(string text)
     {
         auto overlay = new PetOverlay(this);
+        _testOverlay = overlay;
         if (text.length) overlay.setText(text);
         WindowOptions options;
         options.title = "Companion";
-        options.width = 420;
-        options.height = 132;
+        options.width = 400;
+        options.height = 176;
         options.decorated = false;
         options.resizable = false;
         options.alwaysOnTop = true;
         options.startNoActivate = true;
-        options.renderer = RendererPreference.software;
+        // Default renderer: the software path in this window rendered text and
+        // panel chrome but dropped every custom-painted shape, which is where
+        // the creature lives.
         options.vsync = false;
         auto window = new GuiWindow(options, opencodeTheme());
         overlay.bindWindow(window);
         window.setRoot(overlay);
         overlay.tickTree(0.02);
+        // setRoot paints before the tree is laid out, so the first paint can
+        // see zero-sized children. Mark the base tree dirty and paint again:
+        // other smoke tests drive an explicit paint for the same reason.
+        overlay.invalidate();
+        auto driver = new UiTestDriver(window);
+        driver.paint();
         return window;
+    }
+
+    /// Test-only: the overlay from the last renderForTesting call.
+    PetOverlay renderedOverlayForTesting()
+    {
+        return _testOverlay;
     }
 }

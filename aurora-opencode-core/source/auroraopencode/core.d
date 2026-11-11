@@ -1812,6 +1812,11 @@ public struct Settings
     // default. Delete this region, its load/save regions below, and
     // source/auroraopencode/pet.d.)
     bool experimentalFloatingPet;
+    /// Pet sub-switch: sample the foreground app and window title as text only
+    /// (never pixels). Off means no capture at all.
+    bool petScreenWatching = true;
+    /// Minimum minutes between the pet's proactive comments.
+    int petCommentaryMinutes = 10;
     // <<< pet:end
     // Experimental opt-in: the per-project "project manager" - one special
     // conversation per project that reviews the project's recent conversations
@@ -2304,6 +2309,14 @@ public Settings loadSettings()
                         found.type == JSONType.false_)
                         settings.experimentalFloatingPet =
                             found.type == JSONType.true_;
+                if (auto found = "petScreenWatching" in value.object)
+                    if (found.type == JSONType.true_ ||
+                        found.type == JSONType.false_)
+                        settings.petScreenWatching = found.type == JSONType.true_;
+                if (auto found = "petCommentaryMinutes" in value.object)
+                    if (found.type == JSONType.integer &&
+                        found.integer >= 1 && found.integer <= 240)
+                        settings.petCommentaryMinutes = cast(int) found.integer;
                 // <<< pet:end
                 if (auto found = "experimentalProjectManager" in value.object)
                     if (found.type == JSONType.true_ ||
@@ -2619,6 +2632,8 @@ public void saveSettings(const ref Settings settings, bool strictIO = false)
     // <<< filecontext:end
     // >>> pet:begin
     root["experimentalFloatingPet"] = settings.experimentalFloatingPet;
+    root["petScreenWatching"] = settings.petScreenWatching;
+    root["petCommentaryMinutes"] = settings.petCommentaryMinutes;
     // <<< pet:end
     root["experimentalProjectManager"] = settings.experimentalProjectManager;
     root["developerMode"] = settings.developerMode;

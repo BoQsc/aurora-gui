@@ -178,7 +178,7 @@ import auroraopencode.minichat : MiniChatHost, MiniChatLine, miniChatOneLine;
 // source/auroraopencode/pet.d.)
 import auroraopencode.pet : PetHost, petFailureObservation,
     petFailureRepeatsThreshold, petIdleObservation, observe, PetObservation,
-    setFloatingPetSetting;
+    petSceneObservation, setFloatingPetSetting;
 // <<< pet:end
 // Emergency freeze detection + optional overseer (see emergency.d).
 import auroraopencode.emergency : emergencyHeartbeat,
@@ -8481,6 +8481,7 @@ private immutable string checkpointButtonTooltipText =
     "Save a checkpoint, or return the workspace to one";
 private immutable string sendButtonTooltipText = "Send (Enter)";
 private immutable string stopButtonTooltipText = "Stop";
+private immutable string continueButtonTooltipText = "Continue the unfinished plan (Enter)";
 
 /// Project name that command-line (cmd/console) sessions file their chats
 /// under. The rail gives this project its own row pinned directly above the New
@@ -12695,6 +12696,15 @@ public final class OpenCodeRoot : VBox
     // The failure repeat count already reported, so one stuck command raises
     // one suggestion rather than one per tick.
     private int _petLastFailureReported = 0;
+    // While true the bubble mirrors the conversation the pet was asked in.
+    private bool _petFollowingConversation;
+    // Throttles that mirror, so streaming does not rebuild the bubble per frame.
+    private double _petSyncAccum;
+    // Slow cadence: when this idle stretch began, when the pet last commented on
+    // the scene, and which scene digest it commented on.
+    private SysTime _petIdleSince;
+    private SysTime _petLastSceneComment;
+    private string _petSceneCommented;
     // <<< pet:end
     // Throttles the snapshot publish so the overlay is refreshed a few times a
     // second instead of on every frame.
@@ -14456,16 +14466,62 @@ private string _suggestExcludeId;
         if (enabled)
         {
             if (_pet !is null) return;
-            _pet = new PetHost();
+            // Lift the pet above the mini chat overlay when both are visible;
+            // the mini chat is 300px tall with a 16px bottom inset.
+            _pet = new PetHost(_settings.floatingMiniChat ? 316 : 0,
+                _settings.petScreenWatching);
             _pet.start();
+            _petIdleSince = Clock.currTime;
+            _petLastSceneComment = Clock.currTime;
+            _petSceneCommented = "";
         }
         else
         {
             _petSpokeForIdle = false;
+            _petFollowingConversation = false;
             if (_pet is null) return;
             _pet.stop();
             _pet = null;
         }
+    }
+
+    /// Mirror the conversation the pet was asked in, so a typed request shows
+    /// the user's line and then the reply. Throttled like the mini chat.
+    private void syncPetConversation(double deltaSeconds)
+    {
+        if (_pet is null) return;
+        _petSyncAccum += deltaSeconds;
+        if (_petSyncAccum < 0.25) return;
+        _petSyncAccum = 0;
+        if (!_petFollowingConversation) return;
+        _pet.publishLines(petConversationLines(3));
+    }
+
+    /// The bubble lines for the current conversation, oldest first. Public so a
+    /// headless test can assert the reply reaches the pet without a window.
+    public string[] petConversationLines(int count)
+    {
+        string[] lines;
+        foreach (line; recentMessagesForOverlay(count))
+            lines ~= (line.role == "user" ? "You: " ~ line.text : line.text);
+        if (lines.length == 0) lines ~= "I'm watching. Click me to talk.";
+        return lines;
+    }
+
+    /// A scene comment is due at most once every ten minutes, and only when the
+    /// foreground digest actually changed. Pure, so the cadence is testable.
+    public bool petSceneCommentDue(string digest, string lastDigest,
+        double minutesSinceLast, double thresholdMinutes = 10)
+    {
+        return digest.length > 0 && digest != lastDigest &&
+            minutesSinceLast >= thresholdMinutes;
+    }
+
+    /// An idle comment is due once per idle stretch, after ten quiet minutes.
+    public bool petIdleCommentDue(double idleMinutes, bool spoke,
+        double thresholdMinutes = 10)
+    {
+        return idleMinutes >= thresholdMinutes && !spoke;
     }
 
     /// A snapshot of what the pet may observe. Built only from counters the app
@@ -14498,7 +14554,8 @@ private string _suggestExcludeId;
     /// raise, and the suggestion is still inert text.
     private void runPetObservation(double deltaSeconds)
     {
-        if (_pet is null || !_settings.experimentalFloatingPet) return;
+        if (_pet is null || _pet.paused() ||
+            !_settings.experimentalFloatingPet) return;
         _petAccum += deltaSeconds;
         // Failures are checked promptly so the offer arrives while it is useful;
         // idleness stays on the slower cadence.
@@ -14519,9 +14576,35 @@ private string _suggestExcludeId;
             return;
         }
         _petLastFailureReported = 0;
-        if (!signal.idle) { _petSpokeForIdle = false; return; }
-        if (_petSpokeForIdle) return;
-        publishPetProposal(petIdleObservation(signal.idleMinutes));
+        if (!signal.idle)
+        {
+            // A running turn resets the quiet window and re-arms the idle line.
+            _petSpokeForIdle = false;
+            _petIdleSince = Clock.currTime;
+            return;
+        }
+        const now = Clock.currTime;
+        double idleMinutes = 0;
+        if (_petIdleSince != SysTime.init)
+            idleMinutes = (now - _petIdleSince).total!"seconds" / 60.0;
+        // Scene comments take precedence over the generic idle line: at most one
+        // per ten minutes, and only when the foreground actually changed.
+        const scene = _pet.lastScene();
+        double sceneMinutes = 1e9;
+        if (_petLastSceneComment != SysTime.init)
+            sceneMinutes = (now - _petLastSceneComment).total!"seconds" / 60.0;
+        const cadence = _settings.petCommentaryMinutes > 0
+            ? _settings.petCommentaryMinutes : 10;
+        if (petSceneCommentDue(scene.digest, _petSceneCommented, sceneMinutes,
+                cadence))
+        {
+            _petLastSceneComment = now;
+            _petSceneCommented = scene.digest;
+            publishPetProposal(petSceneObservation(scene.app));
+            return;
+        }
+        if (!petIdleCommentDue(idleMinutes, _petSpokeForIdle, cadence)) return;
+        publishPetProposal(petIdleObservation(cast(int) idleMinutes));
     }
 
     /// Surface at most one proposal for an observation, and show it. Kept tiny
@@ -16595,7 +16678,11 @@ private string _suggestExcludeId;
         _input.onSendRequested = delegate()
         {
             if (_input.textUtf8().strip().length == 0 &&
-                _pendingAttachments.length == 0) return;
+                _pendingAttachments.length == 0)
+            {
+                if (!turnIsBusy()) continueCurrentTask();
+                return;
+            }
             sendMessage();
         };
         _input.onQueueRequested = delegate() { queueFollowUp(); };
@@ -16634,8 +16721,10 @@ private string _suggestExcludeId;
             if (turnIsBusy()) stopActiveTurn();
             // An empty composer has nothing to send. Never let that click reach
             // the send path, where it could be read as a request to extend the
-            // chat instead of as a no-op.
+            // chat. When unfinished plan work remains, that click is the
+            // explicit Continue action instead.
             else if (hasSendableInput()) sendMessage();
+            else continueCurrentTask();
         };
         // The tooltip follows the label (Send / Stop) and opens above the
         // button, which sits on the window's bottom edge.
@@ -20922,7 +21011,7 @@ private void pollButtonSuggestionRequest()
         }
         target.setAction("Regenerate",
             regenerateAction(sessionIndex, messageIndex));
-        if (sessionTurnIncomplete(sessionIndex))
+        if (sessionCanContinue(sessionIndex))
             target.setSecondaryAction("Continue",
                 continueAction(sessionIndex, messageIndex));
     }
@@ -21441,6 +21530,11 @@ private void pollButtonSuggestionRequest()
             freezeTurnTiming();
             refreshTurnActiveMarker(sessionIndex);
             clearActivity();
+            // The done path refreshed pill actions before this settle changed
+            // turnStatus/taskStatus, so recompute the tip now that the final
+            // state is durable. Without this an active unfinished plan showed
+            // Regenerate but no Continue.
+            if (sessionIndex == _current) refreshBubbleActions();
         }
         if (decision.continues())
         {
@@ -25463,6 +25557,36 @@ private void pollButtonSuggestionRequest()
         startChatRequest(sessionIndex);
     }
 
+    /// Resume the current conversation from its latest prose reply. Used by the
+    /// idle Send button when it is showing Continue for unfinished plan work.
+    private bool continueCurrentTask()
+    {
+        if (_current < 0 || !sessionCanContinue(_current)) return false;
+        const reply = lastAssistantReplyIndex(_current);
+        if (reply < 0) return false;
+        continueFromReply(_current, reply);
+        return true;
+    }
+
+    /// The latest reply the reader saw: prefer prose with no tool call, and fall
+    /// back to the newest assistant wrapper when a tool round is the tip.
+    private int lastAssistantReplyIndex(int sessionIndex) const
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return -1;
+        int fallback = -1;
+        const session = &_sessions[sessionIndex];
+        foreach_reverse (index; activeMessagePath(*session))
+        {
+            const ref message = session.messages[index];
+            if (message.role != "assistant" || message.failed || message.internal) continue;
+            if (!message.toolCalls.length && message.content.strip.length)
+                return cast(int) index;
+            if (fallback < 0) fallback = cast(int) index;
+        }
+        return fallback;
+    }
+
     private bool prepareContinue(int sessionIndex, int messageIndex)
     {
         if (_client.busy() || _turnTiming ||
@@ -25486,7 +25610,7 @@ private void pollButtonSuggestionRequest()
         // can leave only tool-call wrappers on the path; appending at the tip
         // resumes that turn with its tool results intact, which is exactly the
         // "needs continue" affordance the chat offers.
-        if (message.toolCalls.length > 0 && !sessionTurnIncomplete(sessionIndex))
+        if (message.toolCalls.length > 0 && !sessionCanContinue(sessionIndex))
             return false;
         bool onActivePath;
         foreach (index; activeMessagePath(*session))
@@ -27693,6 +27817,22 @@ private void pollButtonSuggestionRequest()
         };
         petRow.add(petCheck);
         optionsBody.add(petRow);
+        // Sub-switch: the pet may read the foreground app and window title as
+        // text. Off means no capture at all.
+        auto screenRow = new HBox(8);
+        screenRow.layoutHints().preferredHeight = 32;
+        auto screenCheck = new CheckBox(
+            "Pet watches the screen (app + window title, text only)");
+        screenCheck.setId("oc-petscreen");
+        screenCheck.setChecked(_settings.petScreenWatching, false);
+        screenCheck.onChanged = delegate(bool value)
+        {
+            _settings.petScreenWatching = value;
+            if (_pet !is null) _pet.setScreenWatching(value);
+            saveSettingsNow();
+        };
+        screenRow.add(screenCheck);
+        optionsBody.add(screenRow);
         // <<< pet:end
 
         // Emergency freeze detection. On by default: a watchdog thread reports
@@ -28687,10 +28827,13 @@ private void pollButtonSuggestionRequest()
         // the client alone flips "Stop" back to "Send" while the agent is
         // still working. `_turnTiming` spans the turn and survives those gaps.
         const busy = turnIsBusy();
-        _sendButton.setText(_stopPending ? "Stopping…" : busy ? "Stop" : "Send");
+        const canContinue = !busy && !_stopPending && !_startupLoadPending &&
+            _current >= 0 && sessionCanContinue(_current);
+        _sendButton.setText(_stopPending ? "Stopping…" : busy ? "Stop" :
+            canContinue && !hasSendableInput() ? "Continue" : "Send");
         _sendButton.setEnabled(!_startupLoadPending && !_stopPending &&
             !threadLoadPending(_current) && !threadHistoryUnavailable(_current) &&
-            (busy || hasSendableInput()));
+            (busy || hasSendableInput() || canContinue));
         _sendButton.setAccent(!busy);
         if (_composerWasBusy != busy)
         {
@@ -28703,8 +28846,8 @@ private void pollButtonSuggestionRequest()
 
     /// Whether the composer holds something the Send button can dispatch.
     /// Attachments count even without text (they become the message), while
-    /// whitespace alone does not. An empty composer has nothing to send, so its
-    /// Send affordance must stay inert rather than start or extend a turn.
+    /// whitespace alone does not. An empty composer has no message to send; the
+    /// same button becomes Continue when unfinished plan work remains.
     private bool hasSendableInput() const
     {
         if (_pendingAttachments.length > 0) return true;
@@ -29001,7 +29144,9 @@ private void pollButtonSuggestionRequest()
     private string sendButtonTooltip()
     {
         if (_sendButton is null) return sendButtonTooltipText;
-        return _sendButton.text() == "Stop"d ? stopButtonTooltipText
+        const label = _sendButton.text();
+        return label == "Stop"d ? stopButtonTooltipText
+            : label == "Continue"d ? continueButtonTooltipText
             : sendButtonTooltipText;
     }
 
@@ -29621,6 +29766,31 @@ private void pollButtonSuggestionRequest()
         return !sessionIsBusy(sessionIndex);
     }
 
+    /// A settled turn can still own unfinished plan work or a required check.
+    /// That conversation needs the same explicit Continue affordance as an
+    /// interrupted one, even though its last event was a normal done.
+    private bool sessionUnfinishedWork(int sessionIndex) const
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return false;
+        const session = _sessions[sessionIndex];
+        if (session.messages.length == 0 || session.queuedFollowUps.length)
+            return false;
+        if (session.goalStatus == "paused" || session.turnStatus != "completed")
+            return false;
+        if (taskInvestigation(session)) return false;
+        return session.taskStatus == "active" ||
+            session.verificationStatus == "required" ||
+            session.verificationStatus == "failed" ||
+            hasIncompleteTaskSteps(session);
+    }
+
+    private bool sessionCanContinue(int sessionIndex)
+    {
+        return sessionTurnIncomplete(sessionIndex) ||
+            sessionUnfinishedWork(sessionIndex);
+    }
+
     /// Recompute the sidebar status flags (incomplete / unread) from the current
     /// sessions and push them to the list. No item rebuild, so it is cheap
     /// enough to run the moment a turn settles - including for the conversation
@@ -30116,7 +30286,7 @@ private void pollButtonSuggestionRequest()
                         toggleAutoResend(_current, messageIndex);
                     });
             if (!message.failed &&
-                (message.toolCalls.length == 0 || sessionTurnIncomplete(_current)))
+                (message.toolCalls.length == 0 || sessionCanContinue(_current)))
                 items ~= ContextMenuItem.command("Continue",
                     IconKind.chevronRight,
                     delegate()
@@ -32872,6 +33042,22 @@ private void pollButtonSuggestionRequest()
 
         // >>> pet:begin (its own low-frequency, budgeted check)
         runPetObservation(deltaSeconds);
+        // A request typed into the pet goes through the same path as the main
+        // composer, so queued follow-ups, steering and the approval gate all
+        // match it.
+        if (_pet !is null && !_pet.paused())
+        {
+            string petPrompt;
+            if (_pet.takePrompt(petPrompt))
+            {
+                _petFollowingConversation = true;
+                const hint = petComputerUseHint(petPrompt,
+                    _settings.experimentalComputerUse);
+                submitOverlayPrompt(petPrompt);
+                if (hint.length) _pet.publishText(hint);
+            }
+            syncPetConversation(deltaSeconds);
+        }
         // <<< pet:end
 
         // A suggestion belongs to an empty, idle composer for the reply it was
@@ -35329,6 +35515,16 @@ private void pollButtonSuggestionRequest()
         newChat();
     }
 
+    /// Test-only: create a conversation even while saved history is still
+    /// loading, so fixtures do not depend on the background load finishing.
+    public void forceNewChatForTesting()
+    {
+        const pending = _startupLoadPending;
+        _startupLoadPending = false;
+        try newChat();
+        finally _startupLoadPending = pending;
+    }
+
     /// Test-only: run the freeze-diagnostic path synchronously.
     public void fireEmergencyChatForTesting(string reason)
     {
@@ -36464,6 +36660,70 @@ private void pollButtonSuggestionRequest()
     public string petFailureProposalForTesting(int repeats)
     {
         return petProbeFailureProposal(repeats);
+    }
+
+    /// experimental: floating pet - test-only. Hand the overlay a typed
+    /// request exactly as the Send button does.
+    public void petPromptForTesting(string text)
+    {
+        if (_pet is null) return;
+        _pet.publishPrompt(text);
+    }
+
+    /// experimental: floating pet - test-only. Drain the overlay's typed
+    /// request without submitting it, so a headless test can assert the
+    /// hand-off and that it is delivered exactly once.
+    public string petTakePromptForTesting()
+    {
+        string text;
+        if (_pet is null || !_pet.takePrompt(text)) return "";
+        return text;
+    }
+
+    /// experimental: floating pet - test-only. Drive the host pause flag.
+    public void petPauseForTesting(bool paused)
+    {
+        if (_pet !is null) _pet.setPaused(paused);
+    }
+
+    public bool petPausedForTesting()
+    {
+        return _pet !is null && _pet.paused();
+    }
+
+    /// experimental: floating pet - test-only. Record a note through the host,
+    /// which must honour the pause.
+    public void petNoteForTesting(string text)
+    {
+        if (_pet !is null) _pet.note(text);
+    }
+
+    /// experimental: floating pet - test-only. Flip the screen-watching
+    /// sub-switch through the host the running overlay uses.
+    public void petScreenWatchingForTesting(bool value)
+    {
+        if (_pet is null) return;
+        _settings.petScreenWatching = value;
+        _pet.setScreenWatching(value);
+    }
+
+    public bool petScreenWatchingEnabledForTesting()
+    {
+        return _pet !is null && _pet.screenWatching();
+    }
+
+    /// The bubble hint shown when a pet-typed task needs computer use but the
+    /// experimental computer-use tools are off. Empty when nothing is needed.
+    public string petComputerUseHint(string prompt, bool computerUseEnabled)
+    {
+        if (computerUseEnabled) return "";
+        import std.string : toLower;
+        const lower = prompt.toLower;
+        foreach (needle; ["screen", "click", "type ", "open ", "press",
+            "window"])
+            if (lower.indexOf(needle) >= 0)
+                return "Computer use is off in Settings; I'll stay with text.";
+        return "";
     }
     // <<< pet:end
 
