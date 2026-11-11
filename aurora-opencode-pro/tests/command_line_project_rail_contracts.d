@@ -16,7 +16,8 @@ module command_line_project_rail_contracts;
 //   build/command_line_project_rail_contracts.exe
 
 import aurora;
-import auroraopencode.appui : OpenCodeRoot, commandLineConversationsProjectName;
+import auroraopencode.appui : OpenCodeRoot, ProjectListView,
+    commandLineConversationsProjectName;
 import auroraopencode.core : opencodeTheme, setOpencodeStateDirectoryForTesting;
 import core.time : MonoTime, seconds;
 import std.conv : to;
@@ -194,6 +195,49 @@ int main()
         "other rail presentation too, gap was " ~ flippedGap.to!string);
     writeln("Toggled rail (wasCollapsed=", wasCollapsed, ") keeps the pinned row ",
         flippedGap, " px above the New project button");
+
+    // The icon-width rail clips each project name, so hovering a row must name
+    // the project in a tooltip after the usual hover delay.
+    if (!root.projectsRailCollapsedForTesting())
+    {
+        root.toggleProjectsRailForTesting();
+        root.tickTree(0.02);
+        driver.paint();
+    }
+    auto projectRail = cast(ProjectListView) rail;
+    assert(projectRail !is null, "the projects rail must be a ProjectListView");
+    assert(rail.items().length > 0, "the rail needs a project row to hover");
+    driver.moveTo(projectRail.rowCenterForTesting(0));
+    root.tickTree(0.02);
+    driver.paint();
+    assert(!projectRail.nameTooltipOpenForTesting(),
+        "the project-name tooltip must wait for the hover delay");
+    root.tickTree(0.5);
+    driver.paint();
+    assert(projectRail.nameTooltipOpenForTesting(),
+        "hovering a project in the collapsed rail did not open its tooltip");
+    assert(projectRail.nameTooltipTextForTesting() ==
+        to!string(rail.items()[0].text),
+        "the project tooltip must show the hovered project's name, was: " ~
+        projectRail.nameTooltipTextForTesting());
+    writeln("Collapsed rail project tooltip: ",
+        projectRail.nameTooltipTextForTesting());
+
+    // The expanded rail already shows the name, so the tooltip must stay shut.
+    root.toggleProjectsRailForTesting();
+    root.tickTree(0.02);
+    driver.paint();
+    assert(!root.projectsRailCollapsedForTesting(),
+        "the rail did not expand for the tooltip check");
+    driver.moveTo(Point(600, 400));
+    root.tickTree(0.02);
+    driver.paint();
+    driver.moveTo(projectRail.rowCenterForTesting(0));
+    root.tickTree(0.5);
+    driver.paint();
+    assert(!projectRail.nameTooltipOpenForTesting(),
+        "the expanded rail must not open a project-name tooltip");
+    writeln("Expanded rail shows no project-name tooltip");
 
     // The pinned order must persist to projects.json.
     root.flushRepositoryForTesting();

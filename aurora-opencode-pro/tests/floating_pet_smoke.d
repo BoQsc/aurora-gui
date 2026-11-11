@@ -119,6 +119,19 @@ int main()
         "the companion conversation must be reused, not recreated");
     writeln("PASS the companion has its own conversation and project");
 
+    // 2d3. The own-project routing is optional: with it off the companion
+    // writes in the opened conversation instead of switching away.
+    root.petOwnProjectForTesting(false);
+    root.forceNewChatForTesting();
+    const openedTitle = root.petPromptTargetTitleForTesting();
+    assert(openedTitle == "New chat",
+        "with the option off the companion must write in the opened chat, got: " ~
+        openedTitle);
+    root.petOwnProjectForTesting(true);
+    assert(root.petPromptTargetTitleForTesting() == "Companion",
+        "with the option on the companion must use its own conversation");
+    writeln("PASS companion own-project chat is optional");
+
     // 2e. The bubble mirrors the conversation the pet was asked in: the user's
     // line first, then the reply, and the idle line when there is nothing yet.
     if (root.sessionCountForTesting() == 0) root.forceNewChatForTesting();
@@ -230,6 +243,7 @@ int main()
     auto watchSettings = loadSettings();
     watchSettings.petScreenWatching = false;
     watchSettings.petCommentaryMinutes = 20;
+    watchSettings.petUseOwnProject = false;
     saveSettings(watchSettings);
     const reloaded = loadSettings();
     assert(!reloaded.petScreenWatching,
@@ -237,6 +251,8 @@ int main()
     assert(reloaded.petCommentaryMinutes == 20,
         "the commentary cadence must persist, got " ~
         to!string(reloaded.petCommentaryMinutes));
+    assert(!reloaded.petUseOwnProject,
+        "the own-project switch must persist as off");
     root.petScreenWatchingForTesting(false);
     assert(!root.petScreenWatchingEnabledForTesting(),
         "switching watching off must reach the host");
@@ -245,6 +261,7 @@ int main()
         "switching watching on must reach the host");
     watchSettings.petScreenWatching = true;
     watchSettings.petCommentaryMinutes = 10;
+    watchSettings.petUseOwnProject = true;
     saveSettings(watchSettings);
     writeln("PASS screen watching and cadence settings round-trip and reach the host");
 

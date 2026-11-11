@@ -1817,6 +1817,9 @@ public struct Settings
     bool petScreenWatching = true;
     /// Minimum minutes between the pet's proactive comments.
     int petCommentaryMinutes = 10;
+    /// Chat in the companion's own project (true) or directly in the opened
+    /// conversation (false).
+    bool petUseOwnProject = true;
     // <<< pet:end
     // Experimental opt-in: the per-project "project manager" - one special
     // conversation per project that reviews the project's recent conversations
@@ -2317,6 +2320,10 @@ public Settings loadSettings()
                     if (found.type == JSONType.integer &&
                         found.integer >= 1 && found.integer <= 240)
                         settings.petCommentaryMinutes = cast(int) found.integer;
+                if (auto found = "petUseOwnProject" in value.object)
+                    if (found.type == JSONType.true_ ||
+                        found.type == JSONType.false_)
+                        settings.petUseOwnProject = found.type == JSONType.true_;
                 // <<< pet:end
                 if (auto found = "experimentalProjectManager" in value.object)
                     if (found.type == JSONType.true_ ||
@@ -2634,6 +2641,7 @@ public void saveSettings(const ref Settings settings, bool strictIO = false)
     root["experimentalFloatingPet"] = settings.experimentalFloatingPet;
     root["petScreenWatching"] = settings.petScreenWatching;
     root["petCommentaryMinutes"] = settings.petCommentaryMinutes;
+    root["petUseOwnProject"] = settings.petUseOwnProject;
     // <<< pet:end
     root["experimentalProjectManager"] = settings.experimentalProjectManager;
     root["developerMode"] = settings.developerMode;

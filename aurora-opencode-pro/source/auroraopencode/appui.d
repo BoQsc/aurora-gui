@@ -12248,6 +12248,15 @@ public final class ProjectListView : ListView
 
     private int _hoverRow = -1;
 
+    // Delayed hover tooltip naming the row's project. The rail collapses to
+    // icon width, where the name is clipped, so the owner enables this only
+    // while the rail is unexpanded; an expanded row already shows the name.
+    private HoverTooltip _nameTip;
+    private bool _nameTipOpen;
+    private bool _nameTooltipEnabled;
+    private double _nameTipSeconds = 0;
+    private static immutable double nameTooltipDelaySeconds = 0.45;
+
     /// Fired on drop: move the project at `from` to the insertion slot `to`
     /// (0 .. project count), the position between rows the pointer released on.
     void delegate(int from, int to) onReorderRequested;
@@ -12335,6 +12344,122 @@ public final class ProjectListView : ListView
         }
     }
 
+    // -- Project-name hover tooltip --------------------------------------
+
+    /// Show each row's project name on hover. The rail's owner turns this on
+    /// only while the rail is collapsed to icon width.
+    void setNameTooltipEnabled(bool value)
+    {
+        if (_nameTooltipEnabled == value) return;
+        _nameTooltipEnabled = value;
+        if (!value)
+        {
+            _nameTipSeconds = 0;
+            closeNameTooltip();
+        }
+    }
+
+    protected override void onTick(double deltaSeconds)
+    {
+        // A captured drag or a pointer that left without a leave event must not
+        // leave a name panel anchored to a row that is no longer hovered.
+        if (!hovered() && _hoverRow >= 0)
+        {
+            _hoverRow = -1;
+            invalidate();
+        }
+        updateNameTooltip(deltaSeconds);
+    }
+
+    private void updateNameTooltip(double deltaSeconds)
+    {
+        const count = cast(int) items().length;
+        const row = _hoverRow;
+        const want = _nameTooltipEnabled && !_dragging &&
+            row >= 0 && row < count;
+        if (!want)
+        {
+            _nameTipSeconds = 0;
+            if (_nameTipOpen) closeNameTooltip();
+            return;
+        }
+        if (_nameTipOpen)
+        {
+            // Re-anchor in case the row scrolled under a stationary pointer.
+            positionNameTooltip(row);
+            return;
+        }
+        _nameTipSeconds += deltaSeconds;
+        if (_nameTipSeconds >= nameTooltipDelaySeconds)
+            showNameTooltip(row);
+    }
+
+    private void showNameTooltip(int row)
+    {
+        if (_nameTip is null)
+        {
+            _nameTip = new HoverTooltip(this);
+            _nameTip.setWrap(true);
+            _nameTip.setCompact(true);
+        }
+        _nameTip.setText(toUTF8(items()[cast(size_t) row].text));
+        if (_nameTip.parent() is null) popupRoot(this).add(_nameTip);
+        positionNameTooltip(row);
+        _nameTipOpen = true;
+    }
+
+    private void closeNameTooltip()
+    {
+        _nameTipOpen = false;
+        if (_nameTip !is null && _nameTip.parent() !is null)
+            _nameTip.parent().remove(_nameTip);
+    }
+
+    // Sit the panel beside the hovered row, preferring the rail's right edge
+    // and clamping it inside the window.
+    private void positionNameTooltip(int row)
+    {
+        if (_nameTip is null) return;
+        const rh = rowHeight();
+        if (rh <= 0) return;
+        const y = row * rh - scrollOffset();
+        const origin = localToGlobal(Point(0, y));
+        const measured = _nameTip.measure(Size(int.max, int.max));
+        auto root = popupRoot(this);
+        const rootWidth = root is null ? origin.x + bounds().width
+            : root.bounds().width;
+        const rootHeight = root is null ? origin.y + bounds().height
+            : root.bounds().height;
+        enum tooltipGap = 8;
+        enum edgePad = 8;
+        int x = origin.x + bounds().width + tooltipGap;
+        if (x + measured.width > rootWidth - edgePad)
+            x = origin.x - measured.width - tooltipGap;
+        x = clampInt(x, edgePad,
+            maxInt(edgePad, rootWidth - measured.width - edgePad));
+        int tipY = origin.y + (rh - measured.height) / 2;
+        tipY = clampInt(tipY, edgePad,
+            maxInt(edgePad, rootHeight - measured.height - edgePad));
+        _nameTip.setBounds(Rect(x, tipY, measured.width, measured.height));
+    }
+
+    /// Test-only: whether the project-name hover tooltip is open.
+    public bool nameTooltipOpenForTesting() const { return _nameTipOpen; }
+
+    /// Test-only: the open project-name tooltip's text ("" when closed).
+    public string nameTooltipTextForTesting()
+    {
+        return _nameTip is null ? "" : _nameTip.textForTesting();
+    }
+
+    /// Test-only: global center of a project row, for hover checks.
+    public Point rowCenterForTesting(int index)
+    {
+        const rh = rowHeight();
+        const y = index * rh - scrollOffset() + rh / 2;
+        return localToGlobal(Point(bounds().width / 2, y));
+    }
+
     override bool onMouseMove(ref Event event)
     {
         const next = indexAt(event.position);
@@ -12375,6 +12500,8 @@ public final class ProjectListView : ListView
     override void onMouseLeave()
     {
         _hoverRow = -1;
+        _nameTipSeconds = 0;
+        closeNameTooltip();
         if (!_dragging) setCursor(CursorKind.arrow);
     }
 
@@ -14534,6 +14661,9 @@ private string _suggestExcludeId;
             _pet = new PetHost(_settings.floatingMiniChat ? 316 : 0,
                 _settings.petScreenWatching);
             _pet.start();
+            // The companion's project exists from the moment the pet is on, so
+            // its conversations always have a home.
+            petCompanionProjectId();
             _petIdleSince = Clock.currTime;
             _petLastSceneComment = Clock.currTime;
             _petSceneCommented = "";
@@ -14644,6 +14774,39 @@ private string _suggestExcludeId;
         foreach (project; _projectState.projects)
             if (project.name == "Companion") return project.path;
         return "";
+    }
+
+    /// Make the companion's project and conversation the visible ones, so its
+    /// chats are listed where the user expects them.
+    private void petShowCompanion()
+    {
+        const projectId = petCompanionProjectId();
+        foreach (i, project; _projectState.projects)
+            if (project.id == projectId)
+            {
+                if (_projectState.activeId != projectId)
+                    selectProject(cast(int) i);
+                break;
+            }
+        const companion = petConversationSession();
+        if (companion >= 0 && companion != _current)
+            selectSession(companion);
+    }
+
+    /// experimental: floating pet - test-only. Route the next prompt to the own
+    /// project (true) or the opened conversation (false).
+    public void petOwnProjectForTesting(bool value)
+    {
+        _settings.petUseOwnProject = value;
+    }
+
+    /// experimental: floating pet - test-only. The conversation a pet prompt
+    /// would go to, by title.
+    public string petPromptTargetTitleForTesting()
+    {
+        const index = _settings.petUseOwnProject
+            ? petConversationSession() : _current;
+        return index >= 0 ? _sessions[index].title : "";
     }
 
     /// A scene comment is due at most once every ten minutes, and only when the
@@ -17016,6 +17179,10 @@ private string _suggestExcludeId;
         _newProjectButton.layoutHints().preferredWidth = collapsed ? 40 : 138;
         _railToggle.setIcon(collapsed ? IconKind.chevronRight
             : IconKind.chevronDown);
+        if (_projectRail !is null)
+            _projectRail.setNameTooltipEnabled(collapsed);
+        if (_commandLineRail !is null)
+            _commandLineRail.setNameTooltipEnabled(collapsed);
         _projectsColumn.invalidate();
     }
 
@@ -27971,6 +28138,21 @@ private void pollButtonSuggestionRequest()
         };
         screenRow.add(screenCheck);
         optionsBody.add(screenRow);
+        // Optional: write in the opened conversation instead of the companion's
+        // own project.
+        auto ownProjectRow = new HBox(8);
+        ownProjectRow.layoutHints().preferredHeight = 32;
+        auto ownProjectCheck = new CheckBox(
+            "Companion chats in its own project (off: the opened chat)");
+        ownProjectCheck.setId("oc-petownproject");
+        ownProjectCheck.setChecked(_settings.petUseOwnProject, false);
+        ownProjectCheck.onChanged = delegate(bool value)
+        {
+            _settings.petUseOwnProject = value;
+            saveSettingsNow();
+        };
+        ownProjectRow.add(ownProjectCheck);
+        optionsBody.add(ownProjectRow);
         // <<< pet:end
 
         // Emergency freeze detection. On by default: a watchdog thread reports
@@ -33198,11 +33380,9 @@ private void pollButtonSuggestionRequest()
             string petPrompt;
             if (_pet.takePrompt(petPrompt))
             {
-                // The companion answers in its own conversation, never in the
-                // chat the reader happens to have open.
-                const companion = petConversationSession();
-                if (companion >= 0 && companion != _current)
-                    selectSession(companion);
+                // Own project by default; the option routes it into the opened
+                // conversation instead.
+                if (_settings.petUseOwnProject) petShowCompanion();
                 _petFollowingConversation = true;
                 const hint = petComputerUseHint(petPrompt,
                     _settings.experimentalComputerUse);
