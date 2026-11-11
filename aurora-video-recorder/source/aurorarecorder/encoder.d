@@ -24,6 +24,7 @@ module aurorarecorder.encoder;
  */
 
 import aurorarecorder.capture : ScreenSurface;
+import aurorarecorder.loopback : SystemAudioCapture;
 import aurorarecorder.settings : CaptureRect, stopMarginSeconds;
 
 import core.stdc.stdio : fclose, FILE, fopen;
@@ -42,8 +43,12 @@ version (Windows)
         LPWSTR, OPEN_ALWAYS, PROCESS_INFORMATION, SECURITY_ATTRIBUTES,
         SetHandleInformation, SetInformationJobObject, STARTF_USESHOWWINDOW,
         STARTF_USESTDHANDLES, STARTUPINFOW, SW_HIDE, TRUE,
-        WaitForSingleObject, WriteFile, CREATE_NO_WINDOW,
-        AssignProcessToJobObject;
+        WaitForSingleObject, WriteFile, FlushFileBuffers, CREATE_NO_WINDOW,
+        AssignProcessToJobObject, CreateNamedPipeW, ConnectNamedPipe,
+        OVERLAPPED, CreateEventW, GetLastError, ERROR_PIPE_CONNECTED,
+        FILE_FLAG_OVERLAPPED,
+        PIPE_ACCESS_OUTBOUND, PIPE_READMODE_BYTE,
+        PIPE_TYPE_BYTE, PIPE_WAIT;
     import std.utf : toUTF16, toUTF16z;
 
     // druntime declares `CreateJobObjectW` only for `_WIN32_WINNT >= 0x500`
@@ -81,6 +86,19 @@ struct RecordingJob
      */
     double maxSeconds;
     string ffmpegPath;
+    /**
+     * Microphone to record, by its `dshow` friendly name. Empty records video
+     * only.
+     */
+    string audioDevice;
+    /**
+     * Record what the speakers play (WASAPI loopback), captured by this app
+     * and piped to ffmpeg's second input. `systemAudioRate`/`Channels` describe
+     * that PCM (always float32).
+     */
+    bool systemAudio;
+    uint systemAudioRate;
+    uint systemAudioChannels;
 }
 
 /** Read-only view of a `RecorderStatus`, copied for the UI thread. */
@@ -191,16 +209,63 @@ string[] encoderArguments(RecordingJob job)
         "-framerate", text(job.fps),
         "-i", "pipe:0",
     ];
+    // Microphone as a second input. Inputs must all precede output options:
+    // ffmpeg reads `-c:v` after a second `-i` as that input's decoder.
+    if (job.audioDevice.length > 0)
+        args ~= ["-f", "dshow", "-i", "audio=" ~ job.audioDevice];
+    // Screen sound: raw float32 PCM on a second pipe, captured by WASAPI
+    // loopback in this process (ffmpeg's build has no WASAPI input).
+    if (job.systemAudio)
+    {
+        args ~= [
+            "-f", "f32le", "-ar", text(job.systemAudioRate),
+            "-ac", text(job.systemAudioChannels), "-i", systemAudioUrl(),
+        ];
+    }
+
+    // `-an` only when nothing supplies audio at all: it would also discard the
+    // screen-sound stream below.
+    if (job.audioDevice.length == 0 && !job.systemAudio)
+        args ~= ["-an"]; // video only
     args ~= [
-        "-an",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-tune", "stillimage",
         "-crf", text(job.quality),
         "-pix_fmt", "yuv420p",
     ];
+    // Microphone as a second input. `dshow` needs the friendly name exactly as
+    // listed, and it must come after the video input so the mapping below is
+    // unambiguous.
+    if (job.audioDevice.length > 0)
+    {
+        args ~= [
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:a", "aac", "-b:a", "160k",
+            // Stop waiting for audio when the video input ends.
+            "-shortest",
+        ];
+    }
+    else if (job.systemAudio)
+    {
+        args ~= [
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:a", "aac", "-b:a", "160k",
+            "-shortest",
+        ];
+    }
     args ~= ["-movflags", "+faststart", job.outputPath];
     return args;
+}
+
+/**
+ * Named pipe the screen-sound PCM is written to. A name (not an inherited
+ * handle) is used because `pipe:N` numbering depends on the child's inherited
+ * handle table, which the shell and other inherited handles can change.
+ */
+string systemAudioUrl()
+{
+    return r"\\.\pipe\aurora-video-recorder-audio";
 }
 
 /**
@@ -384,12 +449,36 @@ final class ScreenEncoder
             }
             surface.setDrawCursor(_job.drawCursor);
 
+            // Screen sound is captured here; ffmpeg's build has no WASAPI
+            // input, and a machine may expose no Stereo Mix device either.
+            SystemAudioCapture audio;
+            if (_job.systemAudio)
+            {
+                audio = new SystemAudioCapture();
+                if (!audio.start())
+                {
+                    // Sound is a convenience: record silently rather than
+                    // failing the whole recording.
+                    audio = null;
+                }
+                else
+                {
+                    // The device decides its own rate/channel layout; the
+                    // ffmpeg input must describe exactly what it will receive.
+                    _job.systemAudioRate = audio.format().sampleRate;
+                    _job.systemAudioChannels = audio.format().channels;
+                }
+            }
+            scope (exit) if (audio !is null) audio.shutdown();
+
             HANDLE logHandle = openLog(_job.outputPath ~ ".log");
             HANDLE writeEnd;
+            HANDLE audioWriteEnd;
             PROCESS_INFORMATION process;
             const started = createProcess(_job.ffmpegPath,
+                // Arguments are built after the device reported its format.
                 buildCommandLine(_job.ffmpegPath, encoderArguments(_job)),
-                logHandle, process, writeEnd);
+                logHandle, process, writeEnd, audioWriteEnd, audio !is null);
             closeHandle(logHandle);
             if (!started)
             {
@@ -412,8 +501,27 @@ final class ScreenEncoder
 
             long frames;
             string writeError;
+            // Screen sound runs on its own writer thread so the frame cadence
+            // above never waits for the audio pipe.
+            shared bool stopAudio;
+            Thread audioThread;
+            if (audio !is null && audioWriteEnd !is null)
+            {
+                HANDLE audioHandle = audioWriteEnd;
+                audioWriteEnd = null; // owned by the thread from here
+                audioThread = new Thread({ audioLoop(audio, audioHandle,
+                    stopAudio); });
+                audioThread.isDaemon = true;
+                audioThread.start();
+            }
             if (!cancelled)
                 recordLoop(surface, writeEnd, frames, writeError);
+
+            // End the audio stream before closing video stdin so ffmpeg keeps
+            // the tail of the sound with `-shortest`.
+            atomicStore!(MemoryOrder.rel)(stopAudio, true);
+            if (audio !is null) audio.requestStop();
+            if (audioThread !is null) audioThread.join();
 
             // Closing stdin makes ffmpeg flush the last frames and write the
             // MP4 trailer; only then is the file playable.
@@ -433,6 +541,46 @@ final class ScreenEncoder
             else
                 _status.set(RecorderPhase.finished, frames, _job.outputPath,
                     "");
+        }
+
+        /**
+         * Forward captured PCM to ffmpeg on its own thread.
+         *
+         * The video loop must keep its frame cadence, so it cannot also block
+         * on the audio pipe: a drain here is timed independently and blocks
+         * only this thread.
+         */
+        private static void audioLoop(SystemAudioCapture audio, HANDLE audioEnd,
+            ref shared bool stopAudio)
+        {
+            scope (exit) if (audioEnd !is null) CloseHandle(audioEnd);
+            // The pipe was created overlapped, so a client that has not
+            // connected yet makes WriteFile return ERROR_IO_PENDING instead of
+            // blocking: retry until ffmpeg is listening.
+            bool connected;
+            while (!atomicLoad!(MemoryOrder.acq)(stopAudio))
+            {
+                auto pcm = audio.take();
+                if (!connected)
+                {
+                    if (ConnectNamedPipe(audioEnd, null) != FALSE ||
+                        GetLastError() == ERROR_PIPE_CONNECTED)
+                        connected = true;
+                    else if (GetLastError() == ERROR_PIPE_CONNECTED)
+                        connected = true;
+                    Thread.sleep(dur!"msecs"(20));
+                    continue;
+                }
+                if (pcm.length > 0)
+                {
+                    if (!writeFrame(audioEnd, pcm.ptr, pcm.length)) return;
+                }
+                else
+                    Thread.sleep(dur!"msecs"(5));
+            }
+            // Flush what the device produced before the stop request.
+            auto tail = audio.take();
+            if (tail.length > 0) writeFrame(audioEnd, tail.ptr, tail.length);
         }
 
         /// Pace, capture and write frames until `stop()`.
@@ -516,9 +664,10 @@ final class ScreenEncoder
          */
         private static bool createProcess(string applicationName,
             string commandLine, HANDLE logHandle, ref PROCESS_INFORMATION process,
-            ref HANDLE writeEnd)
+            ref HANDLE writeEnd, ref HANDLE audioWriteEnd, bool audioRequested)
         {
             writeEnd = null;
+            audioWriteEnd = null;
             process = PROCESS_INFORMATION.init;
 
             SECURITY_ATTRIBUTES security;
@@ -532,6 +681,17 @@ final class ScreenEncoder
             // The parent's write end must not leak into the child, or the
             // child would never see EOF after the recorder closes stdin.
             SetHandleInformation(writeEnd, HANDLE_FLAG_INHERIT, 0);
+
+            // Optional screen-sound pipe, as a named pipe server this process
+            // writes and ffmpeg reads by URL.
+            audioWriteEnd = createAudioPipe(audioRequested);
+            if (audioRequested && audioWriteEnd is null)
+            {
+                CloseHandle(readEnd);
+                CloseHandle(writeEnd);
+                writeEnd = null;
+                return false;
+            }
 
             STARTUPINFOW startup = STARTUPINFOW.init;
             startup.cb = STARTUPINFOW.sizeof;
@@ -555,14 +715,41 @@ final class ScreenEncoder
                 commandLineW.ptr, null, null, TRUE,
                 CREATE_NO_WINDOW, null, null, &startup, &process);
             CloseHandle(readEnd);
+            // ffmpeg opens the audio pipe while it starts up. The server must
+            // have a client before any PCM is written, so connect here (the
+            // call blocks until ffmpeg's open arrives) and give up rather
+            // than hang if it never does.
+            // The audio pipe is connected lazily by the writer thread, so
+            // nothing here can deadlock against ffmpeg's own startup.
             if (started == FALSE)
             {
                 CloseHandle(writeEnd);
                 writeEnd = null;
+                if (audioWriteEnd !is null)
+                {
+                    CloseHandle(audioWriteEnd);
+                    audioWriteEnd = null;
+                }
                 return false;
             }
             CloseHandle(process.hThread);
             return true;
+        }
+
+        /**
+         * Create the named-pipe server for screen sound. The caller connects
+         * it once ffmpeg is running.
+         */
+        private static HANDLE createAudioPipe(bool requested)
+        {
+            if (!requested) return null;
+            // FILE_FLAG_OVERLAPPED so connecting never blocks: ffmpeg opens the
+            // pipe only once it starts reading, which happens after this call.
+            HANDLE pipe = CreateNamedPipeW(toUTF16z(systemAudioUrl()),
+                PIPE_ACCESS_OUTBOUND | FILE_FLAG_OVERLAPPED,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1,
+                4 * 1024 * 1024, 4 * 1024 * 1024, 0, null);
+            return pipe == INVALID_HANDLE_VALUE ? null : pipe;
         }
     }
 }

@@ -15,6 +15,7 @@ module headless_smoke;
 
 import aurorarecorder.encoder : RecorderPhase, RecordingJob, ScreenEncoder,
     buildCommandLine, encoderArguments, quoteArgument;
+import aurorarecorder.audio : listAudioDevices, parseAudioDevices;
 import aurorarecorder.ffmpeg : findFfmpeg;
 import aurorarecorder.hotkey : GlobalHotkey, HotkeyChord, chordFromText,
     defaultHotkey, describeHotkey, hotkeyAlt, hotkeyControl, hotkeyKeyAllowed,
@@ -176,6 +177,37 @@ private void checkHotkeyModel()
         "documented default is Ctrl+Shift+R");
 }
 
+/**
+ * ffmpeg's `-list_devices` output: only `(audio)` entries count, the friendly
+ * name (not the alternative COM name) is used, and repeats collapse.
+ */
+private void checkAudioParsing()
+{
+    const listing =
+        "[in#0 @ 000001d7] Could not enumerate video devices (or none found).\n" ~
+        "[in#0 @ 000001d7] \"Microphone Array (Realtek High Definition Audio)\" (audio)\n" ~
+        "[in#0 @ 000001d7]   Alternative name \"@device_cm_{33D9A762}\"\n" ~
+        "[in#0 @ 000001d7] \"Headset (JBL TUNE125BT Hands-Free AG Audio)\" (audio)\n" ~
+        "[in#0 @ 000001d7] \"Webcam\" (video)\n" ~
+        "[in#0 @ 000001d7] Could not find audio only device with name [x] among source devices of type audio.\n";
+    const devices = parseAudioDevices(listing);
+    check(devices.length == 2, format("two microphones parsed (got %d)",
+        devices.length));
+    if (devices.length == 2)
+    {
+        check(devices[0].name == "Microphone Array (Realtek High Definition Audio)",
+            "first microphone name parsed: " ~ devices[0].name);
+        check(devices[1].name == "Headset (JBL TUNE125BT Hands-Free AG Audio)",
+            "second microphone name parsed: " ~ devices[1].name);
+    }
+    check(parseAudioDevices("").length == 0, "empty listing yields no devices");
+    check(parseAudioDevices("no devices here\n").length == 0,
+        "a listing without (audio) entries yields no devices");
+    const repeated = parseAudioDevices(
+        "\"Mic\" (audio)\n\"Mic\" (audio)\n");
+    check(repeated.length == 1, "duplicate device names collapse");
+}
+
 private void checkSettingsFile()
 {
     RecorderOptions defaults;
@@ -195,6 +227,16 @@ private void checkSettingsFile()
     check(stored.options.target == CaptureTarget.primaryMonitor,
         "capture target survives");
     check(stored.hasHotkey && stored.hotkey == chord, "hotkey survives");
+
+    // Microphone names contain spaces, parentheses and dots.
+    RecorderOptions withMicrophone = defaults;
+    withMicrophone.audioDevice = "Headset (JBL TUNE125BT Hands-Free AG Audio)";
+    const micRoundTrip = parseSettings(serializeSettings(withMicrophone, chord),
+        RecorderOptions.init);
+    check(micRoundTrip.options.audioDevice == withMicrophone.audioDevice,
+        "microphone name survives a round trip");
+    check(parseSettings("microphone=\n", defaults).options.audioDevice.length == 0,
+        "an empty microphone setting means no audio");
 
     // A disabled hotkey is stored as an empty value, not a default.
     const off = parseSettings(serializeSettings(defaults, HotkeyChord.init),
@@ -232,6 +274,18 @@ private void checkCommandLine()
     check(line.indexOf("overlay") < 0, "no cursor overlay when not requested");
     check(args[$ - 1] == job.outputPath, "output path is the last argument");
     check(line.indexOf("pipe:0") >= 0, "input read from stdin");
+
+    // Microphone: a second dshow input, AAC, and explicit stream mapping.
+    auto withAudio = job;
+    withAudio.audioDevice = "Microphone Array (Realtek High Definition Audio)";
+    const audioArgs = encoderArguments(withAudio);
+    const audioLine = audioArgs.join(" ");
+    check(audioLine.indexOf("-f dshow -i audio=Microphone Array (Realtek High Definition Audio)") >= 0,
+        "microphone passed as a dshow audio input");
+    check(audioLine.indexOf("-map 0:v:0 -map 1:a:0") >= 0,
+        "both video and audio streams mapped");
+    check(audioLine.indexOf("-c:a aac") >= 0, "audio encoded as AAC");
+    check(audioLine.indexOf("-an") < 0, "-an is dropped when audio is on");
 
     auto withCursor = job;
     withCursor.drawCursor = true;
@@ -312,6 +366,72 @@ private void checkHotkeyLive()
         check(!hotkey.takePressed(), "taking a press clears the flag");
         hotkey.shutdown();
     }
+}
+
+/**
+ * Record a short clip with the first available microphone and verify the MP4
+ * has an AAC audio stream alongside the video. Skipped (reported) when the
+ * machine exposes no capture device.
+ */
+private void checkLiveAudio(string ffmpeg)
+{
+    const devices = listAudioDevices(ffmpeg);
+    if (devices.length == 0)
+    {
+        writeln("  (no microphone found; skipping the audio recording test)");
+        return;
+    }
+    const microphone = devices[0].name;
+    writeln("  recording audio with ", microphone);
+
+    const root = buildPath(tempDir(), "aurora-video-recorder-smoke");
+    if (!exists(root))
+        mkdirRecurse(root);
+    const output = buildPath(root, "smoke-audio.mp4");
+    if (exists(output)) remove(output);
+    const logFile = output ~ ".log";
+    if (exists(logFile)) remove(logFile);
+
+    RecordingJob job;
+    job.outputPath = output;
+    job.rect = CaptureRect(0, 0, 320, 240);
+    job.fps = 10;
+    job.quality = 28;
+    job.drawCursor = false;
+    job.audioDevice = microphone;
+    job.ffmpegPath = ffmpeg;
+
+    auto encoder = new ScreenEncoder(job);
+    encoder.start();
+    const deadline = Clock.currTime + dur!"seconds"(10);
+    while (encoder.status.snapshot.frames == 0 && Clock.currTime < deadline &&
+        encoder.status.snapshot.phase != RecorderPhase.failed)
+        Thread.sleep(dur!"msecs"(20));
+    Thread.sleep(dur!"msecs"(1500));
+    encoder.stop();
+    check(encoder.join(20_000), "audio encoder finished within 20 seconds");
+
+    const status = encoder.status.snapshot;
+    check(status.phase == RecorderPhase.finished,
+        format("audio recording finished (phase=%s, error=%s)", status.phase,
+            status.error));
+    if (!exists(output)) return;
+
+    const ffprobe = findFfprobe(ffmpeg);
+    if (ffprobe.length == 0)
+    {
+        writeln("  (ffprobe not found; skipping audio stream verification)");
+        return;
+    }
+    int code;
+    const probe = runCapture(ffprobe, [
+        "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "stream=codec_name,channels",
+        "-of", "default=noprint_wrappers=1", output,
+    ], code);
+    check(code == 0, "ffprobe reads the audio stream: " ~ probe);
+    check(probe.indexOf("codec_name=aac") >= 0,
+        "the file carries an AAC audio track: " ~ probe);
 }
 
 /**
@@ -405,6 +525,7 @@ int main(string[] args)
     checkSettings();
     checkHotkeyModel();
     checkSettingsFile();
+    checkAudioParsing();
     checkCommandLine();
     checkHotkeyLive();
 
@@ -422,6 +543,7 @@ int main(string[] args)
         writeln("  live recording with ", ffmpeg);
         checkLive(ffmpeg, false);
         checkLive(ffmpeg, true);
+        checkLiveAudio(ffmpeg);
     }
 
     if (_failures > 0)

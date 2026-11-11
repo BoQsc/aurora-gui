@@ -46,6 +46,10 @@ string serializeSettings(const ref RecorderOptions options, HotkeyChord hotkey)
     text ~= format("fps=%d\n", options.fps);
     text ~= format("quality=%d\n", options.quality);
     text ~= format("cursor=%s\n", options.drawCursor ? "on" : "off");
+    text ~= format("screen_sound=%s\n", options.systemAudio ? "on" : "off");
+    // Device names contain spaces and parentheses but never newlines, so the
+    // plain `key=value` form round-trips unchanged.
+    text ~= format("microphone=%s\n", options.audioDevice);
     text ~= format("folder=%s\n", options.outputFolder);
     text ~= format("hotkey=%s\n", hotkey.valid() ? hotkeyToText(hotkey) : "");
     return text;
@@ -94,6 +98,16 @@ StoredSettings parseSettings(string text, RecorderOptions defaults)
         {
             if (value == "on") stored.options.drawCursor = true;
             else if (value == "off") stored.options.drawCursor = false;
+        }
+        else if (key == "screen_sound")
+        {
+            if (value == "on") stored.options.systemAudio = true;
+            else if (value == "off") stored.options.systemAudio = false;
+        }
+        else if (key == "microphone")
+        {
+            // Empty means "No microphone" (video only).
+            stored.options.audioDevice = value;
         }
         else if (key == "folder" && value.length > 0)
         {

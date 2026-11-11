@@ -28,6 +28,10 @@ struct RecorderOptions
     int quality = 23;
     bool drawCursor = true;
     string outputFolder;
+    /// Microphone friendly name; empty records video only.
+    string audioDevice;
+    /// Record what the speakers play (WASAPI loopback).
+    bool systemAudio = true;
 }
 
 /// What the UI needs to know once per frame.
@@ -80,6 +84,8 @@ final class RecorderController
         _options.quality = nearestPreset(quality, qualityPresets);
     }
     void setDrawCursor(bool value) { _options.drawCursor = value; }
+    void setAudioDevice(string device) { _options.audioDevice = device; }
+    void setSystemAudio(bool value) { _options.systemAudio = value; }
     void setOutputFolder(string folder)
     {
         if (folder.length > 0) _options.outputFolder = folder;
@@ -174,6 +180,10 @@ final class RecorderController
         job.fps = _options.fps;
         job.quality = _options.quality;
         job.drawCursor = _options.drawCursor;
+        job.audioDevice = _options.audioDevice;
+        // A microphone and screen sound are alternatives in this UI; the
+        // loopback format is filled in by the encoder once the device opens.
+        job.systemAudio = _options.systemAudio && _options.audioDevice.length == 0;
         job.maxSeconds = maxRecordingSeconds + stopMarginSeconds;
         job.ffmpegPath = _ffmpegPath;
 

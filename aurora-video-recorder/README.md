@@ -39,6 +39,10 @@ If none is found the Record button stays disabled and the status line says so.
 - **Frame rate** - 15 / 24 / 30 / 60 fps.
 - **Quality** - High (CRF 18), Balanced (23) or Small (28).
 - **Draw the mouse cursor in the video** - on by default.
+- **Microphone** - click the button to switch between the detected
+  microphones and **No microphone** (silent video). The choice is saved, and
+  a device that has been unplugged falls back to silent video instead of
+  failing the recording.
 - **Start/stop hotkey** - works anywhere, even while another window has focus.
   Click the chord button and press the combination you want (Ctrl, Alt or Win
   plus a letter or digit, or a function key); it is saved immediately. **Off**
@@ -52,7 +56,8 @@ same second gets a ` (2)` suffix instead of overwriting.
 
 ## How it records
 
-Video only (no audio), H.264 in MP4 with `yuv420p` and a fast-start index.
+H.264 in MP4 with `yuv420p` and a fast-start index, plus an AAC track when a
+microphone is selected.
 
 The app captures the screen itself: 32-bit BGRA frames from a GDI `BitBlt` on a
 worker thread, piped into ffmpeg's stdin. The frame rate is paced on a monotonic

@@ -12,6 +12,7 @@ module aurorarecorder.app;
 import aurora;
 
 import aurorarecorder.encoder : RecorderPhase;
+import aurorarecorder.audio : AudioDevice, listAudioDevices;
 import aurorarecorder.ffmpeg : executableDirectory;
 import aurorarecorder.hotkey : GlobalHotkey, HotkeyChord, HotkeyResult,
     chordFromText, defaultHotkey, describeHotkey, hotkeyAlt, hotkeyControl,
@@ -108,6 +109,10 @@ final class RecorderRoot : VBox
     private ChoiceRow _fpsRow;
     private ChoiceRow _qualityRow;
     private CheckBox _cursorBox;
+    private CheckBox _systemAudioBox;
+    private Button _microphoneButton;
+    private Label _microphoneHint;
+    private AudioDevice[] _microphones;
     private Button _hotkeyButton;
     private Button _hotkeyClearButton;
     private Label _hotkeyHint;
@@ -130,7 +135,7 @@ final class RecorderRoot : VBox
     this(GuiWindow window, RecorderController controller,
         GlobalHotkey hotkey, HotkeyChord chord, string settingsFile)
     {
-        super(6, Insets(14));
+        super(5, Insets(12));
         _window = window;
         _controller = controller;
         _hotkey = hotkey;
@@ -164,12 +169,12 @@ final class RecorderRoot : VBox
         _timer.setPixelSize(34);
         _timer.setAlignment(HorizontalAlign.center);
         _timer.setColor(theme().text);
-        _timer.layoutHints().preferredHeight = 46;
+        _timer.layoutHints().preferredHeight = 40;
         add(_timer);
 
         _status = new Label("");
         _status.setColor(theme().textMuted);
-        _status.layoutHints().preferredHeight = 38;
+        _status.layoutHints().preferredHeight = 30;
         add(_status);
 
         add(new Separator());
@@ -208,6 +213,40 @@ final class RecorderRoot : VBox
         _cursorBox.onChanged = (bool value) { _controller.setDrawCursor(value); };
         add(_cursorBox);
 
+        // Screen sound is what makes a recording of a video/video call audible.
+        _systemAudioBox = new CheckBox(
+            "Record the sound playing on this PC (screen audio)",
+            options.systemAudio);
+        _systemAudioBox.onChanged = (bool value) {
+            _controller.setSystemAudio(value);
+            saveCurrentSettings();
+        };
+        add(_systemAudioBox);
+
+        // ---- Microphone ----
+        add(new Label("Microphone"));
+        auto microphoneRow = new HBox(10);
+        microphoneRow.layoutHints().preferredHeight = 36;
+        _microphoneButton = new Button("", IconKind.music);
+        _microphoneButton.layoutHints().flex = 1.0;
+        _microphoneButton.onClick = &onMicrophoneButton;
+        microphoneRow.add(_microphoneButton);
+        auto noMicrophoneButton = new Button("Off");
+        noMicrophoneButton.onClick = () {
+            _controller.setAudioDevice("");
+            refreshMicrophoneText();
+            saveCurrentSettings();
+        };
+        microphoneRow.add(noMicrophoneButton);
+        add(microphoneRow);
+
+        // The hint shares the row area of the hotkey hint below; both are
+        // short enough that the panel still fits the window.
+        _microphoneHint = new Label("");
+        _microphoneHint.setColor(theme().textMuted);
+        _microphoneHint.layoutHints().preferredHeight = 26;
+        add(_microphoneHint);
+
         // ---- Start/stop hotkey ----
         add(new Label("Start/stop hotkey"));
         auto hotkeyRow = new HBox(10);
@@ -226,6 +265,7 @@ final class RecorderRoot : VBox
 
         _hotkeyHint = new Label("");
         _hotkeyHint.setColor(theme().textMuted);
+        _hotkeyHint.layoutHints().preferredHeight = 26;
         add(_hotkeyHint);
 
         refreshHotkeyText();
@@ -322,6 +362,7 @@ final class RecorderRoot : VBox
             _fpsRow.setEnabled(!active);
             _qualityRow.setEnabled(!active);
             _cursorBox.setEnabled(!active);
+            _systemAudioBox.setEnabled(!active);
             _recordButton.setEnabled(snapshot.ffmpegAvailable || active);
             _timer.setColor(snapshot.phase == RecorderPhase.recording ?
                 theme().accent : theme().text);
@@ -427,6 +468,34 @@ final class RecorderRoot : VBox
 
     // ---- Start/stop hotkey ----
 
+    /// Cycle "No microphone" -> each device -> back, and save the choice.
+    private void onMicrophoneButton()
+    {
+        const current = _controller.options().audioDevice;
+        string next;
+        if (current.length == 0)
+        {
+            if (_microphones.length > 0) next = _microphones[0].name;
+        }
+        else
+        {
+            bool found;
+            foreach (device; _microphones)
+            {
+                if (found)
+                {
+                    next = device.name;
+                    break;
+                }
+                if (device.name == current) found = true;
+            }
+        }
+        _controller.setAudioDevice(next);
+        _microphoneHint.setText("");
+        refreshMicrophoneText();
+        saveCurrentSettings();
+    }
+
     /// The chord button either starts capture ("Press a key combination") or
     /// cancels capture.
     private void onHotkeyButton()
@@ -515,6 +584,43 @@ final class RecorderRoot : VBox
     private void refreshHotkeyText()
     {
         _hotkeyButton.setText(describeHotkey(_chord));
+    }
+
+    // ---- Microphone ----
+
+    /// Pick up the device list (once, at start-up) and show the current choice.
+    void loadMicrophones(string ffmpegPath)
+    {
+        _microphones = listAudioDevices(ffmpegPath);
+        const current = _controller.options().audioDevice;
+        if (current.length > 0)
+        {
+            bool known;
+            foreach (device; _microphones)
+                if (device.name == current) known = true;
+            if (!known)
+            {
+                // A saved device is unplugged: keep recording video only
+                // rather than failing at start.
+                _controller.setAudioDevice("");
+                _microphoneHint.setText("The saved microphone was not found; " ~
+                    "recording without sound.");
+            }
+        }
+        refreshMicrophoneText();
+    }
+
+    private void refreshMicrophoneText()
+    {
+        const current = _controller.options().audioDevice;
+        _microphoneButton.setText(current.length > 0 ? current :
+            "No microphone");
+        if (_microphoneHint.text().length == 0)
+        {
+            _microphoneHint.setText(_microphones.length == 0 ?
+                "No microphone was found; recordings are silent." :
+                "Click to switch microphone; sound is recorded with the video.");
+        }
     }
 
     /// Swap the window/taskbar icon for the current recorder state.
@@ -683,8 +789,8 @@ private WindowOptions recorderWindowOptions()
     // The panel's rows lay out at ~720 logical pixels; a narrower window clips
     // the right-hand controls (and their click targets).
     options.width = 760;
-    // Fits a 1080p work area (taskbar visible) without being resized.
-    options.height = 812;
+
+    options.height = 856;
     options.resizable = false;
     options.decorated = true;
     options.darkTitleBar = true;
@@ -740,6 +846,7 @@ int run(string[] args, string executablePath = "")
     window.setRoot(root);
     root.refreshTheme(); // Colors resolve once the widget is attached.
     root.registerHotkey(); // After setRoot so the result can be shown.
+    root.loadMicrophones(controller.ffmpegPath());
     window.applicationService = (double delta) { root.poll(); };
     window.onCloseRequested = () {
         hotkey.shutdown();
