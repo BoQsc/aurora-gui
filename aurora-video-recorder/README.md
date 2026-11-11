@@ -67,6 +67,20 @@ Closing the stdin pipe instead makes ffmpeg finalize the file cleanly.
 Settings (folder, frame rate, quality, cursor, hotkey) are written to
 `aurora-video-recorder.ini` next to the executable.
 
+## Taskbar indicator
+
+The window, taskbar button and title bar carry the recording state as an icon,
+so the state is readable while the window is behind other applications:
+
+| State | Icon |
+| --- | --- |
+| Ready | blue ring with a small dot (`assets/icon.ico`) |
+| Recording | blue ring with a red dot (`assets/icon-recording.ico`) |
+| Finished | blue ring with a green square (`assets/icon-stopped.ico`) |
+
+The finished icon stays until the next recording starts. The icons are generated
+by `tools/make_icons.py` (16-256 px per file); run it after changing the design.
+
 ffmpeg also runs in a Windows job object with
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so ffmpeg cannot outlive the recorder and
 keep writing a file. ffmpeg's diagnostics go to `<recording>.mp4.log`.

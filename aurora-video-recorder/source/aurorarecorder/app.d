@@ -24,6 +24,8 @@ import aurorarecorder.settingsfile : loadSettings, saveSettings, settingsPath;
 
 import std.datetime : Clock, LocalTime;
 import std.format : format;
+import std.file : exists;
+import std.path : buildPath;
 import std.string : startsWith;
 
 // ---------------------------------------------------------------------------
@@ -123,6 +125,7 @@ final class RecorderRoot : VBox
     private string _shownStatus;
     private string _shownTarget;
     private bool _shownCanPlay;
+    private string _shownIcon;
 
     this(GuiWindow window, RecorderController controller,
         GlobalHotkey hotkey, HotkeyChord chord, string settingsFile)
@@ -291,9 +294,12 @@ final class RecorderRoot : VBox
 
         if (!_controller.hasEncoder())
         {
-            // One final refresh after the encoder finished on its own.
-            if (_controller.isRecording())
-                applyStatus(_controller.poll());
+            // One final refresh after the encoder finished on its own, so the
+            // result and the taskbar "finished" icon are not skipped.
+            if (_shownPhase == RecorderPhase.starting ||
+                _shownPhase == RecorderPhase.recording ||
+                _shownPhase == RecorderPhase.stopping)
+                applyStatus(_controller.poll(), true);
             return;
         }
         applyStatus(_controller.poll());
@@ -319,6 +325,8 @@ final class RecorderRoot : VBox
             _recordButton.setEnabled(snapshot.ffmpegAvailable || active);
             _timer.setColor(snapshot.phase == RecorderPhase.recording ?
                 theme().accent : theme().text);
+            // The taskbar button and title bar show idle / recording / done.
+            updateTaskbarState(snapshot.phase);
         }
 
         // Timer: rewritten only when the displayed second changes.
@@ -509,6 +517,22 @@ final class RecorderRoot : VBox
         _hotkeyButton.setText(describeHotkey(_chord));
     }
 
+    /// Swap the window/taskbar icon for the current recorder state.
+    private void updateTaskbarState(RecorderPhase phase)
+    {
+        const name = phase == RecorderPhase.recording ||
+            phase == RecorderPhase.starting ? "icon-recording.ico" :
+            phase == RecorderPhase.finished ? "icon-stopped.ico" : "icon.ico";
+        // Finished keeps its green "done" icon until the next recording
+        // starts; only an explicit reset returns to the idle look.
+        if (phase == RecorderPhase.idle && _shownIcon == "icon-stopped.ico")
+            return;
+        if (name == _shownIcon) return;
+        const path = iconPathFor(name);
+        if (path.length == 0 || !_window.setIconPath(path)) return;
+        _shownIcon = name;
+    }
+
     /// Apply the stored chord once the window is live, and report a refusal.
     void registerHotkey()
     {
@@ -652,6 +676,8 @@ private WindowOptions recorderWindowOptions()
 {
     WindowOptions options;
     options.title = "Aurora Video Recorder";
+    // Shown before the first frame paints; the state icons replace it later.
+    options.iconPath = iconPathFor("icon.ico");
     // The panel lays out at ~720 logical pixels wide; a narrower window would
     // clip the right-hand buttons (the click target would fall outside it).
     // The panel's rows lay out at ~720 logical pixels; a narrower window clips
@@ -678,8 +704,20 @@ private string folderArgument(string[] args)
     return "";
 }
 
+/// Folder holding the ICO assets, next to the executable.
+private __gshared string g_assetFolder;
+
+/// Full path of an icon in the asset folder; "" when it is not there.
+private string iconPathFor(string name)
+{
+    if (g_assetFolder.length == 0) return "";
+    const path = buildPath(g_assetFolder, name);
+    return exists(path) ? path : "";
+}
+
 int run(string[] args, string executablePath = "")
 {
+    g_assetFolder = buildPath(executableDirectory(executablePath), "assets");
     // Settings live next to the executable so a portable copy keeps them.
     const settingsFile = settingsPath(executableDirectory(executablePath));
 

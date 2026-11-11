@@ -38,5 +38,10 @@
     "/SUBSYSTEM:WINDOWS",
     "/ENTRY:mainCRTStartup"
   ],
+  "copyFiles-windows": [
+    "assets/icon.ico",
+    "assets/icon-recording.ico",
+    "assets/icon-stopped.ico"
+  ],
   "version": "0.1.0"
 }

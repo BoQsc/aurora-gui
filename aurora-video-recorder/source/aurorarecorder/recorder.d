@@ -49,6 +49,8 @@ final class RecorderController
     private string _lastFinishedPath;
     private string _lastMessage;
     private string _ffmpegPath;
+    /// True once a `finished` snapshot has been handed to the UI.
+    private bool _finishedReported;
 
     this(RecorderOptions options, string ffmpegPath)
     {
@@ -179,6 +181,7 @@ final class RecorderController
         _lastMessage = "Starting at " ~ format("%dx%d", rect.width,
             rect.height) ~ format(", %d fps...", _options.fps);
         _encoder = new ScreenEncoder(job);
+        _finishedReported = false;
         _encoder.start();
         return true;
     }
@@ -214,7 +217,11 @@ final class RecorderController
         {
             _lastFinishedPath = status.outputPath;
             _lastMessage = "Saved " ~ baseName(status.outputPath);
-            _encoder = null;
+            // Keep the encoder for one more poll: the UI shows the result (and
+            // the "finished" taskbar icon) from this snapshot, then `poll`
+            // releases it on the next tick.
+            if (_finishedReported) _encoder = null;
+            else _finishedReported = true;
         }
         else if (status.phase == RecorderPhase.failed)
         {
