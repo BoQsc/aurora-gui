@@ -331,7 +331,15 @@ int main()
         overlay.setInputForTesting("open notepad");
         assert(overlay.inputTextForTesting() == "open notepad",
             "typed text must reach the input without keystrokes");
+        auto creatureDriver = new UiTestDriver(creatureWindow);
+        creatureDriver.paint();
+        creatureWindow.saveScreenshot(
+            "build/pet-smoke/floating-pet-talking.ppm");
+        writeln("saved talking render to build/pet-smoke/floating-pet-talking.ppm");
         writeln("PASS clicking the creature reveals the collapsed input row");
+        const inputBox = overlay.inputBoundsForTesting();
+        writeln("input bounds: ", inputBox.x, ",", inputBox.y, " ",
+            inputBox.width, "x", inputBox.height);
     }
     else
         writeln("creature window unavailable in this environment (no display)");

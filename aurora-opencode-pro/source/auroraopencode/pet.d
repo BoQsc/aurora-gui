@@ -66,6 +66,13 @@ version (Windows)
         int QueryFullProcessImageNameW(void* process, uint flags, wchar* name,
             uint* size);
         int CloseHandle(void* handle);
+        ptrdiff_t GetWindowLongPtrW(void* hwnd, int index);
+        ptrdiff_t SetWindowLongPtrW(void* hwnd, int index, ptrdiff_t value);
+        int SetWindowPos(void* hwnd, void* after, int x, int y, int cx, int cy,
+            uint flags);
+        int ShowWindow(void* hwnd, int command);
+        int SetForegroundWindow(void* hwnd);
+        void* SetFocus(void* hwnd);
     }
 }
 
@@ -706,6 +713,45 @@ private string foregroundAppName(uint processId)
     return "";
 }
 
+/// The overlay's native window handle, or null when the platform has none.
+version (Windows)
+private void* overlayHwnd(GuiWindow window)
+{
+    if (window is null) return null;
+    return window.nativeWindow().nativeSurfaceInfo().handleB;
+}
+
+/// Keep the companion out of the taskbar: a tool window has no task button, so
+/// it reads as part of the desktop rather than another running app.
+version (Windows)
+private void hideFromTaskbar(GuiWindow window)
+{
+    auto hwnd = overlayHwnd(window);
+    if (hwnd is null) return;
+    enum GWL_EXSTYLE = -20;
+    enum WS_EX_TOOLWINDOW = 0x80;
+    enum WS_EX_APPWINDOW = 0x40000;
+    enum SWP_NOMOVE = 0x2, SWP_NOSIZE = 0x1, SWP_NOZORDER = 0x4,
+        SWP_NOACTIVATE = 0x10, SWP_FRAMECHANGED = 0x20;
+    const style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
+        (style | WS_EX_TOOLWINDOW) & ~cast(ptrdiff_t) WS_EX_APPWINDOW);
+    SetWindowPos(hwnd, null, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+        SWP_FRAMECHANGED);
+}
+
+/// Bring the companion forward and give it keyboard focus, so clicking it leads
+/// straight to typing instead of doing nothing.
+version (Windows)
+private void focusOverlay(GuiWindow window)
+{
+    auto hwnd = overlayHwnd(window);
+    if (hwnd is null) return;
+    SetForegroundWindow(hwnd);
+    SetFocus(hwnd);
+}
+
 /// The creature's fixed slot in the overlay: inset 8, directly under the 26px
 /// titlebar, 48x48. The overlay's chrome is fixed, so this stays aligned with
 /// the layout without depending on a child's measured box.
@@ -779,23 +825,13 @@ final class PetOverlay : VBox
         setBorder(opencodeBorder, 12);
         layoutHints().flex = 1.0;
 
-        auto bar = new TitleBar();
-        bar.setId("pet-titlebar");
-        bar.setTitle("Companion (watching, suggestions only)");
-        bar.setShowIcon(false);
-        bar.setShowMinimize(false);
-        bar.setShowMaximize(false);
-        bar.setShowClose(true);
-        bar.setBarHeight(26);
-        bar.setSystemMoveOnDrag(true);
-        bar.setDoubleClickMaximizes(false);
-        bar.setSnapEnabled(false);
-        bar.onClose = delegate() { if (_window !is null) _window.close(); };
-        add(bar);
+        // No titlebar row: this window draws no chrome, so the 26px it reserved
+        // only pushed the input row out of view once it was revealed.
 
         _content = new HBox(10);
         _content.setId("pet-content");
         _content.layoutHints().flex = 1.0;
+        _content.layoutHints().preferredHeight = 72;
 
         // The creature's column. A glyph carries the face because only Label
         // text reaches this window's surface; the drawn PetFace layer below
@@ -803,7 +839,7 @@ final class PetOverlay : VBox
         auto faceColumn = new VBox(0);
         faceColumn.setId("pet-face-column");
         faceColumn.layoutHints().preferredWidth = petFaceSize + 10;
-        _faceGlyph = new Label("•‿•");
+        _faceGlyph = new Label("☺");
         _faceGlyph.setId("pet-face-glyph");
         _faceGlyph.setScale(2);
         _faceGlyph.setColor(opencodeAccent);
@@ -819,6 +855,7 @@ final class PetOverlay : VBox
         // Hidden until the face is clicked, so the resting pet is small.
         _inputRow = new HBox(6);
         _inputRow.setId("pet-input-row");
+        _inputRow.layoutHints().preferredHeight = 30;
         _input = new TextField();
         _input.setId("pet-input");
         _input.setPlaceholder("Tell me what to do...");
@@ -843,6 +880,7 @@ final class PetOverlay : VBox
         _approval.layoutHints().flex = 1.0;
         auto footer = new HBox(6);
         footer.setId("pet-footer");
+        footer.layoutHints().preferredHeight = 22;
         footer.add(_approval);
         auto pause = new Button("Pause");
         pause.setId("pet-pause");
@@ -900,6 +938,14 @@ final class PetOverlay : VBox
         if (_inputRow is null) return;
         _inputRow.setVisible(true);
         _face.setMood(PetMood.listening);
+        // A click must hand keyboard focus to the companion, otherwise the user
+        // types into whatever was in front and "click to talk" does nothing.
+        if (_window !is null)
+        {
+            focusOverlay(_window);
+            _window.redrawWindow();
+        }
+        invalidate();
         if (_input !is null) _input.requestFocus();
     }
 
@@ -940,6 +986,13 @@ final class PetOverlay : VBox
     bool inputVisibleForTesting() const
     {
         return _inputRow !is null && _inputRow.visible();
+    }
+
+    /// Test-only: where the input row actually laid out, to tell "not shown"
+    /// apart from "shown but placed outside the window".
+    Rect inputBoundsForTesting() const
+    {
+        return _inputRow is null ? Rect.init : _inputRow.bounds();
     }
 
     /// Test-only: the current input text.
@@ -1040,11 +1093,13 @@ final class PetHost
         {
             auto overlay = new PetOverlay(this);
             WindowOptions options;
-            options.title = "Companion";
+            options.title = "Aurora Companion";
             // Wide enough for the longest suggestion without wrapping, since
             // this Label has no wrap support in the vendored toolkit.
             options.width = 420;
-            options.height = 132;
+            // Tall enough for the bubble plus the revealed input row; at 132 the
+            // row had no room, so clicking the creature appeared to do nothing.
+            options.height = 168;
             options.decorated = false;
             options.resizable = false;
             options.alwaysOnTop = true;
@@ -1062,6 +1117,8 @@ final class PetHost
             overlay.bindWindow(window);
             window.setRoot(overlay);
             placeBottomRight(window);
+            // Before the first show: no taskbar button, ever.
+            hideFromTaskbar(window);
             window.run();
             overlay.bindWindow(null);
         }
