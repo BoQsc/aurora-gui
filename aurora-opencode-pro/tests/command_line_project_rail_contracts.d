@@ -223,6 +223,41 @@ int main()
     writeln("Collapsed rail project tooltip: ",
         projectRail.nameTooltipTextForTesting());
 
+    // Moving to another project must refresh the already-open panel instead of
+    // leaving the first project's name on screen.
+    assert(rail.items().length > 1, "need a second project row to hover");
+    driver.moveTo(projectRail.rowCenterForTesting(1));
+    root.tickTree(0.02);
+    driver.paint();
+    assert(projectRail.nameTooltipOpenForTesting(),
+        "moving to another project closed the tooltip");
+    assert(projectRail.nameTooltipTextForTesting() ==
+        to!string(rail.items()[1].text),
+        "the project tooltip did not follow the hovered row, was: " ~
+        projectRail.nameTooltipTextForTesting());
+
+    // Leaving and re-entering a row must reopen it with that row's name.
+    driver.moveTo(Point(600, 400));
+    root.tickTree(0.02);
+    driver.paint();
+    assert(!projectRail.nameTooltipOpenForTesting(),
+        "leaving the rail did not close the project tooltip");
+    driver.moveTo(projectRail.rowCenterForTesting(0));
+    root.tickTree(0.02);
+    driver.paint();
+    assert(!projectRail.nameTooltipOpenForTesting(),
+        "the rehovered project tooltip must wait for the hover delay");
+    root.tickTree(0.5);
+    driver.paint();
+    assert(projectRail.nameTooltipOpenForTesting(),
+        "rehovering a project did not reopen its tooltip");
+    assert(projectRail.nameTooltipTextForTesting() ==
+        to!string(rail.items()[0].text),
+        "the rehovered tooltip showed the wrong project, was: " ~
+        projectRail.nameTooltipTextForTesting());
+    writeln("Project tooltip follows row changes: ",
+        projectRail.nameTooltipTextForTesting());
+
     // The expanded rail already shows the name, so the tooltip must stay shut.
     root.toggleProjectsRailForTesting();
     root.tickTree(0.02);

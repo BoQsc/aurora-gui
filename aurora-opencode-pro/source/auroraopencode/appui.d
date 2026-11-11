@@ -12254,6 +12254,7 @@ public final class ProjectListView : ListView
     private HoverTooltip _nameTip;
     private bool _nameTipOpen;
     private bool _nameTooltipEnabled;
+    private string _nameTipText;
     private double _nameTipSeconds = 0;
     private static immutable double nameTooltipDelaySeconds = 0.45;
 
@@ -12385,6 +12386,14 @@ public final class ProjectListView : ListView
         }
         if (_nameTipOpen)
         {
+            // Moving between rows reuses the open panel, so keep its text in
+            // step with the row now under the pointer.
+            const text = toUTF8(items()[cast(size_t) row].text);
+            if (text != _nameTipText)
+            {
+                _nameTipText = text;
+                _nameTip.setText(text);
+            }
             // Re-anchor in case the row scrolled under a stationary pointer.
             positionNameTooltip(row);
             return;
@@ -12402,7 +12411,8 @@ public final class ProjectListView : ListView
             _nameTip.setWrap(true);
             _nameTip.setCompact(true);
         }
-        _nameTip.setText(toUTF8(items()[cast(size_t) row].text));
+        _nameTipText = toUTF8(items()[cast(size_t) row].text);
+        _nameTip.setText(_nameTipText);
         if (_nameTip.parent() is null) popupRoot(this).add(_nameTip);
         positionNameTooltip(row);
         _nameTipOpen = true;
@@ -12411,6 +12421,7 @@ public final class ProjectListView : ListView
     private void closeNameTooltip()
     {
         _nameTipOpen = false;
+        _nameTipText = "";
         if (_nameTip !is null && _nameTip.parent() !is null)
             _nameTip.parent().remove(_nameTip);
     }
