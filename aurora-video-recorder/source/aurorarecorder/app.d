@@ -245,7 +245,10 @@ final class RecorderRoot : VBox
         auto openFolderButton = new Button("Open folder", IconKind.folder);
         openFolderButton.layoutHints().flex = 1.0;
         openFolderButton.onClick = () {
-            openInShell(_controller.options().outputFolder);
+            // Select the finished recording when there is one; Explorer then
+            // highlights it instead of just showing the folder contents.
+            openFolderSelecting(_controller.options().outputFolder,
+                _controller.lastFinishedPath);
         };
         openRow.add(openFolderButton);
         _playButton = new Button("Play last", IconKind.music);
@@ -618,19 +621,18 @@ void openFolderSelecting(string folder, string file)
 {
     version (Windows)
     {
+        import std.file : exists;
         import core.sys.windows.shellapi : ShellExecuteW;
         import std.utf : toUTF16z;
-        if (file.length == 0 || exists(file))
+        // Selecting needs the file to exist. When there is no finished
+        // recording yet (or it was deleted) just open the folder, so the
+        // button never does nothing.
+        if (file.length > 0 && exists(file))
         {
-            // Selecting needs the file to exist; an empty or missing result
-            // still opens the folder so the button never does nothing.
-            if (file.length > 0)
-            {
-                const arguments = "/select," ~ quoteForExplorer(file);
-                ShellExecuteW(null, toUTF16z("open"), toUTF16z("explorer.exe"),
-                    toUTF16z(arguments), toUTF16z(folder), 1);
-                return;
-            }
+            const arguments = "/select," ~ quoteForExplorer(file);
+            ShellExecuteW(null, toUTF16z("open"), toUTF16z("explorer.exe"),
+                toUTF16z(arguments), toUTF16z(folder), 1);
+            return;
         }
         openInShell(folder);
     }
