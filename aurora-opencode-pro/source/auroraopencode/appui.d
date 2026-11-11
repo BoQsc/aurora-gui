@@ -48,9 +48,10 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
 import auroraopencode.runtime : applyRuntimeThreadPayload, AgentEventKind, AgentRuntime,
     AgentRuntimeEvent, DurableAgentRuntime, projectAgentRuntimeEvents,
     deletedAgentRuntimeThreadIds;
-import rebuild : RebuildOutcome, findAuroraRoot, isAuroraProject, isRebuildAware,
-    findAuroraSourceFolder, findDeveloperSourceDirectory, launchRebuild, planRebuild, readRebuildOutcome, rebuildFailed,
-    rebuildIncomplete, rebuildStatusLabel, rebuildSucceeded;
+import rebuild : RebuildOutcome, RebuildStatus, findAuroraRoot, isAuroraProject,
+    isRebuildAware, findAuroraSourceFolder, findDeveloperSourceDirectory,
+    launchRebuild, planRebuild, readRebuildOutcome, rebuildFailed,
+    rebuildIncomplete, rebuildStatePath, rebuildStatusLabel, rebuildSucceeded;
 import auroraopencode.updater : UpdateCheck, checkForUpdate, launchUpdateHelper;
 import auroraopencode.deepseekpeak : DeepSeekPeakStats, deepSeekPeakStats,
     deepSeekSlotsPerDay;
@@ -12698,6 +12699,8 @@ public final class OpenCodeRoot : VBox
     private int _petLastFailureReported = 0;
     // While true the bubble mirrors the conversation the pet was asked in.
     private bool _petFollowingConversation;
+    // The companion's own conversation, created on first use and reused after.
+    private int _petSession = -1;
     // Throttles that mirror, so streaming does not rebuild the bubble per frame.
     private double _petSyncAccum;
     // Slow cadence: when this idle stretch began, when the pet last commented on
@@ -13168,6 +13171,8 @@ private string _suggestExcludeId;
     private string _rebuildSourceBlockedMessage;
     /// Isolate the network in UI fixtures; production uses DeveloperWorkflow.
     public DeveloperSyncResult delegate(string, bool) rebuildSourceCheckForTesting;
+    /// Isolate the rebuild ledger in UI fixtures; production reads the file.
+    public static RebuildOutcome delegate(string) rebuildOutcomeForTesting;
     private Button _updateButton;
     private Button _toolbarRebuildButton;
     // experimental: checkpoint - delete with source/auroraopencode/checkpoint.d
@@ -13992,6 +13997,42 @@ private string _suggestExcludeId;
         }
         catch (Exception error)
             logError("resume note unreadable: " ~ error.msg);
+        // A rebuild note belongs to the helper's post-build relaunch, not to
+        // every copy of the app started while that build runs. A premature
+        // launch used to consume the note, resume the turn against the old
+        // binary, and then disappear when the helper replaced it; the real
+        // relaunch then found no note and the chat stayed idle (the reported
+        // "rebuild did not continue the plan"). Keep the note until the ledger
+        // has a verdict.
+        RebuildOutcome rebuildOutcome;
+        bool rebuildUnfinished;
+        if (cause == "rebuild")
+        {
+            const packageDir = rebuildPackageDirectory();
+            rebuildOutcome = rebuildOutcomeForTesting !is null
+                ? rebuildOutcomeForTesting(packageDir)
+                : readRebuildOutcome(packageDir);
+            rebuildUnfinished = rebuildStillRunning(rebuildOutcome, packageDir,
+                rebuildOutcomeForTesting !is null);
+        }
+        if (rebuildUnfinished)
+        {
+            materializeRunningThreads();
+            foreach (ref session; _sessions)
+                if (session.messages.length > 0 && session.turnStatus == "running")
+                {
+                    session.turnStatus = "interrupted";
+                    recordInterruptedReads(session);
+                    logInfo("turn marked interrupted by restart: session=" ~
+                        session.id);
+                }
+            refreshSessionRowStatus();
+            markDirty();
+            logInfo("resume deferred: the rebuild is still running; keeping "
+                ~ "the note for the post-build relaunch");
+            recoverQuickTitles();
+            return;
+        }
         // Consumed once: a single crash must not replay on every later launch.
         try fileRemove(path);
         catch (Exception) {}
@@ -14034,12 +14075,11 @@ private string _suggestExcludeId;
         string buildStamp;
         if (cause == "rebuild")
         {
-            auto outcome = readRebuildOutcome(rebuildPackageDirectory());
-            if (rebuildFailed(outcome) || rebuildIncomplete(outcome))
-                rebuildReport = outcome.report.length > 0
-                    ? outcome.report : incompleteRebuildReport(outcome);
+            if (rebuildFailed(rebuildOutcome) || rebuildIncomplete(rebuildOutcome))
+                rebuildReport = rebuildOutcome.report.length > 0
+                    ? rebuildOutcome.report : incompleteRebuildReport(rebuildOutcome);
             else
-                buildStamp = rebuildSuccessStamp() ~ rebuildPublicationStamp(outcome);
+                buildStamp = rebuildSuccessStamp() ~ rebuildPublicationStamp(rebuildOutcome);
         }
         if (target >= 0 && noteSession.length && _sessions[target].id == noteSession &&
             cause == "rebuild" && rebuildReport.length == 0 &&
@@ -14141,6 +14181,29 @@ private string _suggestExcludeId;
                 _current < cast(int) _sessions.length
                 ? _sessions[_current].id : "none") ~ " continuing=" ~ queued);
         recoverQuickTitles();
+    }
+
+    /// Whether the rebuild ledger still names work the helper owns. A launch
+    /// that reads one of these states is premature: the helper has not written
+    /// a verdict and will relaunch the app itself. A record left pre-verdict far
+    /// longer than a build can take is a dead helper, not a build to wait for,
+    /// so the next start resumes instead of deferring forever.
+    private static bool rebuildStillRunning(in RebuildOutcome outcome,
+        string packageDir, bool ignoreAge)
+    {
+        if (!outcome.found) return false;
+        if (outcome.status != RebuildStatus.pending &&
+            outcome.status != RebuildStatus.running) return false;
+        if (ignoreAge) return true;
+        const ledger = rebuildStatePath(packageDir);
+        try
+        {
+            if (ledger.length &&
+                Clock.currTime - timeLastModified(ledger) >= minutes(20))
+                return false;
+        }
+        catch (Exception) {}
+        return true;
     }
 
     /// The conversation a restart must continue, most specific first: the id the
@@ -14506,6 +14569,34 @@ private string _suggestExcludeId;
             lines ~= (line.role == "user" ? "You: " ~ line.text : line.text);
         if (lines.length == 0) lines ~= petIdleLine;
         return lines;
+    }
+
+    /// The companion's own conversation: reused when it exists, created and
+    /// titled "Companion" on first use. -1 only while history is still loading.
+    private int petConversationSession()
+    {
+        if (_petSession >= 0 && _petSession < cast(int) _sessions.length)
+            return _petSession;
+        foreach (i, session; _sessions)
+            if (session.title == "Companion")
+            {
+                _petSession = cast(int) i;
+                return _petSession;
+            }
+        const before = cast(int) _sessions.length;
+        newChat();
+        if (cast(int) _sessions.length == before) return -1;
+        _sessions[$ - 1].title = "Companion";
+        _petSession = cast(int) _sessions.length - 1;
+        return _petSession;
+    }
+
+    /// experimental: floating pet - test-only. Title of the companion's own
+    /// conversation (created if needed); empty when one cannot be made yet.
+    public string petCompanionSessionForTesting()
+    {
+        const index = petConversationSession();
+        return index >= 0 ? _sessions[index].title : "";
     }
 
     /// A scene comment is due at most once every ten minutes, and only when the
@@ -33060,6 +33151,11 @@ private void pollButtonSuggestionRequest()
             string petPrompt;
             if (_pet.takePrompt(petPrompt))
             {
+                // The companion answers in its own conversation, never in the
+                // chat the reader happens to have open.
+                const companion = petConversationSession();
+                if (companion >= 0 && companion != _current)
+                    selectSession(companion);
                 _petFollowingConversation = true;
                 const hint = petComputerUseHint(petPrompt,
                     _settings.experimentalComputerUse);

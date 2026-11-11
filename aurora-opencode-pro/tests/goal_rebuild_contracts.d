@@ -14,6 +14,7 @@ import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : opencodeTheme, setOpencodeStateDirectoryForTesting;
 import core.thread : Thread;
 import core.time : MonoTime, seconds, msecs;
+import rebuild : RebuildOutcome, RebuildStatus;
 import std.conv : to;
 import std.file : exists, mkdirRecurse, remove, tempDir, write;
 import std.path : buildPath;
@@ -224,6 +225,60 @@ int main()
         root.stopActiveTurnForTesting();
         pump();
         writeln("PASS a rebuild continues a requesting chat whose transcript is only on disk");
+    }
+
+    // A launch can happen while the helper is still building: the old binary
+    // is still startable before the image is replaced. That premature instance
+    // must leave the single-use note for the helper's post-build relaunch.
+    // Consuming it here is the reported "the chat did not continue after
+    // rebuild", because the real relaunch then found no note at all.
+    {
+        root.clearPendingResumeForTesting();
+        root.newChatForTesting();
+        const id = root.sessionIdForTesting(root.currentSessionForTesting());
+        root.addConversationForTesting(["user"],
+            ["Continue after the rebuild."]);
+        root.setGoalForTesting("Continue after the rebuild.", "active");
+        root.setTaskStateForTesting("Continue after the rebuild.", "active",
+            "not_required");
+        root.setSessionTurnStatusForTesting(root.currentSessionForTesting(),
+            "running");
+        const notePath = buildPath(state, "restart-resume.json");
+        write(notePath,
+            root.rebuildResumeNoteForTesting("deploy the fix", id, true));
+
+        RebuildOutcome building;
+        building.found = true;
+        building.status = RebuildStatus.running;
+        building.phase = "building";
+        OpenCodeRoot.rebuildOutcomeForTesting =
+            (string directory) { return building; };
+        scope (exit) OpenCodeRoot.rebuildOutcomeForTesting = null;
+        const prematureBefore = root.totalMessageCountForTesting();
+        root.prepareResumeForTesting();
+        pump();
+        assert(root.totalMessageCountForTesting() == prematureBefore,
+            "a launch during the build resumed the interrupted turn");
+        assert(!root.turnBusyForTesting(),
+            "a launch during the build started a turn");
+        assert(exists(notePath),
+            "a launch during the build consumed the rebuild resume note");
+
+        RebuildOutcome finished;
+        finished.found = true;
+        finished.status = RebuildStatus.ok;
+        finished.phase = "relaunching";
+        OpenCodeRoot.rebuildOutcomeForTesting =
+            (string directory) { return finished; };
+        root.prepareResumeForTesting();
+        pump();
+        assert(root.totalMessageCountForTesting() > prematureBefore,
+            "the post-build relaunch did not continue the preserved note");
+        assert(root.turnBusyForTesting(),
+            "the post-build relaunch did not start a turn");
+        root.stopActiveTurnForTesting();
+        pump();
+        writeln("PASS a premature launch leaves the rebuild note for the relaunch");
     }
 
     // Without a note (a plain relaunch) nothing is replayed.
