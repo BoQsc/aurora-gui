@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deliver the floating pet: creature overlay, bottom-right placement, click-to-write, bubble replies, notes, text-only scene sampling, sparing triggers, pause, settings switch, and computer-use hint.",
+  "reason": "Deploy the companion fixes: tool-window overlay (no taskbar task), friendlier smiley face, and working click-to-talk with the revealed focused input.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-11 08:04:05.5333127 UTC",
-  "finishedAt": "2026-11-11 08:05:34.534202 UTC",
-  "durationMs": 89000,
+  "startedAt": "2026-11-11 08:28:30.9670751 UTC",
+  "finishedAt": "2026-11-11 08:29:29.7021817 UTC",
+  "durationMs": 58734,
   "exitCode": 0,
   "errors": [],
-  "publishStatus": "failed",
-  "publishDetail": "Publishing with installed runtime required: MSVCR120.dll",
+  "publishStatus": "published",
+  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (d1881c6d5ad2).",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

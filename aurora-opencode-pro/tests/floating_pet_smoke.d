@@ -15,8 +15,8 @@ import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : loadSettings, saveSettings,
     setOpencodeStateDirectoryForTesting, opencodeTheme;
 import auroraopencode.pet : PetHost, PetMood, PetScene, PetScreenWatch,
-    petBubbleLine, petNote, petNoteLineLimit, petNotesPath, petSceneDigest,
-    sampleForegroundScene;
+    petBubbleLine, petIdleLine, petNote, petNoteLineLimit, petNotesPath,
+    petSceneDigest, sampleForegroundScene;
 import aurora.types : Rect;
 import std.conv : to;
 import std.file : exists, mkdirRecurse, readText, remove, tempDir, write;
@@ -340,6 +340,31 @@ int main()
         const inputBox = overlay.inputBoundsForTesting();
         writeln("input bounds: ", inputBox.x, ",", inputBox.y, " ",
             inputBox.width, "x", inputBox.height);
+        // The creature layer must not swallow the footer controls, the menu
+        // must offer the actions, and Close must actually stop the companion.
+        const layer = overlay.faceLayerBoundsForTesting();
+        const pauseBox = overlay.pauseBoundsForTesting();
+        assert(layer.width == 48 && layer.height == 48,
+            "the creature layer must be its own 48x48 slot, got " ~
+            to!string(layer.width) ~ "x" ~ to!string(layer.height));
+        assert(pauseBox.width > 0 && pauseBox.height > 0,
+            "the Pause button must be laid out");
+        assert(layer.intersection(pauseBox).empty,
+            "the creature layer must not cover the Pause button");
+        overlay.clickPauseForTesting();
+        assert(creatureProbe.paused(), "Pause must reach the host");
+        overlay.clickPauseForTesting();
+        assert(!creatureProbe.paused(), "Resume must reach the host");
+        const menu = overlay.menuLabelsForTesting();
+        assert(menu.length == 4 && menu[0] == "Write…" &&
+            menu[$ - 1] == "Close companion",
+            "the right-click menu must offer Write through Close companion");
+        assert(petIdleLine.indexOf("write") >= 0 &&
+            petIdleLine.indexOf("talk") < 0,
+            "the resting line must say write, not talk, got: " ~ petIdleLine);
+        writeln("PASS companion controls are clickable and the menu is present");
+        overlay.clickCloseForTesting();
+        assert(creatureProbe.stopRequested(), "Close must stop the companion");
     }
     else
         writeln("creature window unavailable in this environment (no display)");

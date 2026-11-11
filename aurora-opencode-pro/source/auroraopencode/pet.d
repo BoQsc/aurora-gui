@@ -396,10 +396,10 @@ final class PetFace : Widget
     this()
     {
         setId("pet-face");
-        // Added as the last child so it paints after the bubble and input rows;
-        // paint order is why the creature lives in a full-size transparent
-        // layer instead of a normal row child.
-        layoutHints().overlayFillParent = true;
+        // Added as the last child so it paints above the rows, but laid out at
+        // the creature's own slot: a full-window layer swallowed every click,
+        // which made Pause, Notes and Send unreachable.
+        layoutHints().excludeFromLayout = true;
         setCursor(CursorKind.hand);
     }
 
@@ -756,8 +756,12 @@ private void focusOverlay(GuiWindow window)
 /// titlebar, 48x48. The overlay's chrome is fixed, so this stays aligned with
 /// the layout without depending on a child's measured box.
 private enum int petFaceInset = 8;
-private enum int petFaceTop = 34;
+private enum int petFaceTop = 8;
 private enum int petFaceSize = 48;
+
+/// The line the companion rests on. "write", not "talk": clicking opens a text
+/// field, and the bubble should say what actually happens.
+public enum string petIdleLine = "I'm watching. Click me to write.";
 
 /// Flatten arbitrary text to one short bubble line: whitespace runs collapse,
 /// and the tail is replaced by an ellipsis past `limit` visible characters.
@@ -810,6 +814,9 @@ final class PetOverlay : VBox
     private VBox _bubble;
     private HBox _inputRow;
     private TextField _input;
+    private Button _pauseButton;
+    /// Test-only: the labels of the last right-click menu that was built.
+    private string[] _lastMenuLabels;
     /// Persistent footer. It is a separate row precisely so the approval notice
     /// can never be pushed out of view by a long suggestion.
     private Label _approval;
@@ -882,27 +889,79 @@ final class PetOverlay : VBox
         footer.setId("pet-footer");
         footer.layoutHints().preferredHeight = 22;
         footer.add(_approval);
-        auto pause = new Button("Pause");
-        pause.setId("pet-pause");
-        pause.onClick = delegate()
-        {
-            if (_host is null) return;
-            _host.setPaused(!_host.paused());
-            pause.setText(_host.paused() ? "Resume" : "Pause");
-        };
-        footer.add(pause);
+        _pauseButton = new Button("Pause");
+        _pauseButton.setId("pet-pause");
+        _pauseButton.onClick = delegate() { togglePause(); };
+        footer.add(_pauseButton);
+        auto close = new Button("×");
+        close.setId("pet-close");
+        close.onClick = delegate() { closeCompanion(); };
+        footer.add(close);
         add(footer);
 
         // Last child: paints and hit-tests the creature, so no row can cover it.
         _face = new PetFace();
         _face.onClick = delegate() { revealInput(); };
         add(_face);
-        setLines(["I'm watching. Click me to talk."]);
+        setLines([petIdleLine]);
     }
 
     void bindWindow(GuiWindow window)
     {
         _window = window;
+    }
+
+    /// The creature layer must sit exactly on the creature's slot; everything
+    /// else (Pause, Notes, Send, the × button) has to receive its own clicks.
+    protected override void onLayout()
+    {
+        super.onLayout();
+        if (_face !is null) _face.setBounds(petFaceRect(bounds()));
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button == MouseButton.right)
+        {
+            showPetMenu(event.position);
+            return true;
+        }
+        return super.onMouseDown(event);
+    }
+
+    /// Right-click anywhere on the companion: write, pause, notes, close.
+    private void showPetMenu(Point local)
+    {
+        const paused = _host !is null && _host.paused();
+        ContextMenuItem[] items;
+        items ~= ContextMenuItem.command("Write…", IconKind.notepad,
+            delegate() { revealInput(); });
+        items ~= ContextMenuItem.command(paused ? "Resume" : "Pause",
+            IconKind.settings, delegate() { togglePause(); });
+        items ~= ContextMenuItem.command("Notes", IconKind.open,
+            delegate() { if (_host !is null) _host.openNotes(); });
+        items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.command("Close companion", IconKind.close,
+            delegate() { closeCompanion(); });
+        _lastMenuLabels = ["Write…", paused ? "Resume" : "Pause", "Notes",
+            "Close companion"];
+        showContextMenu(this, localToGlobal(local), items);
+    }
+
+    private void togglePause()
+    {
+        if (_host is null) return;
+        _host.setPaused(!_host.paused());
+        if (_pauseButton !is null)
+            _pauseButton.setText(_host.paused() ? "Resume" : "Pause");
+    }
+
+    /// Stop the host: the overlay closes and the app clears its pet so the
+    /// Settings switch reflects reality.
+    private void closeCompanion()
+    {
+        if (_host !is null) _host.stop();
+        else if (_window !is null) _window.close();
     }
 
 
@@ -993,6 +1052,37 @@ final class PetOverlay : VBox
     Rect inputBoundsForTesting() const
     {
         return _inputRow is null ? Rect.init : _inputRow.bounds();
+    }
+
+    /// Test-only: the creature layer's box. It must stay on the creature and
+    /// leave the footer controls clickable.
+    Rect faceLayerBoundsForTesting() const
+    {
+        return _face is null ? Rect.init : _face.bounds();
+    }
+
+    Rect pauseBoundsForTesting() const
+    {
+        return _pauseButton is null ? Rect.init : _pauseButton.bounds();
+    }
+
+    /// Test-only: the pause action, without a pointer.
+    void clickPauseForTesting()
+    {
+        togglePause();
+    }
+
+    /// Test-only: the close action, without a pointer.
+    void clickCloseForTesting()
+    {
+        closeCompanion();
+    }
+
+    /// Test-only: labels of the right-click menu.
+    string[] menuLabelsForTesting()
+    {
+        showPetMenu(Point(10, 10));
+        return _lastMenuLabels;
     }
 
     /// Test-only: the current input text.
@@ -1182,7 +1272,7 @@ final class PetHost
         if (_pausedShown)
         {
             _pausedShown = false;
-            overlay.setLines(["I'm watching. Click me to talk."]);
+            overlay.setLines([petIdleLine]);
         }
         if (screenWatching())
         {

@@ -31,7 +31,7 @@ version (Windows)
 int main()
 {
     auto host = new PetHost();
-    host.publishText("Hi! Click me to talk.");
+    host.publishText("Hi! Click me to write.");
     host.start();
     Thread.sleep(2.seconds);
 
@@ -60,13 +60,35 @@ int main()
             // Real pointer click on the creature's slot (32,58 logical; the
             // window is 1.25x scaled here, so use the physical offset).
             const x = bounds[0] + 40;
-            const y = bounds[1] + 72;
+            const y = bounds[1] + 40;
             SetCursorPos(x, y);
             Thread.sleep(100.msecs);
             mouse_event(0x0002, 0, 0, 0, 0);
             mouse_event(0x0004, 0, 0, 0, 0);
             Thread.sleep(400.msecs);
             writeln("foreground: ", GetForegroundWindow() == hwnd);
+
+            // The footer controls must be clickable now that the creature layer
+            // is its own slot: click Pause and read the host flag back.
+            SetCursorPos(bounds[0] + 355, bounds[1] + 152);
+            Thread.sleep(100.msecs);
+            mouse_event(0x0002, 0, 0, 0, 0);
+            mouse_event(0x0004, 0, 0, 0, 0);
+            Thread.sleep(300.msecs);
+            writeln("paused after first Pause click: ", host.paused());
+            mouse_event(0x0002, 0, 0, 0, 0);
+            mouse_event(0x0004, 0, 0, 0, 0);
+            Thread.sleep(300.msecs);
+            writeln("paused after second Pause click: ", host.paused());
+
+            // Right-click opens the companion menu.
+            Thread.sleep(400.msecs);
+            SetCursorPos(bounds[0] + 200, bounds[1] + 70);
+            Thread.sleep(100.msecs);
+            mouse_event(0x0008, 0, 0, 0, 0);
+            mouse_event(0x0010, 0, 0, 0, 0);
+            Thread.sleep(500.msecs);
+            writeln("right-clicked for the menu");
         }
     }
     if (overlay !is null) writeln("input after click: ",

@@ -178,7 +178,7 @@ import auroraopencode.minichat : MiniChatHost, MiniChatLine, miniChatOneLine;
 // source/auroraopencode/pet.d.)
 import auroraopencode.pet : PetHost, petFailureObservation,
     petFailureRepeatsThreshold, petIdleObservation, observe, PetObservation,
-    petSceneObservation, setFloatingPetSetting;
+    petIdleLine, petSceneObservation, setFloatingPetSetting;
 // <<< pet:end
 // Emergency freeze detection + optional overseer (see emergency.d).
 import auroraopencode.emergency : emergencyHeartbeat,
@@ -14504,7 +14504,7 @@ private string _suggestExcludeId;
         string[] lines;
         foreach (line; recentMessagesForOverlay(count))
             lines ~= (line.role == "user" ? "You: " ~ line.text : line.text);
-        if (lines.length == 0) lines ~= "I'm watching. Click me to talk.";
+        if (lines.length == 0) lines ~= petIdleLine;
         return lines;
     }
 
@@ -33042,6 +33042,16 @@ private void pollButtonSuggestionRequest()
 
         // >>> pet:begin (its own low-frequency, budgeted check)
         runPetObservation(deltaSeconds);
+        // The companion's × button and its right-click Close both stop the
+        // host; reflect that in the Settings switch instead of leaving it on.
+        if (_pet !is null && _pet.stopRequested())
+        {
+            _pet = null;
+            _petFollowingConversation = false;
+            _settings.experimentalFloatingPet = false;
+            setFloatingPetSetting(false);
+            saveSettingsNow();
+        }
         // A request typed into the pet goes through the same path as the main
         // composer, so queued follow-ups, steering and the approval gate all
         // match it.
