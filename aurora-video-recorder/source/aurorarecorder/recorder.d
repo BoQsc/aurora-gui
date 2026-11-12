@@ -195,27 +195,34 @@ final class RecorderController
             return false;
         }
         refreshMonitors();
-        // A remembered window's handle does not survive a restart; find it
-        // again before deciding the recording region.
+        // A handle only survives while its window does. When it does not, the
+        // stored window is treated as gone: re-finding it by title can land on
+        // a different window (two windows may share a title), which recorded
+        // the wrong application. The user is asked to choose again instead.
         version (Windows)
         {
             if (_options.target == CaptureTarget.window)
             {
-                import aurorarecorder.windowpicker : findWindow,
-                    windowRecordable;
-                HWND window = cast(HWND) _options.windowHandle;
-                if (!windowRecordable(window))
+                import aurorarecorder.windowpicker : lastRestoreActivated,
+                    restoreForCapture, windowRecordable;
+                if (!windowRecordable(cast(HWND) _options.windowHandle))
                 {
-                    window = findWindow(_options.windowTitle,
-                        _options.windowProcess);
-                    _options.windowHandle = cast(size_t) window;
-                }
-                if (!windowRecordable(window))
-                {
-                    _lastMessage = "The window to record is closed. Choose " ~
+                    _lastMessage = "The window to record was closed. Choose " ~
                         "it again with \"Choose window...\".";
                     return false;
                 }
+                // A minimised target sits off-screen and would record a
+                // meaningless slice. Showing it without activating keeps the
+                // game's own focus behaviour intact.
+                if (!restoreForCapture(cast(HWND) _options.windowHandle))
+                {
+                    _lastMessage = "The window to record could not be shown " ~
+                        "on screen; restore it and try again.";
+                    return false;
+                }
+                if (lastRestoreActivated())
+                    _lastMessage = "Brought the window to the front to record " ~
+                        "it (it only un-minimises when active).";
             }
         }
         const rect = captureRect();

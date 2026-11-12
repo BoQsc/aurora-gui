@@ -25,6 +25,7 @@ module aurorarecorder.encoder;
 
 import aurorarecorder.capture : ScreenSurface;
 import aurorarecorder.loopback : SystemAudioCapture;
+import aurorarecorder.windowpicker : keepWindowOnTop;
 import aurorarecorder.settings : CaptureRect, stopMarginSeconds;
 
 import core.stdc.stdio : fclose, FILE, fopen;
@@ -43,7 +44,8 @@ version (Windows)
         LPWSTR, OPEN_ALWAYS, PROCESS_INFORMATION, SECURITY_ATTRIBUTES,
         SetHandleInformation, SetInformationJobObject, STARTF_USESHOWWINDOW,
         STARTF_USESTDHANDLES, STARTUPINFOW, SW_HIDE, TRUE,
-        WaitForSingleObject, WriteFile, FlushFileBuffers, CREATE_NO_WINDOW,
+        GetExitCodeProcess, WaitForSingleObject, WriteFile, FlushFileBuffers,
+        CREATE_NO_WINDOW,
         AssignProcessToJobObject, CreateNamedPipeW, ConnectNamedPipe,
         OVERLAPPED, CreateEventW, GetLastError, ERROR_PIPE_CONNECTED,
         FILE_FLAG_OVERLAPPED,
@@ -530,6 +532,11 @@ final class ScreenEncoder
             CloseHandle(writeEnd);
             _status.set(RecorderPhase.stopping, frames, _job.outputPath, "");
             WaitForSingleObject(process.hProcess, INFINITE);
+            // ffmpeg's own verdict, used below to tell a real encoder failure
+            // from a write that merely lost the race with a normal shutdown.
+            DWORD exitCode;
+            const haveExitCode = GetExitCodeProcess(process.hProcess,
+                &exitCode) != FALSE;
             surface.close();
             CloseHandle(process.hProcess);
             if (job !is null) CloseHandle(job);
@@ -537,6 +544,28 @@ final class ScreenEncoder
             if (cancelled)
                 _status.set(RecorderPhase.failed, frames, _job.outputPath,
                     "Recording was cancelled.");
+            else if (frames == 0)
+            {
+                // No frame ever reached ffmpeg, so the file is a bare header
+                // with no index: players report "moov atom not found" (measured:
+                // a 48-byte MP4). Delete it rather than leaving something that
+                // looks like a recording and cannot be played.
+                import std.file : exists, remove;
+                if (exists(_job.outputPath)) remove(_job.outputPath);
+                _status.set(RecorderPhase.failed, frames, "",
+                    "Nothing was recorded: no frames were captured. Start the " ~
+                    "recording again once the window is showing.");
+            }
+            else if (writeError.length > 0 &&
+                (haveExitCode && exitCode == 0) && frames > 0)
+            {
+                // The frames were written and ffmpeg finished cleanly; the
+                // failed write happened while it was already closing, which is
+                // how a normal stop looks. Reporting this as a failure made a
+                // valid MP4 (measured: 1920x1080, with audio) look broken.
+                _status.set(RecorderPhase.finished, frames, _job.outputPath,
+                    "");
+            }
             else if (writeError.length > 0)
                 _status.set(RecorderPhase.failed, frames, _job.outputPath,
                     writeError);
@@ -609,6 +638,18 @@ final class ScreenEncoder
             writeError = "";
 
             const started = MonoTime.currTime;
+            // Every tick must produce a frame. Capture cannot always keep up
+            // (measured: ~48 fps at 1920x1080 against a 60 fps stream), and
+            // skipping the write shortened the timeline: 5 s of recording
+            // became 2.6 s of video, which plays back at roughly double speed.
+            // Holding the previous frame keeps video time equal to real time.
+            bool haveFrame;
+            // Real capture cost, measured as the loop runs. A 1920x1080
+            // BitBlt costs more than a 60 fps slot (measured: ~48 fps), and
+            // pacing to the declared rate simply ran out of time: 5 s of
+            // recording produced 4.2 s of video. Pacing to this figure keeps
+            // one captured frame per tick, so video time equals real time.
+            long captureCostNs;
             for (long index = 0; !stopRequested(); index++)
             {
                 if (index > 0)
@@ -622,6 +663,10 @@ final class ScreenEncoder
                 // A recorded window can move while it is being recorded.
                 if (_job.windowHandle != 0)
                 {
+                    // Capture reads the screen, so the recorded window must
+                    // not be covered. Raising it without activating it keeps
+                    // the game's keyboard focus where it is.
+                    keepWindowOnTop(cast(HWND) _job.windowHandle);
                     const target = followedRect(_job.windowHandle,
                         surface.rect());
                     if (target.x != surface.rect().x ||
@@ -631,8 +676,17 @@ final class ScreenEncoder
                             surface.setDrawCursor(_job.drawCursor);
                     }
                 }
-                if (!surface.captureInto())
-                    continue; // A skipped frame is never fatal.
+                // A failed capture reuses the previous frame rather than
+                // shifting later frames earlier in the timeline.
+                const captureBegan = MonoTime.currTime;
+                const captured = surface.captureInto();
+                const cost = (MonoTime.currTime - captureBegan).total!"nsecs";
+                if (cost > captureCostNs) captureCostNs = cost;
+                if (captured)
+                    haveFrame = true;
+                else if (!haveFrame)
+                    continue; // nothing captured yet, so there is nothing to hold
+
                 if (!writeFrame(writeEnd, surface.pixels(), frameBytes))
                 {
                     writeError = "ffmpeg stopped accepting frames; the " ~
@@ -640,6 +694,26 @@ final class ScreenEncoder
                     break;
                 }
                 frames++;
+                _status.setFrames(frames);
+            }
+            // Fill the tail so the last tick reaches the real stop time. The
+            // loop can stop mid-interval (and a slow capture can fall behind),
+            // which otherwise leaves the video shorter than the recording and
+            // playing back fast.
+            if (haveFrame && frameBytes > 0)
+            {
+                const elapsedNs = (MonoTime.currTime - started).total!"nsecs";
+                const due = elapsedNs / frameIntervalNs + 1;
+                while (frames < due && !writeError.length)
+                {
+                    if (!writeFrame(writeEnd, surface.pixels(), frameBytes))
+                    {
+                        writeError = "ffmpeg stopped accepting frames; the " ~
+                            "file was closed early (see the .log file).";
+                        break;
+                    }
+                    frames++;
+                }
                 _status.setFrames(frames);
             }
         }

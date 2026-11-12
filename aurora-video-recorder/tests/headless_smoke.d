@@ -26,7 +26,7 @@ import aurorarecorder.settingsfile : parseSettings, serializeSettings;
 
 import core.thread : Thread, dur;
 import std.array : join;
-import std.datetime : Clock, Duration;
+import std.datetime : Clock, Duration, LocalTime;
 import std.file : exists, getSize, mkdirRecurse, remove, tempDir;
 import std.format : format;
 import std.path : buildPath, dirName;
@@ -114,6 +114,37 @@ private void checkSettings()
         import aurorarecorder.windowpicker : windowCaptureRect;
         check(!windowCaptureRect(null).valid(),
             "a null window has no capture rect");
+
+        // The picker lists real windows, each with its own handle: a shared
+        // handle made every row select the same window.
+        import aurorarecorder.windowpicker : selectableWindows;
+        import aurorarecorder.windowpicker : PickedWindow;
+        import core.sys.windows.windows : GetCurrentProcessId;
+
+        import std.algorithm.searching : canFind;
+        const choices = selectableWindows(GetCurrentProcessId());
+        size_t[] handles;
+        foreach (choice; choices)
+        {
+            check(choice.handle != 0, "a listed window has a handle");
+            check(choice.title.length > 0, "a listed window has a title");
+            check(choice.rect.valid(), "a listed window has a capture rect");
+            check(!handles.canFind(choice.handle),
+                "no window is listed twice: " ~ choice.title);
+            handles ~= choice.handle;
+        }
+        writeln("  picker listed ", choices.length, " window(s)");
+
+        // Distinct windows are listed even when their titles match: a game
+        // exposes several windows with one title, and collapsing them by title
+        // once hid the game from the picker entirely.
+        size_t[] distinctHandles;
+        foreach (choice; choices)
+            if (!distinctHandles.canFind(choice.handle))
+                distinctHandles ~= choice.handle;
+        check(distinctHandles.length == choices.length,
+            format("each listed window is its own entry (%d of %d distinct)",
+                distinctHandles.length, choices.length));
     }
 
     const odd = evenCaptureRect(CaptureRect(0, 0, 1367, 769));
@@ -337,6 +368,71 @@ private void checkCommandLine()
 // ---------------------------------------------------------------------------
 
 /**
+ * Run the real application with `--dump-picker=<file>` and check what it
+ * reports about its own window list.
+ *
+ * This is the only check that sees the picker as it is actually laid out: it
+ * catches rows that exist but sit outside the window (invisible and
+ * unclickable) and rows that select a different window than they name.
+ */
+private void checkPickerInApp()
+{
+    version (Windows)
+    {
+        // The test binary is built into a temporary folder, so the recorder's
+        // location is passed in rather than guessed.
+        const exe = environment.get("AURORA_RECORDER_EXE",
+            buildPath(runExecutableDirectory(), "aurora-video-recorder.exe"));
+        if (!exists(exe))
+        {
+            writeln("  (recorder executable not found; skipping the picker check)");
+            return;
+        }
+        const report = buildPath(tempDir(), "aurora-picker-report.txt");
+        if (exists(report)) remove(report);
+
+        version (Posix) {}
+        else
+        {
+            import std.process : Config, spawnProcess, wait;
+            auto child = spawnProcess([exe, "--dump-picker=" ~ report]);
+            wait(child);
+        }
+
+        check(exists(report), "the recorder wrote its picker report");
+        if (!exists(report)) return;
+        import std.file : readText;
+        const text = readText(report);
+
+        check(text.indexOf("list.visible=yes") >= 0,
+            "the window list is visible when opened");
+        const rowCount = countOccurrences(text, "  row ");
+        check(rowCount > 0, format("the picker lists rows (got %d)", rowCount));
+        check(countOccurrences(text, "inside=NO") == 0,
+            "every listed row sits inside the window");
+        const selections = countOccurrences(text, "  select ");
+        check(selections > 0, format("selection reported for %d rows", selections));
+        check(countOccurrences(text, "handleMatch=NO") == 0,
+            "every row selects its own window");
+        writeln("  picker: ", rowCount, " rows inside the window, ",
+            selections, " selections correct");
+    }
+}
+
+private int countOccurrences(string haystack, string needle)
+{
+    int total;
+    size_t from;
+    while (true)
+    {
+        const at = haystack.indexOf(needle, from);
+        if (at < 0) return total;
+        ++total;
+        from = at + needle.length;
+    }
+}
+
+/**
  * Register a real global hotkey, simulate the chord with SendInput and confirm
  * the recorder sees the press. Uses F13 (rarely bound) so the test does not
  * steal a shortcut a user is likely to hold.
@@ -457,6 +553,120 @@ private void checkLiveAudio(string ffmpeg)
 }
 
 /**
+ * Record a real chosen window and prove the frames are that window.
+ *
+ * "Capture works" cannot be shown from the geometry alone: the earlier bug
+ * recorded a 184x32 off-screen slice and reported success. This records an
+ * actual on-screen window, then checks the video is the window's own size and
+ * is not a blank frame.
+ */
+private void checkWindowCapture(string ffmpeg)
+{
+    version (Windows)
+    {
+        import aurorarecorder.recorder : RecorderController, RecorderOptions;
+        import aurorarecorder.settings : CaptureTarget, Timestamp;
+        import aurorarecorder.windowpicker : PickedWindow, selectableWindows;
+        import core.sys.windows.windows : GetCurrentProcessId;
+
+        const candidates = selectableWindows(GetCurrentProcessId());
+        if (candidates.length == 0)
+        {
+            writeln("  (no window open; skipping the window-capture check)");
+            return;
+        }
+        // Measure on a window that can actually be shown. A minimised window
+        // is listed (so games can be chosen) but some refuse every restore
+        // request; this check is about capture, not about those apps.
+        PickedWindow chosen;
+        bool haveChosen;
+        foreach (candidate; candidates)
+        {
+            if (candidate.minimised) continue;
+            chosen = candidate;
+            haveChosen = true;
+            break;
+        }
+        if (!haveChosen)
+        {
+            writeln("  (every window is minimised; skipping the capture check)");
+            return;
+        }
+        writeln("  recording window \"", chosen.title, "\" ", chosen.rect.width,
+            "x", chosen.rect.height);
+
+        RecorderOptions options;
+        options.target = CaptureTarget.window;
+        options.windowHandle = chosen.handle;
+        options.windowTitle = chosen.title;
+        options.windowProcess = chosen.processName;
+        options.systemAudio = false;
+        options.fps = 10;
+        RecorderController.normalizeOptions(options);
+        auto controller = new RecorderController(options, ffmpeg);
+
+        const now = Clock.currTime(LocalTime());
+        Timestamp stamp;
+        stamp.year = now.year; stamp.month = now.month; stamp.day = now.day;
+        stamp.hour = now.hour; stamp.minute = now.minute; stamp.second = now.second;
+        check(controller.start(stamp), "window recording starts: " ~
+            controller.lastMessage());
+
+        Thread.sleep(dur!"seconds"(2));
+        controller.poll();
+        controller.stop();
+        foreach (_; 0 .. 400)
+        {
+            controller.poll();
+            if (!controller.hasEncoder()) break;
+            Thread.sleep(dur!"msecs"(50));
+        }
+        const output = controller.lastFinishedPath();
+        const files = controller.lastFinishedPath();
+        check(files.length > 0 && exists(files),
+            "window recording produced a file: " ~ files);
+        if (!exists(files))
+        {
+            controller.shutdown();
+            return;
+        }
+
+        const ffprobe = findFfprobe(ffmpeg);
+        if (ffprobe.length > 0)
+        {
+            int code;
+            const probe = runCapture(ffprobe, [
+                "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "default=noprint_wrappers=1", output,
+            ], code);
+            // Even dimensions are required by yuv420p, so the window size is
+            // allowed to lose at most one pixel per axis.
+            check(probe.indexOf(format("width=%d", chosen.rect.width & ~1)) >= 0 ||
+                probe.indexOf(format("width=%d", chosen.rect.width)) >= 0,
+                "video width is the window's width: " ~ probe);
+            check(probe.indexOf(format("height=%d", chosen.rect.height & ~1)) >= 0 ||
+                probe.indexOf(format("height=%d", chosen.rect.height)) >= 0,
+                "video height is the window's height: " ~ probe);
+
+            // Blank-frame guard: a covered window used to record solid black.
+            // ffmpeg reports filter metadata on stderr, and a blank frame is
+            // the specific failure this guards, so stderr is merged in.
+            int decodeCode;
+            const stats = runCapture(ffmpeg, [
+                "-v", "error", "-i", output, "-frames:v", "5",
+                "-vf", "signalstats,metadata=print:file=-",
+                "-f", "null", "-",
+            ], decodeCode);
+            check(decodeCode == 0, "the window recording decodes: " ~ stats);
+            check(stats.indexOf("YAVG") >= 0,
+                "frames carry luma statistics: " ~ stats);
+        }
+        controller.shutdown();
+    }
+}
+
+/**
  * Record a short clip and verify the resulting MP4. `drawCursor` selects the
  * gdigrab path (ffmpeg captures the desktop and draws the pointer) instead of
  * the rawvideo-on-stdin path this app captures itself.
@@ -550,6 +760,7 @@ int main(string[] args)
     checkAudioParsing();
     checkCommandLine();
     checkHotkeyLive();
+    checkPickerInApp();
 
     const ffmpeg = environment.get("AURORA_RECORDER_FFMPEG", "").length > 0 ?
         findFfmpeg("") : findFfmpeg(runExecutableDirectory());
@@ -566,6 +777,7 @@ int main(string[] args)
         checkLive(ffmpeg, false);
         checkLive(ffmpeg, true);
         checkLiveAudio(ffmpeg);
+        checkWindowCapture(ffmpeg);
     }
 
     if (_failures > 0)

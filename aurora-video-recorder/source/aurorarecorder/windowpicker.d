@@ -20,8 +20,10 @@ version (Windows)
         FALSE, GetAncestor, GetClientRect, GetWindowRect, GetWindowTextLengthW,
         GetWindowTextW, GetWindowThreadProcessId, HANDLE, HWND, IsWindow,
         IsWindowVisible, LPARAM, LPWSTR, MAX_PATH, OpenProcess, POINT, RECT, TRUE,
+        ShowWindow,
         WindowFromPoint, ClientToScreen, HRESULT, WNDENUMPROC, LoadLibraryW,
-        GetProcAddress;
+        GetProcAddress, IsIconic, SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSIZE, SetForegroundWindow;
     import std.path : baseName;
     import std.string : toLower;
     import std.utf : toUTF8;
@@ -39,6 +41,8 @@ struct PickedWindow
     size_t handle;    ///< HWND as an integer (0 = none)
     string title;
     string processName;
+    CaptureRect rect; ///< client area at the time it was listed
+    bool minimised;   ///< listed but needs restoring before it can be captured
 
     bool valid() const pure nothrow @safe { return handle != 0; }
 }
@@ -123,13 +127,107 @@ HWND topLevelWindowAt(int screenX, int screenY)
     return root !is null ? root : window;
 }
 
-/// True when the window can be recorded (visible, non-zero client area).
+/**
+ * Keep a recorded window visible and unoccluded, without activating it.
+ *
+ * Capture is a `BitBlt` of the screen, so whatever covers the window is what
+ * gets recorded — a game pushed behind another window records as a black or
+ * wrong image. Raising it with `SWP_NOACTIVATE` puts the target back on top
+ * with no focus change and no input sent to it, so a full-screen game keeps
+ * the keyboard while staying unoccluded.
+ */
+version (Windows)
+void keepWindowOnTop(HWND window)
+{
+    if (window is null || IsWindow(window) == FALSE) return;
+    // HWND_TOP, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE
+    SetWindowPos(window, null, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+/**
+ * True when the window is a candidate for the picker or for recording.
+ *
+ * A **minimised** window is accepted: Windows reports it at -32000,-32000, so
+ * it could not be captured as-is, but hiding it made running games impossible
+ * to choose (a game is usually minimised behind the recorder). `restoreForCapture`
+ * brings it back on screen when recording starts. Only windows that cannot be
+ * shown at all — hidden, owned-but-invisible, or broken handles — are refused.
+ */
 version (Windows)
 bool windowRecordable(HWND window)
 {
-    return window !is null && IsWindow(window) != FALSE &&
-        IsWindowVisible(window) != FALSE &&
-        windowCaptureRect(window).valid();
+    if (window is null || IsWindow(window) == FALSE) return false;
+    if (IsWindowVisible(window) == FALSE) return false;
+    // A minimised window has no meaningful rect until it is restored, so only
+    // require a real one when the window is on screen.
+    if (IsIconic(window) != FALSE) return true;
+    const rect = windowCaptureRect(window);
+    if (!rect.valid()) return false;
+    // Windows parks hidden windows far off-screen with a tiny size; treat that
+    // as unrecordable rather than recording a meaningless region.
+    return rect.width > 1 && rect.height > 1 && rect.x > -30000 &&
+        rect.y > -30000;
+}
+
+/// True when the window is minimised (listed, but needs restoring to record).
+version (Windows)
+bool windowMinimised(HWND window)
+{
+    return window !is null && IsIconic(window) != FALSE;
+}
+
+/**
+ * Bring a minimised window back on screen so it can be captured.
+ *
+ * `SW_RESTORE` is the only show command that works here: measured against a
+ * running game, `SW_SHOWNA` left it at -32000,-32000 (still minimised), while
+ * `SW_RESTORE` brought it back to 0,0 1920x1080. Returns true when the window
+ * ended up on screen with a capture rect.
+ */
+/// Set when restoring a window required bringing it to the foreground.
+version (Windows)
+private __gshared bool _restoreActivated;
+
+/// True when the last `restoreForCapture` had to activate the window.
+version (Windows)
+bool lastRestoreActivated()
+{
+    return _restoreActivated;
+}
+
+version (Windows)
+bool restoreForCapture(HWND window)
+{
+    if (window is null || IsWindow(window) == FALSE) return false;
+    _restoreActivated = false;
+    if (IsIconic(window) != FALSE)
+    {
+        // SW_RESTORE = 9. SW_SHOWNA (8) does not un-minimise a window.
+        ShowWindow(window, 9);
+        // Give the window manager a moment to act on the request.
+        foreach (_; 0 .. 20)
+        {
+            if (IsIconic(window) == FALSE) break;
+            import core.thread : Thread, dur;
+            Thread.sleep(dur!"msecs"(25));
+            ShowWindow(window, 9);
+        }
+        // Some windows only un-minimise when the restore also activates them
+        // (measured: Task Manager ignored SW_RESTORE, SW_SHOW and
+        // SetWindowPos while staying at 199x34). Recording is worthless
+        // without a visible window, so fall back to the activating restore and
+        // report it, rather than failing silently.
+        if (IsIconic(window) != FALSE)
+        {
+            SetForegroundWindow(window);
+            ShowWindow(window, 9);
+            _restoreActivated = true;
+        }
+    }
+    const rect = windowCaptureRect(window);
+    return rect.valid() && rect.width > 1 && rect.height > 1 &&
+        rect.x > -30000 && rect.y > -30000;
 }
 
 /// Display title of a window ("" when it has none).
@@ -204,3 +302,93 @@ HWND findWindow(string title, string processName)
     EnumWindows(cast(WNDENUMPROC) &enumProc, 0);
     return found;
 }
+
+/**
+ * Every window the user could pick, for the selection list.
+ *
+ * `ownProcessId` is skipped so the recorder never offers itself. Only top-level
+ * windows with a visible client area and a title are returned, in the order
+ * Windows reports them (front to back), because an untitled or zero-size window
+ * would record an empty video. Every such window is listed: a game exposes
+ * several windows with the same title, and collapsing by title (an earlier bug)
+ * dropped the game from the list entirely.
+ */
+/// Shell surfaces that look like windows but are not recordable applications.
+private bool isShellSurface(string processName, string title)
+{
+    if (processName == "explorer.exe" && title == "Program Manager")
+        return true; // the desktop, which records as the wallpaper
+    if (processName == "textinputhost.exe") return true; // invisible IME host
+    if (processName == "searchhost.exe") return true;
+    if (processName == "shellexperiencehost.exe") return true;
+    return false;
+}
+
+/**
+ * True when this is the `ApplicationFrameHost.exe` wrapper of a UWP app.
+ *
+ * Such a wrapper duplicates the app's own window and is the only entry that
+ * may be replaced. Matching on the title alone was wrong: a game exposes
+ * several windows with identical titles (device windows, splash screens), and
+ * collapsing by title dropped the game from the list entirely.
+ */
+private bool isFrameHostWrapper(string processName)
+{
+    return processName == "applicationframehost.exe";
+}
+
+version (Windows)
+PickedWindow[] selectableWindows(uint ownProcessId)
+{
+    __gshared PickedWindow[] collected;
+    collected = null;
+    __gshared uint skipPid;
+    skipPid = ownProcessId;
+
+    extern(Windows) BOOL enumProc(HWND window, LPARAM)
+    {
+        try
+        {
+            if (IsWindowVisible(window) == FALSE) return 1;
+            DWORD pid;
+            GetWindowThreadProcessId(window, &pid);
+            if (pid == skipPid) return 1;
+            const title = windowTitle(window);
+            if (title.length == 0) return 1;
+            if (!windowRecordable(window)) return 1;
+            const rect = windowCaptureRect(window);
+            const process = windowProcessName(window);
+            if (isShellSurface(process.toLower, title)) return 1;
+
+            // A UWP wrapper duplicates its app's window; replace that entry
+            // with the app's own window instead of listing both. Only wrappers
+            // are ever collapsed, so same-titled game windows all survive.
+            if (!isFrameHostWrapper(process.toLower))
+            {
+                foreach (index, existing; collected)
+                {
+                    if (existing.title != title) continue;
+                    if (!isFrameHostWrapper(existing.processName.toLower))
+                        continue;
+                    collected[index] = PickedWindow(cast(size_t) window, title,
+                        process, rect, IsIconic(window) != FALSE);
+                    return 1;
+                }
+            }
+            collected ~= PickedWindow(cast(size_t) window, title, process, rect,
+                IsIconic(window) != FALSE);
+            return 1;
+        }
+        catch (Exception)
+        {
+            return 1;
+        }
+    }
+
+    EnumWindows(cast(WNDENUMPROC) &enumProc, 0);
+    return collected;
+}
+
+/// Non-Windows stand-in so callers compile everywhere.
+version (Posix)
+PickedWindow[] selectableWindows(uint) { return null; }

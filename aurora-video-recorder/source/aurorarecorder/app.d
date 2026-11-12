@@ -22,6 +22,7 @@ import aurorarecorder.recorder : RecorderController, RecorderOptions,
 import aurorarecorder.settings : CaptureTarget, formatClock, isPreset,
     recordedSeconds, Timestamp;
 import aurorarecorder.settingsfile : loadSettings, saveSettings, settingsPath;
+import aurorarecorder.windowpicker : PickedWindow, selectableWindows;
 
 import std.datetime : Clock, LocalTime;
 import std.format : format;
@@ -134,6 +135,13 @@ final class RecorderRoot : VBox
     private CheckBox _cursorBox;
     private HBox _windowRow;
     private Button _windowButton;
+    private VBox _windowList;
+    private HBox _cancelRow;
+    /// Window behind each picker row, keyed by the row widget itself.
+    private PickedWindow[Button] _rowTargets;
+    /// Settings rows hidden while the window picker is open.
+    private Widget[] _settingsRows;
+    private PickedWindow[] _windowChoices;
     private bool _pickingWindow;
     private bool _pickWasDown;
     /// This application's window (as an integer), hidden during the pick.
@@ -230,17 +238,42 @@ final class RecorderRoot : VBox
         _windowRow.layoutHints().preferredHeight = 36;
         _windowButton = new Button("Choose window...", IconKind.folder);
         _windowButton.layoutHints().flex = 1.0;
-        _windowButton.onClick = &onChooseWindow;
+        _windowButton.onClick = &onToggleWindowList;
         _windowRow.add(_windowButton);
         add(_windowRow);
 
-        add(new Label("Frame rate"));
+        // The picker rows go straight into this column. A nested VBox has no
+        // intrinsic height in this layout (the same trap that once collapsed
+        // the settings), so wrapping the list in one left it zero-height and
+        // nothing visible was drawn. Nothing else is hidden or reordered while
+        // the picker is open, so a press can never be pulled from under the
+        // pointer.
+        _windowList = new VBox(6);
+        // The container's height must match the rows it holds: a fixed height
+        // smaller than its content clips the last rows (measured: a 154 px box
+        // holding 314 px of rows placed rows 5-7 outside it). `fillRows` keeps
+        // this in step with however many windows are listed.
+        _windowList.setVisible(false);
+        add(_windowList);
+        _cancelRow = new HBox(10);
+        _cancelRow.layoutHints().preferredHeight = 36;
+        _cancelRow.setVisible(false);
+        auto cancelButton = new Button("Cancel");
+        cancelButton.layoutHints().flex = 1.0;
+        cancelButton.onClick = () { hideWindowList(); };
+        _cancelRow.add(cancelButton);
+        add(_cancelRow);
+
+        // Frame rate
+        auto fpsLabel = new Label("Frame rate");
+        add(fpsLabel);
         _fpsRow = new ChoiceRow([15, 24, 30, 60], ["15", "24", "30 fps", "60"],
             options.fps);
         _fpsRow.onChange = (int value) { _controller.setFps(value); };
         add(_fpsRow);
 
-        add(new Label("Quality (high is sharper and larger)"));
+        auto qualityLabel = new Label("Quality (high is sharper and larger)");
+        add(qualityLabel);
         _qualityRow = new ChoiceRow([18, 23, 28], ["High", "Balanced", "Small"],
             options.quality);
         _qualityRow.onChange = (int value) { _controller.setQuality(value); };
@@ -263,7 +296,8 @@ final class RecorderRoot : VBox
 
         // ---- Microphone ----
 
-        add(new Label("Microphone"));
+        auto microphoneLabel = new Label("Microphone");
+        add(microphoneLabel);
         auto microphoneRow = new HBox(10);
         microphoneRow.layoutHints().preferredHeight = 36;
         _microphoneButton = new Button("", IconKind.music);
@@ -287,7 +321,8 @@ final class RecorderRoot : VBox
         add(_microphoneHint);
 
         // ---- Start/stop hotkey ----
-        add(new Label("Start/stop hotkey"));
+        auto hotkeyLabel = new Label("Start/stop hotkey");
+        add(hotkeyLabel);
         auto hotkeyRow = new HBox(10);
         hotkeyRow.layoutHints().preferredHeight = 36;
         _hotkeyButton = new Button("");
@@ -309,7 +344,8 @@ final class RecorderRoot : VBox
 
         refreshHotkeyText();
 
-        add(new Separator());
+        auto separator = new Separator();
+        add(separator);
 
         auto folderRow = new HBox(10);
         folderRow.layoutHints().preferredHeight = 36;
@@ -367,9 +403,6 @@ final class RecorderRoot : VBox
     /// Called from the window tick. Cheap when nothing is recording.
     void poll()
     {
-        // Picking a window happens while the pointer is over other apps.
-        if (_pickingWindow && !_controller.isRecording()) pollWindowPick();
-
         // A hotkey press toggles recording exactly like the button.
         if (_hotkey !is null && _hotkey.takePressed())
             onRecordPressed();
@@ -483,8 +516,15 @@ final class RecorderRoot : VBox
         else if (_monitorRow !is null)
             _monitorRow.setWindowMode("");
         if (_windowButton !is null)
-            _windowButton.setText(isWindow && options.windowTitle.length > 0 ?
-                options.windowTitle : "Choose window...");
+        {
+            // Only a window that is actually being recorded is shown; an
+            // older remembered name must not masquerade as the current target
+            // while "All monitors" is selected.
+            const chosen = isWindow && options.windowTitle.length > 0;
+            _windowButton.setText(chosen ? options.windowTitle :
+                "Choose window...");
+            _windowButton.setIcon(chosen ? IconKind.notepad : IconKind.folder);
+        }
         const rect = _controller.captureRect();
         string text;
         if (isWindow && !rect.valid())
@@ -646,107 +686,219 @@ final class RecorderRoot : VBox
 
     // ---- Focused recording: choose a window ----
 
-    /**
-     * Start picking a window: the next left click anywhere (including over
-     * other applications) records the window underneath it.
-     *
-     * The app keeps the click to itself so the chosen window is not also
-     * activated by it; the same tick that reads the click ends picking.
-     */
-    private void onChooseWindow()
+    /// Show or hide the list of open windows.
+    private void onToggleWindowList()
     {
-        if (_pickingWindow)
+        if (_windowList.visible())
         {
-            stopPickingWindow();
+            hideWindowList();
             return;
         }
-        // Remember our own window so the next click can be hit-tested with it
-        // out of the way (it may be topmost).
-        version (Windows)
-        {
-            import core.sys.windows.windows : GetForegroundWindow;
-            _ownHwnd = cast(size_t) GetForegroundWindow();
-        }
-        _pickingWindow = true;
-        _windowButton.setText("Click the window to record (or press Esc)");
-        _targetHint.setText("Click any window to record only that window.");
+        fillWindowChoices();
+        // Only the list is shown; no other row is hidden or moved, so a
+        // press can never be pulled out from under the pointer.
+        _windowList.setVisible(true);
+        _cancelRow.setVisible(true);
     }
 
-    private void stopPickingWindow()
+    private void hideWindowList()
     {
-        _pickingWindow = false;
+        _windowList.setVisible(false);
+        _cancelRow.setVisible(false);
         refreshTarget();
     }
 
-    /**
-     * True when the window belongs to this process, so picking never selects
-     * the recorder's own window.
-     */
-    private static bool isOwnProcessWindow(size_t window)
+    /// Size the row container for `count` rows of 34 px with 6 px spacing.
+    private void fillRows(int count)
     {
-        version (Windows)
-        {
-            import core.sys.windows.windows : DWORD, GetCurrentProcessId,
-                GetWindowThreadProcessId;
-            DWORD pid;
-            GetWindowThreadProcessId(cast(void*) window, &pid);
-            return pid == GetCurrentProcessId();
-        }
-        else
-            return false;
+        _windowList.layoutHints().preferredHeight =
+            count * 34 + (count > 0 ? (count - 1) * 6 : 0);
     }
 
-    /// While picking, read the global mouse state from the tick.
-    private void pollWindowPick()
+    /**
+     * Write the picker's real layout state to `path` for the headless check.
+     *
+     * "The list is empty" is otherwise indistinguishable from "the rows exist
+     * but are laid out at zero size or outside the window", which are
+     * different bugs; this reports which one it is.
+     */
+    void dumpPickerState(string path)
     {
+        import core.stdc.stdio : FILE, fclose, fopen, fprintf;
+        import std.string : toStringz;
+        import std.conv : to;
+        FILE* f = fopen(path.toStringz, "wb");
+        if (f is null) return;
+        scope (exit) fclose(f);
+
+        fillWindowChoices();
+        _windowList.setVisible(true);
+        _cancelRow.setVisible(true);
+        layoutTree();
+
+        const Size client = _window.logicalClientSize();
+        const Rect list = _windowList.bounds();
+        auto line = format("client=%dx%d root=%s list.visible=%s list=%s rows=%d\n",
+            client.width, client.height, bounds().to!string,
+            _windowList.visible() ? "yes" : "no", list.to!string,
+            _windowList.children().length);
+        fprintf(f, "%s", line.toStringz);
+
+        foreach (i, child; _windowList.children())
+        {
+            const Size preferred = child.measure(Size(client.width, 400));
+            line = format("  row %d measured=%dx%d placed=%s inside=%s widget=%s\n",
+                i, preferred.width, preferred.height, child.bounds().to!string,
+                child.bounds().y + child.bounds().height <= client.height ?
+                    "yes" : "NO", child.visible() ? "visible" : "HIDDEN");
+            fprintf(f, "%s", line.toStringz);
+        }
+
+        // Selection is checked by pressing the actual rows, in the order a
+        // user would see them. Calling the handler directly proved nothing:
+        // the bug was that a row resolved to a different window than its
+        // label, which only shows when the row itself is pressed.
+        Widget[] rows = _windowList.children();
+        // Press one row per run (AURORA_PICKER_ROW): a press closes the list,
+        // so pressing rows captured earlier measured stale widgets rather than
+        // the app's behaviour.
+        import std.process : environment;
+        string only = environment.get("AURORA_PICKER_ROW", "");
+        foreach (i, row; rows)
+        {
+            if (only.length > 0 && to!int(only) != cast(int) i) continue;
+            auto button = cast(Button) row;
+            if (button is null || button.onClick is null)
+            {
+                fprintf(f, "  select %d -> row is not clickable\n", cast(int) i);
+                continue;
+            }
+            // The row's own label: pressing it must select the window it names.
+            const label = to!string(button.text());
+            _windowList.setVisible(true);
+            _cancelRow.setVisible(true);
+            button.onClick();
+
+            const picked = _controller.options();
+            import std.algorithm.searching : startsWith;
+            const matched = picked.target == CaptureTarget.window &&
+                label.length > 0 && label.startsWith(picked.windowTitle);
+            fprintf(f, "  select %d label=%s pressed=%s handle=%s match=%s\n",
+                cast(int) i, label.toStringz, picked.windowTitle.toStringz,
+                to!string(cast(ulong) picked.windowHandle).toStringz,
+                (matched ? "yes" : "NO").toStringz);
+        }
+    }
+
+    /// Rebuild the list from the windows open right now.
+    private void fillWindowChoices()
+    {
+        _windowList.clearChildren();
+        _windowChoices = null;
         version (Windows)
         {
-            import aurorarecorder.windowpicker : topLevelWindowAt,
-                windowRecordable, windowProcessName, windowTitle;
-
-            import core.sys.windows.windows : GetAsyncKeyState, GetCursorPos,
-                HWND, POINT, VK_ESCAPE, VK_LBUTTON;
-            if (GetAsyncKeyState(VK_ESCAPE) & 0x8000)
-            {
-                stopPickingWindow();
-                return;
-            }
-            // Bit 0 of `GetAsyncKeyState` latches "pressed since last read",
-            // so a press+release between two ticks is still seen. Polling the
-            // level (bit 15) alone drops a fast click entirely.
-            const short state = GetAsyncKeyState(VK_LBUTTON);
-            const bool latched = (state & 1) != 0;
-            const bool down = (state & 0x8000) != 0;
-            if (!latched && !down) return;
-            if (!latched && _pickWasDown) return; // still the same hold
-            _pickWasDown = true;
-
-            POINT cursor;
-            if (GetCursorPos(&cursor) == 0)
-            {
-                stopPickingWindow();
-                return;
-            }
-            // The recorder window may be topmost while picking, so it can sit
-            // under the pointer. Hide it for this one hit test so the window
-            // the user is actually pointing at wins, then show it again.
-            import core.sys.windows.windows : SW_HIDE, SW_SHOW, ShowWindow;
-            ShowWindow(cast(HWND) _ownHwnd, SW_HIDE);
-            HWND target = topLevelWindowAt(cursor.x, cursor.y);
-            ShowWindow(cast(HWND) _ownHwnd, SW_SHOW);
-            // Ignore a click on this application's own window.
-            if (target is null || !windowRecordable(target) ||
-                isOwnProcessWindow(cast(size_t) target))
-            {
-                _targetHint.setText("That is not a window that can be " ~
-                    "recorded. Click another window.");
-                return;
-            }
-            _controller.setWindow(cast(size_t) target, windowTitle(target),
-                windowProcessName(target));
-            stopPickingWindow();
-            saveCurrentSettings();
+            import core.sys.windows.windows : GetCurrentProcessId;
+            _windowChoices = selectableWindows(GetCurrentProcessId());
         }
+
+        if (_windowChoices.length == 0)
+        {
+            auto empty = new Label("No windows available to record.");
+            empty.setColor(theme().textMuted);
+            empty.layoutHints().preferredHeight = 30;
+            _windowList.add(empty);
+            fillRows(1);
+            return;
+        }
+
+        // List as many windows as fit inside the client area. The picker has no
+        // scrolling, so any row past the bottom edge is invisible and its
+        // click target is unreachable; the count is bounded by that instead of
+        // by a fixed guess.
+        const int rowHeight = 34;
+        const int spacing = 6;
+        const int usable = _window.logicalClientSize().height;
+        int capacity = (usable - 360) / (rowHeight + spacing);
+        if (capacity < 3) capacity = 3;
+        const shown = _windowChoices.length > capacity ?
+            cast(uint) capacity : cast(uint) _windowChoices.length;
+        fillRows(cast(int) shown);
+        foreach (i; 0 .. shown)
+        {
+            const choice = _windowChoices[i];
+            auto button = new Button(format("%s  (%s)", choice.title,
+                choice.processName), IconKind.folder);
+            if (choice.minimised)
+                button.setText(format("%s  (%s) - minimised, restored when " ~
+                    "recording", choice.title, choice.processName));
+            button.layoutHints().preferredHeight = 34;
+            button.layoutHints().fillCrossAxis = true;
+            // The row's window is stored on the widget itself. Every attempt
+            // to carry it in the closure ended up selecting one shared window
+            // (measured: every row produced handle 198968), so the press reads
+            // the target from the button that was actually pressed.
+            // Each row gets its own bound method. Storing the target in a map
+            // keyed by the widget, or capturing the widget in the closure,
+            // both delivered the last-created row's window for every press
+            // (measured: pressing "Company Of Heroes" arrived as "Calculator").
+            auto row = new WindowRowHandler(this, choice);
+            button.onClick = &row.pressed;
+            _windowList.add(button);
+        }
+    }
+
+    /// Binds one picker row to the window that row showed.
+    private static final class WindowRowHandler
+    {
+        private RecorderRoot _root;
+        private PickedWindow _choice;
+
+        this(RecorderRoot root, PickedWindow choice)
+        {
+            _root = root;
+            _choice = choice;
+        }
+
+        void pressed()
+        {
+            _root.selectWindow(_choice);
+        }
+    }
+
+    /// Make `choice` the recording target.
+    private void selectWindow(PickedWindow choice)
+    {
+        _controller.setWindow(choice.handle, choice.title, choice.processName);
+        hideWindowList();
+        _targetHint.setText("");
+        refreshTarget();
+        saveCurrentSettings();
+    }
+
+    /// Select the window whose row was pressed.
+    private void choosePressedRow(Button row)
+    {
+        auto found = row in _rowTargets;
+        if (found is null) return;
+        const choice = *found;
+
+        _controller.setWindow(choice.handle, choice.title, choice.processName);
+        hideWindowList();
+        _targetHint.setText("");
+        refreshTarget();
+        saveCurrentSettings();
+    }
+
+    /// Select exactly the window the pressed row represents.
+    private void chooseWindow(PickedWindow choice)
+    {
+        // `setWindow` takes the handle, title and process together, so the
+        // target is the window whose row was pressed even if titles repeat.
+        _controller.setWindow(choice.handle, choice.title, choice.processName);
+        hideWindowList();
+        _targetHint.setText("");
+        refreshTarget();
+        saveCurrentSettings();
     }
 
     // ---- Microphone ----
@@ -947,13 +1099,11 @@ private WindowOptions recorderWindowOptions()
     options.title = "Aurora Video Recorder";
     // Shown before the first frame paints; the state icons replace it later.
     options.iconPath = iconPathFor("icon.ico");
-    // The panel lays out at ~720 logical pixels wide; a narrower window would
-    // clip the right-hand buttons (the click target would fall outside it).
-    // The panel's rows lay out at ~720 logical pixels; a narrower window clips
-    // the right-hand controls (and their click targets).
-    options.width = 760;
-
-    options.height = 856;
+    // The panel's rows lay out at ~732 logical pixels inside 12 px insets, so
+    // the client must be at least that wide or the content is clipped and the
+    // right-hand buttons move outside their drawn position.
+    options.width = 820;
+    options.height = 980;
     options.resizable = false;
     options.decorated = true;
     options.darkTitleBar = true;
@@ -970,6 +1120,15 @@ private string folderArgument(string[] args)
         if (arg.startsWith("--folder="))
             return arg["--folder=".length .. $];
     }
+    return "";
+}
+
+/// Path from `--dump-picker=<file>`: report the picker layout there and quit.
+private string dumpPickerArgument(string[] args)
+{
+    foreach (arg; args[1 .. $])
+        if (arg.startsWith("--dump-picker="))
+            return arg["--dump-picker=".length .. $];
     return "";
 }
 
@@ -1010,7 +1169,18 @@ int run(string[] args, string executablePath = "")
     root.refreshTheme(); // Colors resolve once the widget is attached.
     root.registerHotkey(); // After setRoot so the result can be shown.
     root.loadMicrophones(controller.ffmpegPath());
-    window.applicationService = (double delta) { root.poll(); };
+    // Diagnostics: report the picker's real layout once, then exit, so the
+    // list can be checked without clicking anything.
+    const dumpPicker = dumpPickerArgument(args);
+    window.applicationService = (double delta) {
+        root.poll();
+        if (dumpPicker.length == 0) return;
+        static bool done;
+        if (done) return;
+        done = true;
+        root.dumpPickerState(dumpPicker);
+        window.close();
+    };
     window.onCloseRequested = () {
         hotkey.shutdown();
         controller.shutdown();

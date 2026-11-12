@@ -14,6 +14,7 @@ dmd -i -O -Isource -I..\vendor\aurora-d-0.4.5\source tests\headless_smoke.d -of=
 set "code=%errorlevel%"
 if not "%code%"=="0" goto :finish
 echo Running the Aurora Video Recorder headless smoke test...
+set "AURORA_RECORDER_EXE=%cd%\aurora-video-recorder.exe"
 "%out%\aurora-video-recorder-smoke.exe" %*
 set "code=%errorlevel%"
 :finish
