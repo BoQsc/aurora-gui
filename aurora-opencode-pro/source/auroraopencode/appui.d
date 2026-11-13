@@ -6441,7 +6441,7 @@ private final class PlanCard : Widget
     {
         string title = "Plan  " ~ to!string(doneCount()) ~ "/" ~
             to!string(_texts.length) ~ " done";
-        if (_checklistStale) title ~= " · needs update";
+        if (_checklistStale) title ~= " · review plan";
         else if (_status.length > 0) title ~= "  -  " ~ _status;
         if (previewing())
         {
@@ -6473,7 +6473,7 @@ private final class PlanCard : Widget
             if (status == "completed") ++done;
         string title = "Plan  " ~ to!string(done) ~ "/" ~
             to!string(_liveTexts.length) ~ " done";
-        if (_checklistStale) title ~= " · needs update";
+        if (_checklistStale) title ~= " · review plan";
         else if (_liveStatus.length > 0) title ~= "  -  " ~ _liveStatus;
         return title;
     }
@@ -22469,18 +22469,8 @@ private void pollButtonSuggestionRequest()
         return true;
     }
 
-    /// Queue a reminder to (re)record the plan. Three cases:
-    /// - a recorded plan with unfinished steps that the model stopped
-    ///   refreshing for a full upkeep window: finished steps stay
-    ///   pending/in_progress while the work has moved on;
-    /// - the plan names no work position, or its in_progress outcome no longer
-    ///   matches the work phase;
-    /// - no plan recorded at all after the read-only exploration budget is
-    ///   spent: a turn can otherwise investigate indefinitely without ever
-    ///   calling update_plan.
-    /// One reminder per revision, plus actual phase transitions, keeps the
-    /// plan visible without repeating the same lecture every upkeep window.
-    /// Returns true when a reminder was queued.
+    /// Plan review is advisory after a small work window. A changed phase does
+    /// not force a plan update or add another provider request.
     private static bool checklistStale(const ref ChatSession session)
     {
         return planNeedsRefresh(session);
@@ -23160,6 +23150,7 @@ private void pollButtonSuggestionRequest()
                     appendMessage(*session, note);
                     if (_settings.diagnosticModel.length) _execution.diagnosticRequestsRemaining = 1;
                 }
+                if (!obstacle.length && !_execution.diagnosticActive) queueStalePlanGuidance(*session);
                 _execution.toolContinuationPending = true;
             }
         }

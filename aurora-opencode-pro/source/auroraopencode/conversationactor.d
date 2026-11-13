@@ -1221,6 +1221,12 @@ public final class ConversationActor
         const obstacle = executionToolRecovery(session);
         if (!diagnosticActive && obstacle.length)
         { internalNote(obstacle); beginDiagnostic(); }
+        if (!diagnosticActive)
+        {
+            import auroraopencode.planprogress : planProgressGuidance;
+            const review = planProgressGuidance(session);
+            if (review.length) internalNote(review);
+        }
         request();
     }
     private void applySteering()

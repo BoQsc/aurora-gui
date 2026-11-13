@@ -1,5 +1,13 @@
 # Orchestration core 0.66.46
 
+Follow-up in 0.66.47: optional planning is encouraged again. Multi-step work gets
+an early provisional-plan suggestion, and both execution owners suggest reviewing
+the plan every five substantive tool results. Updating the plan resets the count;
+process/status polling does not count. Ignoring a reminder never blocks tools,
+forces reconciliation, or adds a completion round. Finished work is not nudged.
+The plan badge says “review plan”. Shared-policy, real UI, execution, projection,
+and queued-follow-up contract checks pass for this behavior.
+
 The active desktop and headless paths now share an outcome ledger in
 `executioncontrol.d`. Existing task contracts, plans, tool events and receipts
 remain the durable storage; there is no second independently mutable task model.

@@ -54,25 +54,22 @@ int main()
     root.pauseToolContinuationForTesting();
     root.injectToolResultForTesting("update_plan", "Plan updated", false,
         `{"plan":[{"step":"Investigate","status":"in_progress"},{"step":"Implement","status":"pending"},{"step":"Verify","status":"pending"}]}`);
-    foreach (_; 0 .. 8) root.injectToolResultForTesting("read", "source evidence", false, `{"filePath":"source.d"}`);
-    pump(); assert(!root.planNeedsUpdateForTesting(), "Useful inspection made an active plan stale merely by call count");
-    assert(!root.queueStalePlanGuidanceForTesting(), "Same-phase guidance interrupted useful work");
+    foreach (_; 0 .. 4) root.injectToolResultForTesting("read", "source evidence", false, `{"filePath":"source.d"}`);
+    pump(); assert(!root.planNeedsUpdateForTesting() && !root.queueStalePlanGuidanceForTesting());
     root.injectToolResultForTesting("read", "source evidence", false, `{"filePath":"source.d"}`);
-    root.injectToolResultForTesting("read", "source evidence", false, `{"filePath":"source.d"}`);
-    pump(); assert(root.planNeedsUpdateForTesting(),
-        "A plan unrefreshed for a full upkeep window was not marked stale");
-    assert(root.lastUserMessageForTesting().indexOf("Plan upkeep") >= 0,
-        "A plan unrefreshed for a full upkeep window received no reminder: " ~
-        root.lastUserMessageForTesting());
-    assert(!root.queueStalePlanGuidanceForTesting(), "Plan upkeep repeated inside its window");
-    root.injectToolResultForTesting("edit", "Edited source", false, `{"filePath":"source.d"}`, 1, 1, "@@ -1 +1 @@\n-old\n+new\n");
-    pump(); assert(root.lastUserMessageForTesting().indexOf("Work has moved into editing or verification") >= 0,
-        "Moving from inspection to editing did not reissue the stale-plan reminder");
+    pump(); assert(root.planNeedsUpdateForTesting() && root.queueStalePlanGuidanceForTesting());
+    assert(root.lastUserMessageForTesting().indexOf("Plan review reminder:") >= 0);
+    assert(!root.queueStalePlanGuidanceForTesting(), "A review reminder repeated immediately");
+    foreach (_; 0 .. 4) root.injectToolResultForTesting("read", "source evidence", false, `{"filePath":"source.d"}`);
     assert(!root.queueStalePlanGuidanceForTesting());
+    root.injectToolResultForTesting("read", "source evidence", false, `{"filePath":"source.d"}`);
+    assert(root.queueStalePlanGuidanceForTesting(), "An ignored advisory disabled later plan reviews");
+    root.injectToolResultForTesting("edit", "Edited source", false, `{"filePath":"source.d"}`, 1, 1, "@@ -1 +1 @@\n-old\n+new\n");
+    assert(!root.queueStalePlanGuidanceForTesting(), "A phase change forced another plan review");
     root.injectToolResultForTesting("update_plan", "Plan updated", false,
-        `{"explanation":"Editing the observed issue while the remaining investigation and checks stay open.","plan":[{"step":"Investigate","status":"pending"},{"step":"Implement","status":"in_progress"},{"step":"Verify","status":"pending"}]}`);
+        `{"plan":[{"step":"Investigate","status":"completed"},{"step":"Implement","status":"in_progress"},{"step":"Verify","status":"pending"}]}`);
     pump(); assert(!root.planNeedsUpdateForTesting() && root.toolResultsSincePlanUpdateForTesting() == 0);
-    writeln("PASS useful inspection stays quiet; phase changes receive one reminder and a fresh plan clears the warning");
+    writeln("PASS optional five-result reviews persist in the actual UI; ignoring them permits work and later review; updating resets cadence");
 
     const logs = buildPath(state, "quiet-logs"); mkdirRecurse(logs); setLogDirectory(logs);
     setDebugLogging(false); noteActivity("rebuild quiet-marker");

@@ -102,6 +102,10 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
                     "parent_step. This adds one collapsible level without " ~
                     "replacing the main plan. Keep the parent step " ~
                     "in_progress until its outcome is complete.\n";
+            import auroraopencode.planprogress : initialPlanSuggestion;
+            if (!policy.diagnosticReview)
+                foreach (tool; policy.availableTools)
+                    if (tool.name == "update_plan") { system.content ~= "\n" ~ initialPlanSuggestion ~ "\n"; break; }
             system.content ~= policy.planPrompt;
         }
         system.content ~= policy.identityBlock ~ sessionInstructionsBlock(session);

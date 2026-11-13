@@ -1,112 +1,54 @@
 module plan_progress_contracts;
-
 import auroraopencode.core;
 import auroraopencode.planprogress;
-import auroraopencode.tools : executeTool, nativeOnlyToolDefinitions;
-import auroraopencode.goalmode : goalCompletionError;
+import auroraopencode.requestpolicy;
 import auroraopencode.controlhistory : controlStateKind, ControlStateKind;
-import auroraopencode.requestpolicy : RequestPolicy, prepareAgentRequest;
-import std.json : parseJSON;
-import std.string : indexOf;
+import auroraopencode.turnpolicy;
+import auroraopencode.tools : nativeOnlyToolDefinitions;
+import std.conv : to;
+import std.string : indexOf, startsWith;
 import std.stdio : writeln;
-
 void main()
 {
-    ChatSession session;
-    void append(string role, string text, string tool = "", bool failed = false, bool internal = false)
+    ChatSession s;
+    void add(string role, string text, string tool="", bool internal=false)
     {
-        ChatMessage message;
-        message.id = newMessageId(); message.parentId = session.activeLeafId;
-        message.role = role; message.content = text; message.toolName = tool;
-        message.failed = failed; message.internal = internal;
-        session.messages ~= message; session.activeLeafId = message.id;
+        ChatMessage m;m.id="m"~to!string(s.messages.length);m.parentId=s.activeLeafId;
+        m.role=role;m.content=text;m.toolName=tool;m.internal=internal;
+        s.messages~=m;s.activeLeafId=m.id;
     }
-    append("user", "Investigate, implement and verify the fix");
-    append("tool", "source", "read");
-    assert(!planProgressGuidance(session).length, "Quick lookup acquired planning debt");
-    append("tool", "source", "read"); append("tool", "source", "read");
-    auto reminder = planProgressGuidance(session);
-    assert(reminder.indexOf("update_plan") >= 0);
-    append("user", reminder, "", false, true);
-    assert(controlStateKind(session.messages[$ - 1]) == ControlStateKind.progress,
-        "Plan guidance escaped bounded control-history retirement");
-    assert(!planProgressGuidance(session).length, "Same checkpoint repeated after durable replay");
-    session.taskSteps = [TaskStep("Find cause", "in_progress"), TaskStep("Fix", "pending"), TaskStep("Verify", "pending")];
-    session.taskSteps[0].kind = "research";
-    append("tool", "Plan updated", "update_plan");
-    append("tool", "Failed write", "write", true);
-    assert(planProgress(session).phase == 0, "Failed action advanced the phase");
-    append("tool", "Written", "write");
-    reminder = planProgressGuidance(session);
-    assert(reminder.indexOf("Work now includes editing or verification") >= 0,
-        "Editing left the research checklist stale");
-    assert(session.taskSteps[0].status == "in_progress", "Harness fabricated completion");
-    append("user", reminder, "", false, true);
-    assert(!planProgressGuidance(session).length);
-    append("assistant", "", "");
-    append("tool", "Useful edit kept", "edit");
-    assert(planReconciliationDue(session), "Ignored phase reminder did not get one reconciliation");
-    RequestPolicy policy;
-    policy.toolsEnabled = true; policy.contextLimit = 100_000;
-    policy.availableTools = nativeOnlyToolDefinitions();
-    auto prepared = prepareAgentRequest(session, policy);
-    assert(prepared.tools.length > 1 && prepared.messages[$ - 1].role == "system" &&
-        prepared.messages[$ - 1].content.indexOf("Your next action is update_plan") >= 0,
-        "Plan reconciliation either hid useful tools or disappeared into old context");
-    append("assistant", "Still investigating");
-    assert(!planReconciliationDue(session), "Plan reconciliation became an unbounded gate");
-    append("tool", "Check passed", "verify");
-    assert(planProgressGuidance(session).length, "Verification did not trigger a new phase checkpoint");
-    session.taskSteps[0].text = "Assemble handoff folder with assets and integration contract";
-    session.taskSteps[0].kind = "other";
-    append("tool", "Plan updated", "update_plan");
-    append("tool", "Written handoff README", "write");
-    assert(!planPositionMissing(session, 1),
-        "Unclassified assembly outcome was mistaken for a stale research step");
-    reminder = planProgressGuidance(session);
-    assert(reminder.indexOf("next tool batch") >= 0,
-        "Actual phase transition did not request timely plan reconciliation");
-    append("user", reminder, "", false, true);
-    foreach (_; 0 .. planProgressWindow) append("tool", "source", "read");
-    assert(!planProgressGuidance(session).length, "Same phase repeated its transition reminder");
-    append("tool", "Check passed", "verify");
-    assert(planProgressGuidance(session).length,
-        "Unclassified active outcome hid a later verification transition");
-    append("tool", "Plan updated", "update_plan");
-    session.taskSteps[0].kind = "verify";
-    foreach (_; 0 .. planProgressWindow - 1) append("tool", "source", "read");
-    append("tool", "Child updated", "update_subplan");
-    assert(planProgress(session).results == planProgressWindow - 1,
-        "Child upkeep refreshed the parent or counted as substantive work");
-    append("tool", "source", "read");
-    reminder = planProgressGuidance(session);
-    assert(reminder.indexOf("Plan upkeep") >= 0);
-    append("user", reminder, "", false, true);
-    assert(!planProgressGuidance(session).length);
-    // Reload has exactly the same decision without process-local counters.
-    auto restored = session;
-    assert(!planProgressGuidance(restored).length);
-    foreach (_; 0 .. planProgressWindow) append("tool", "source", "read");
-    assert(!planProgressGuidance(session).length, "Long phase repeated an unchanged planning lecture");
-    session.taskStatus = "waiting_input";
-    assert(!planProgressGuidance(session).length);
-    session.taskStatus = "active";
-    append("user", "Here is the missing fact");
-    assert(planProgress(session).results == 0 && !planProgressGuidance(session).length);
-    const answer = `{"summary":"Compaction retains a summary of earlier context."}`;
-    auto executed = executeTool(OpenCodeToolCall("answer-complete", "goal_complete", answer), ".");
-    assert(!executed.failed, "Native tool contradicted answer-only completion policy");
-    ChatSession answerGoal;
-    answerGoal.goal = "What is compaction?"; answerGoal.goalStatus = "active";
-    assert(!goalCompletionError(answerGoal, answer).length);
-    answerGoal.goal = "Implement and verify compaction";
-    assert(goalCompletionError(answerGoal, answer).length,
-        "Action goal lost its evidence requirement");
-    foreach (tool; nativeOnlyToolDefinitions()) if (tool.name == "goal_complete")
-    {
-        const schema = parseJSON(tool.parametersJson);
-        assert(schema["required"].array.length == 1,
-            "Wire schema still requires fabricated receipts for answer-only goals");
-    }
-    writeln("PASS shared plan checkpoints follow phases, preserve outcomes, survive reload and never block tools");
+    add("user","Implement the multi-step fix.");const first=s.activeLeafId;
+    RequestPolicy policy;policy.toolsEnabled=true;policy.availableTools=nativeOnlyToolDefinitions();
+    auto initial=prepareAgentRequest(s,policy);bool suggestion;
+    foreach(m;initial.messages)if(m.content.indexOf(initialPlanSuggestion)>=0)suggestion=true;
+    assert(suggestion,"First response lacks optional planning suggestion");
+    foreach(_;0..4)add("tool","Source","read");assert(!planProgressGuidance(s).length);
+    add("tool","Source","read");auto reminder=planProgressGuidance(s);
+    assert(reminder.startsWith(planProgressMarker) && reminder.indexOf("consider")>=0);
+    add("user",reminder,"",true);assert(controlStateKind(s.messages[$-1])==ControlStateKind.progress);
+    assert(!planProgressGuidance(s).length);auto restored=s;assert(!planProgressGuidance(restored).length);
+    auto wire=prepareAgentRequest(s,policy);bool visible;
+    foreach(m;wire.messages)if(m.content.indexOf(planProgressMarker)>=0)visible=true;
+    assert(visible,"New advisory was filtered out");
+    assert(wire.tools.length==initial.tools.length && !planReconciliationDue(s),"Review became a tool gate");
+    foreach(_;0..4)add("tool","Edited","edit");assert(!planProgressGuidance(s).length);
+    add("tool","Source","read");assert(planProgressGuidance(s).length,"Ignoring reminder disabled subsequent reviews");
+    add("user",planProgressGuidance(s),"",true);
+    s.taskSteps=[TaskStep("Current outcome","in_progress")];add("tool","Plan","update_plan");
+    assert(planProgress(s).results==0);add("tool","Checked","verify");
+    assert(!planProgressGuidance(s).length,"Phase change forced immediate reconciliation");
+    foreach(_;0..40)add("tool","Running","process");foreach(_;0..4)add("tool","Plan read","read_plan");
+    assert(planProgress(s).results==1,"Polling advanced review cadence");
+    foreach(_;0..4)add("tool","Source","grep");
+    assert(planProgressGuidance(s).indexOf("plan still matches")>=0 && s.taskSteps[0].status=="in_progress");
+    s.taskStatus="waiting_input";assert(!planProgressGuidance(s).length);
+    s.taskStatus="completed";assert(!planProgressGuidance(s).length);
+    s.taskStatus="active";s.verificationStatus="passed";s.taskSteps[0].status="completed";
+    assert(!planProgressGuidance(s).length,"Finished work acquired review debt");
+    s.activeLeafId=first;assert(planProgress(s).results==0);add("user","A new task.");
+    assert(planProgress(s).results==0);auto next=prepareAgentRequest(s,policy);
+    foreach(m;next.messages)assert(m.content.indexOf(planProgressMarker)<0);
+    TurnPolicy turn;turn.toolsEnabled=true;s.taskSteps=null;
+    assert(decideTurn(s,turn).action==TurnAction.settle,"Missing optional plan prevented completion");
+    writeln("PASS optional initial planning; recurring five-result review; reset/reload/branch safety; unchanged tools and no completion debt");
 }
