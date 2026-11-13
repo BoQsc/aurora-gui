@@ -43,6 +43,8 @@ struct RecorderOptions
     size_t windowHandle;
     string windowTitle;
     string windowProcess;
+    /// Experimental: show a notification-area icon with a small menu.
+    bool trayIcon;
 }
 
 /// What the UI needs to know once per frame.
@@ -103,6 +105,8 @@ final class RecorderController
         _options.quality = nearestPreset(quality, qualityPresets);
     }
     void setDrawCursor(bool value) { _options.drawCursor = value; }
+    /// Experimental: notification-area icon on or off.
+    void setTrayIcon(bool value) { _options.trayIcon = value; }
     void setAudioDevice(string device) { _options.audioDevice = device; }
     void setSystemAudio(bool value) { _options.systemAudio = value; }
     void setOutputFolder(string folder)

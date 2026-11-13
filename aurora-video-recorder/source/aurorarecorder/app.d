@@ -22,6 +22,7 @@ import aurorarecorder.recorder : RecorderController, RecorderOptions,
 import aurorarecorder.settings : CaptureTarget, formatClock, isPreset,
     recordedSeconds, Timestamp;
 import aurorarecorder.settingsfile : loadSettings, saveSettings, settingsPath;
+import aurorarecorder.tray : TrayIcon;
 import aurorarecorder.windowpicker : PickedWindow, selectableWindows;
 
 import std.datetime : Clock, LocalTime;
@@ -147,6 +148,9 @@ final class RecorderRoot : VBox
     /// This application's window (as an integer), hidden during the pick.
     private size_t _ownHwnd;
     private CheckBox _systemAudioBox;
+    /// Experimental notification-area icon (see `applyTrayOption`).
+    private CheckBox _trayBox;
+    private TrayIcon _tray;
     private Button _microphoneButton;
     private Label _microphoneHint;
     private AudioDevice[] _microphones;
@@ -294,6 +298,18 @@ final class RecorderRoot : VBox
         };
         add(_systemAudioBox);
 
+        // ---- Experimental options ----
+        // Labelled experimental because the icon depends on the shell and can
+        // be refused on locked-down setups; the recorder never needs it.
+        _trayBox = new CheckBox("Show a tray icon (experimental)",
+            options.trayIcon);
+        _trayBox.onChanged = (bool value) {
+            _controller.setTrayIcon(value);
+            applyTrayOption();
+            saveCurrentSettings();
+        };
+        add(_trayBox);
+
         // ---- Microphone ----
 
         auto microphoneLabel = new Label("Microphone");
@@ -403,6 +419,9 @@ final class RecorderRoot : VBox
     /// Called from the window tick. Cheap when nothing is recording.
     void poll()
     {
+        // Keep the experimental tray menu's Start/Stop label in step.
+        if (_tray !is null) _tray.setRecording(_controller.isRecording());
+
         // A hotkey press toggles recording exactly like the button.
         if (_hotkey !is null && _hotkey.takePressed())
             onRecordPressed();
@@ -543,6 +562,37 @@ final class RecorderRoot : VBox
     private void refreshFolder()
     {
         _folderLabel.setText(_controller.options().outputFolder);
+    }
+
+    /**
+     * Create or remove the experimental notification-area icon so it matches
+     * the saved option. Called at start-up and whenever the box is toggled.
+     */
+    private void applyTrayOption()
+    {
+        const wanted = _controller.options().trayIcon;
+        if (wanted && _tray is null)
+        {
+            _tray = new TrayIcon();
+            _tray.onShow = () { _window.setVisible(true); };
+            _tray.onToggleRecord = () { onRecordPressed(); };
+            _tray.onOpenFolder = () {
+                openFolderSelecting(_controller.options().outputFolder,
+                    _controller.lastFinishedPath);
+            };
+            _tray.onExit = () { _window.close(); };
+            if (!_tray.start("Aurora Video Recorder", iconPathFor("app.ico")))
+            {
+                _tray = null;
+                _targetHint.setText("The tray icon could not be created; " ~
+                    "Windows did not accept it.");
+            }
+        }
+        else if (!wanted && _tray !is null)
+        {
+            _tray.stop();
+            _tray = null;
+        }
     }
 
     // ---- Actions ----
@@ -1169,6 +1219,8 @@ int run(string[] args, string executablePath = "")
     root.refreshTheme(); // Colors resolve once the widget is attached.
     root.registerHotkey(); // After setRoot so the result can be shown.
     root.loadMicrophones(controller.ffmpegPath());
+    // After setRoot: the icon needs a live window, and the option is saved.
+    root.applyTrayOption();
     // Diagnostics: report the picker's real layout once, then exit, so the
     // list can be checked without clicking anything.
     const dumpPicker = dumpPickerArgument(args);

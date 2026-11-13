@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy the project-rail tooltip fix so its text follows the hovered project row.",
-  "command": "dub build --build=release",
+  "reason": "Deploy shared outcome orchestration core 0.66.46 after isolated real-task validation.",
+  "command": "dub build --build=release --force",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-11 09:19:29.9170175 UTC",
-  "finishedAt": "2026-11-11 09:20:32.5690662 UTC",
-  "durationMs": 62652,
+  "startedAt": "2026-11-13 12:13:07.9311582 UTC",
+  "finishedAt": "2026-11-13 12:14:56.991965 UTC",
+  "durationMs": 109060,
   "exitCode": 0,
   "errors": [],
-  "publishStatus": "published",
-  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (3fef9a065b8e).",
+  "publishStatus": "failed",
+  "publishDetail": "Publishing with installed runtime required: MSVCR120.dll",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

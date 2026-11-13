@@ -54,6 +54,8 @@ string serializeSettings(const ref RecorderOptions options, HotkeyChord hotkey)
     text ~= format("quality=%d\n", options.quality);
     text ~= format("cursor=%s\n", options.drawCursor ? "on" : "off");
     text ~= format("screen_sound=%s\n", options.systemAudio ? "on" : "off");
+    // Experimental option; written so a hand-edited file can still turn it on.
+    text ~= format("tray=%s\n", options.trayIcon ? "on" : "off");
     // Device names contain spaces and parentheses but never newlines, so the
     // plain `key=value` form round-trips unchanged.
     text ~= format("microphone=%s\n", options.audioDevice);
@@ -120,6 +122,11 @@ StoredSettings parseSettings(string text, RecorderOptions defaults)
         {
             if (value == "on") stored.options.systemAudio = true;
             else if (value == "off") stored.options.systemAudio = false;
+        }
+        else if (key == "tray")
+        {
+            if (value == "on") stored.options.trayIcon = true;
+            else if (value == "off") stored.options.trayIcon = false;
         }
         else if (key == "microphone")
         {
