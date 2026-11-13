@@ -64,10 +64,11 @@ H.264 in MP4 with `yuv420p` and a fast-start index, plus an AAC track when a
 microphone is selected.
 
 The app captures the screen itself: 32-bit BGRA frames from a GDI `BitBlt` on a
-worker thread, piped into ffmpeg's stdin. The frame rate is paced on a monotonic
-clock; a late frame is skipped rather than duplicated, so audio-free timing
-stays correct. `BitBlt` never includes the pointer, so when the cursor is
-enabled it is composited into each frame with `DrawIconEx`.
+worker thread, piped into ffmpeg's stdin. The frame count is paced on a
+monotonic clock: when a capture or a pipe write is late, the held frame fills
+the missed slots, so video time stays equal to real time instead of playing
+back fast. `BitBlt` never includes the pointer, so when the cursor is enabled
+it is composited into each frame with `DrawIconEx`.
 
 Capture deliberately stays in this process: ffmpeg's `gdigrab` input can only be
 stopped by killing ffmpeg, which leaves an MP4 with no `moov` atom (unplayable).
@@ -107,6 +108,10 @@ clips (cursor drawn and not drawn) and verifies with `ffprobe` that each is an
 H.264 MP4 of the expected size, then decodes it end to end. It also registers a
 real global hotkey and confirms a simulated chord fires it. Pass
 `--require-live` to fail instead of skipping when ffmpeg is missing.
+`--pacing` records the full screen at 60 fps and checks that the frame count
+keeps up with the clock while recording (skipping the interactive hotkey and
+window checks). `--stop` records with screen audio and checks that Stop
+finishes promptly instead of waiting in "Finishing the file...".
 
 ## Limitations
 

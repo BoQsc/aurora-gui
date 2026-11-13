@@ -25,10 +25,13 @@ import aurorarecorder.settings;
 import aurorarecorder.settingsfile : parseSettings, serializeSettings;
 
 import core.thread : Thread, dur;
+import core.time : MonoTime;
 import std.array : join;
+import std.conv : to;
 import std.datetime : Clock, Duration, LocalTime;
 import std.file : exists, getSize, mkdirRecurse, remove, tempDir;
 import std.format : format;
+import std.math : abs;
 import std.path : buildPath, dirName;
 import std.process : Config, Redirect, environment, pipeProcess, wait;
 import std.string : indexOf, split;
@@ -748,19 +751,210 @@ private void checkLive(string ffmpeg, bool drawCursor)
     check(code == 0, label ~ " ffmpeg decodes the whole file: " ~ decoded);
 }
 
+/**
+ * A recording's frame count must follow the wall clock while it runs.
+ *
+ * Rawvideo has no timestamps, so ffmpeg turns every written frame into one
+ * 1/fps step. If capture is slower than the selected rate and the missing
+ * slots are only filled after Stop, the middle of the recording plays fast.
+ * This records the whole screen at 60 fps and checks the count before any tail
+ * padding could hide the problem.
+ */
+private void checkFramePacing(string ffmpeg)
+{
+    import aurorarecorder.capture : virtualScreenBounds;
+
+    int x, y, width, height;
+    virtualScreenBounds(x, y, width, height);
+    const rect = evenCaptureRect(CaptureRect(x, y, width, height));
+    if (!rect.valid() || rect.width < 320 || rect.height < 240)
+    {
+        writeln("  (no usable screen geometry; skipping the pacing check)");
+        return;
+    }
+
+    const root = buildPath(tempDir(), "aurora-video-recorder-smoke");
+    if (!exists(root))
+        mkdirRecurse(root);
+    const output = buildPath(root, "smoke-pacing.mp4");
+    if (exists(output)) remove(output);
+    const logFile = output ~ ".log";
+    if (exists(logFile)) remove(logFile);
+
+    RecordingJob job;
+    job.outputPath = output;
+    job.rect = rect;
+    job.fps = 60;
+    job.quality = 28;
+    job.drawCursor = false;
+    job.ffmpegPath = ffmpeg;
+    writeln(format("  pacing at %d fps on %dx%d", job.fps, rect.width,
+        rect.height));
+
+    auto encoder = new ScreenEncoder(job);
+    encoder.start();
+    const startupDeadline = Clock.currTime + dur!"seconds"(10);
+    while (encoder.status.snapshot.frames == 0 &&
+        Clock.currTime < startupDeadline &&
+        encoder.status.snapshot.phase != RecorderPhase.failed)
+        Thread.sleep(dur!"msecs"(10));
+    const first = encoder.status.snapshot;
+    if (first.phase == RecorderPhase.failed)
+    {
+        check(false, "pacing recording failed to start: " ~ first.error);
+        return;
+    }
+    if (first.frames == 0)
+    {
+        check(false, "pacing recording produced no frame");
+        return;
+    }
+
+    const measureStart = MonoTime.currTime;
+    Thread.sleep(dur!"seconds"(3));
+    const measured = encoder.status.snapshot.frames;
+    const elapsed = (MonoTime.currTime - measureStart).total!"msecs" / 1000.0;
+    encoder.stop();
+    check(encoder.join(30_000), "pacing encoder finished within 30 seconds");
+
+    // Capture at 1080p60 measured ~52 fps before this check existed, with the
+    // missing frames appended only after Stop.
+    const wanted = cast(long)(job.fps * elapsed * 0.9);
+    check(measured >= wanted, format(
+        "frames keep up with the clock while recording (got %d in %.2f s, want at least %d)",
+        measured, elapsed, wanted));
+
+    const status = encoder.status.snapshot;
+    const recorded = cast(double) status.frames / job.fps;
+    check(recorded + 0.15 >= elapsed, format(
+        "video covers the recorded time (video %.2f s, wall %.2f s)",
+        recorded, elapsed));
+    writeln(format("  pacing: %d frames in %.2f s (%.1f fps), %.2f s video",
+        measured, elapsed, measured / elapsed, recorded));
+
+    const ffprobe = findFfprobe(ffmpeg);
+    if (ffprobe.length == 0) return;
+    int code;
+    const probe = runCapture(ffprobe, [
+        "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=duration",
+        "-of", "default=noprint_wrappers=1", output,
+    ], code);
+    check(code == 0, "ffprobe reads the pacing recording: " ~ probe);
+    const durationAt = probe.indexOf("duration=");
+    double probedDuration = -1;
+    if (durationAt >= 0)
+    {
+        const rest = probe[durationAt + 9 .. $];
+        size_t end;
+        while (end < rest.length &&
+            ((rest[end] >= '0' && rest[end] <= '9') || rest[end] == '.'))
+            end++;
+        if (end > 0) probedDuration = to!double(rest[0 .. end]);
+    }
+    check(probedDuration >= 0 && abs(probedDuration - recorded) <= 0.15,
+        format("the MP4 duration matches its frame count (video %.3f s, ffprobe %.3f s)",
+            recorded, probedDuration));
+}
+
+/**
+ * Stop a recording that is also writing screen audio.
+ *
+ * The audio writer used to be joined before video stdin was closed. Once
+ * ffmpeg's audio queue was full it stopped draining the pipe, the writer
+ * blocked, and Stop stayed in "Finishing" forever. This checks the whole
+ * shutdown finishes promptly.
+ */
+private void checkSystemAudioStop(string ffmpeg)
+{
+    const root = buildPath(tempDir(), "aurora-video-recorder-smoke");
+    if (!exists(root))
+        mkdirRecurse(root);
+    const output = buildPath(root, "smoke-stop.mp4");
+    if (exists(output)) remove(output);
+    const logFile = output ~ ".log";
+    if (exists(logFile)) remove(logFile);
+
+    RecordingJob job;
+    job.outputPath = output;
+    job.rect = CaptureRect(0, 0, 640, 480);
+    job.fps = 30;
+    job.quality = 28;
+    job.drawCursor = false;
+    job.systemAudio = true;
+    job.ffmpegPath = ffmpeg;
+
+    auto encoder = new ScreenEncoder(job);
+    encoder.start();
+    const startupDeadline = Clock.currTime + dur!"seconds"(10);
+    while (encoder.status.snapshot.frames == 0 &&
+        Clock.currTime < startupDeadline &&
+        encoder.status.snapshot.phase != RecorderPhase.failed)
+        Thread.sleep(dur!"msecs"(10));
+    const first = encoder.status.snapshot;
+    if (first.phase == RecorderPhase.failed)
+    {
+        check(false, "screen-audio recording failed to start: " ~ first.error);
+        return;
+    }
+    if (first.frames == 0)
+    {
+        check(false, "screen-audio recording produced no frame");
+        return;
+    }
+
+    Thread.sleep(dur!"seconds"(2));
+    const frames = encoder.status.snapshot.frames;
+    const stopAt = MonoTime.currTime;
+    encoder.stop();
+    const joined = encoder.join(10_000);
+    const stopSeconds = (MonoTime.currTime - stopAt).total!"msecs" / 1000.0;
+    check(joined, format(
+        "screen-audio recording stops within 10 s (waited %.1f s)",
+        stopSeconds));
+    if (!joined) return;
+
+    const status = encoder.status.snapshot;
+    check(status.phase == RecorderPhase.finished, format(
+        "screen-audio recording finished after stop (phase=%s, error=%s)",
+        status.phase, status.error));
+    writeln(format("  stop with screen audio: %d frames, finished in %.2f s",
+        frames, stopSeconds));
+
+    const ffprobe = findFfprobe(ffmpeg);
+    if (ffprobe.length == 0) return;
+    int code;
+    const probe = runCapture(ffprobe, [
+        "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name",
+        "-of", "default=noprint_wrappers=1", output,
+    ], code);
+    check(code == 0 && probe.indexOf("codec_name=h264") >= 0,
+        "the screen-audio recording is a readable H.264 MP4: " ~ probe);
+}
+
 int main(string[] args)
 {
     bool requireLive;
+    bool pacingOnly;
+    bool stopOnly;
     foreach (arg; args[1 .. $])
+    {
         if (arg == "--require-live") requireLive = true;
+        if (arg == "--pacing") pacingOnly = true;
+        if (arg == "--stop") stopOnly = true;
+    }
 
     checkSettings();
     checkHotkeyModel();
     checkSettingsFile();
     checkAudioParsing();
     checkCommandLine();
-    checkHotkeyLive();
-    checkPickerInApp();
+    if (!pacingOnly && !stopOnly)
+    {
+        checkHotkeyLive();
+        checkPickerInApp();
+    }
 
     const ffmpeg = environment.get("AURORA_RECORDER_FFMPEG", "").length > 0 ?
         findFfmpeg("") : findFfmpeg(runExecutableDirectory());
@@ -770,6 +964,16 @@ int main(string[] args)
             check(false, "ffmpeg.exe was not found for the live recording test");
         else
             writeln("  (ffmpeg.exe not found; skipping the live recording test)");
+    }
+    else if (pacingOnly)
+    {
+        writeln("  live recording with ", ffmpeg);
+        checkFramePacing(ffmpeg);
+    }
+    else if (stopOnly)
+    {
+        writeln("  live recording with ", ffmpeg);
+        checkSystemAudioStop(ffmpeg);
     }
     else
     {

@@ -181,12 +181,6 @@ final class SystemAudioCapture
     /// Begin capturing; false when the device could not be opened.
     bool start()
     {
-        {
-            import core.stdc.stdio : FILE, fopen, fclose, fprintf;
-            import std.string : toStringz;
-            FILE* f = fopen("C:\\Users\\windows10\\AppData\\Local\\Temp\\vr-lb3.txt", "w");
-            if (f !is null) { fprintf(f, "%s\n", "start entered".toStringz); fclose(f); }
-        }
         _thread = new Thread({ runLoop(); });
         _thread.isDaemon = true;
         _thread.start();
@@ -200,7 +194,12 @@ final class SystemAudioCapture
             }
             Thread.sleep(dur!"msecs"(10));
         }
-        synchronized (_lock) return !_failed && _format.valid();
+        bool ready;
+        synchronized (_lock) ready = !_failed && _format.valid();
+        // A failed or timed-out handshake must not leave a capture thread
+        // running for the rest of the process; it exits at its next stop check.
+        if (!ready) requestStop();
+        return ready;
     }
 
     LoopbackFormat format()
@@ -255,25 +254,7 @@ final class SystemAudioCapture
 
     private void runLoop()
     {
-        {
-            import core.stdc.stdio : fflush, printf, stdout;
-            printf("runLoop entered\n");
-            fflush(stdout);
-        }
-        import core.stdc.stdio : FILE, fclose, fflush, fopen, fprintf;
-        import std.conv : text;
-        import std.string : toStringz;
-        FILE* log;
-        static void note(FILE* f, string m)
-        {
-            if (f !is null) { fprintf(f, "%s\n", m.toStringz); fflush(f); }
-        }
-        void logNote(string m) { note(log, m); }
-        log = fopen("C:\\Users\\windows10\\AppData\\Local\\Temp\\vr-lb2.txt", "w");
-        scope (exit) if (log !is null) fclose(log);
-
         // Every COM call for the device happens on this thread.
-        note(log, "com init");
         if (CoInitializeEx(null, COINIT_MULTITHREADED_VALUE) < 0)
         {
             fail("Windows audio (WASAPI) could not be initialized.");
@@ -281,12 +262,7 @@ final class SystemAudioCapture
         }
         scope (exit) CoUninitialize();
 
-        note(log, "enumerator");
-        note(log, "call CoCreateInstance");
-        fflush(log);
         void* enumerator;
-        note(log, "CoCreateInstance returned");
-        fflush(log);
         if (CoCreateInstance(&clsidMMDeviceEnumerator, null, CLSCTX_ALL_VALUE,
                 &iidDeviceEnumerator, &enumerator) < 0 || enumerator is null)
         {
@@ -295,7 +271,6 @@ final class SystemAudioCapture
         }
         scope (exit) comRelease(enumerator);
 
-        note(log, "endpoint");
         void* endpoint;
         {
             auto get = cast(GetDefaultAudioEndpointFn) vtableEntry(enumerator, 4);
@@ -309,7 +284,6 @@ final class SystemAudioCapture
         }
         scope (exit) comRelease(endpoint);
 
-        note(log, "activate");
         void* client;
         {
             auto activate = cast(ActivateFn) vtableEntry(endpoint, 3);
@@ -322,11 +296,9 @@ final class SystemAudioCapture
         }
         scope (exit) comRelease(client);
 
-        note(log, "mix format");
         WAVEFORMATEX* mixFormat;
         const formatHr = (cast(GetMixFormatFn) vtableEntry(client, 8))(client,
             &mixFormat);
-        logNote("GetMixFormat hr=" ~ text(formatHr));
         if (formatHr < 0 || mixFormat is null)
         {
             fail("The audio output format could not be read.");
@@ -337,20 +309,6 @@ final class SystemAudioCapture
         LoopbackFormat format;
         format.sampleRate = mixFormat.nSamplesPerSec;
         format.channels = mixFormat.nChannels;
-        {
-            import core.stdc.stdio : FILE, fclose, fflush, fopen, fprintf;
-            FILE* f = fopen("C:\\Users\\windows10\\AppData\\Local\\Temp\\vr-fmt.txt", "w");
-            if (f !is null)
-            {
-                const bytes = cast(const(ubyte)*) mixFormat;
-                foreach (i; 0 .. 40)
-                    fprintf(f, "%02x ", bytes[i]);
-                fprintf(f, "\ntag=%u ch=%u rate=%u cbSize=%u\n",
-                    mixFormat.wFormatTag, mixFormat.nChannels,
-                    mixFormat.nSamplesPerSec, mixFormat.cbSize);
-                fclose(f);
-            }
-        }
 
         // For WAVE_FORMAT_EXTENSIBLE the 16-byte SubFormat GUID starts at
         // offset 24 (after the 18-byte WAVEFORMATEX, wValidBits and channel
@@ -382,10 +340,8 @@ final class SystemAudioCapture
         // 200 ms shared buffer, the usual loopback choice.
         const long bufferDuration = 2 * refTimesPerSecond;
         auto initialize = cast(InitializeFn) vtableEntry(client, 3);
-        logNote("call Initialize");
         const initHr = initialize(client, AUDCLNT_SHAREMODE_SHARED,
             AUDCLNT_STREAMFLAGS_LOOPBACK, bufferDuration, 0, mixFormat, null);
-        logNote("Initialize hr=" ~ text(initHr));
         if (initHr < 0)
         {
             fail("The audio output device could not be opened for recording.");
@@ -393,11 +349,8 @@ final class SystemAudioCapture
         }
 
         void* capture;
-        logNote("call GetService");
         const serviceHr = (cast(GetServiceFn) vtableEntry(client, 14))(client,
             &iidCaptureClient, &capture);
-        logNote("GetService hr=" ~ text(serviceHr) ~ " ptr=" ~
-            text(cast(size_t) capture));
         if (serviceHr < 0 || capture is null)
         {
             fail("Screen sound capture is not supported by this device.");
@@ -405,30 +358,27 @@ final class SystemAudioCapture
         }
         scope (exit) comRelease(capture);
 
-        synchronized (_lock) _format = format;
-        logNote("format recorded");
-
         const startHr = (cast(StartFn) vtableEntry(client, 10))(client);
-        logNote("Start hr=" ~ text(startHr));
         if (startHr < 0)
         {
             fail("Screen sound capture could not start.");
             return;
         }
+        // Publish the format only once the device is actually running:
+        // `start()` uses this as its success handshake, and it must not return
+        // true for a device that then fails at Start, leaving ffmpeg waiting
+        // forever for an audio input that never produces samples.
+        synchronized (_lock) _format = format;
         scope (exit)
         {
-            logNote("stopping client");
             (cast(StopFn) vtableEntry(client, 11))(client);
-            logNote("client stopped");
         }
 
         foreach (packet; 0 .. 3)
         {
             // Prime the loop; loopback delivers nothing until frames play.
             Thread.sleep(dur!"msecs"(20));
-            logNote("drain " ~ text(packet));
             drain(capture);
-            logNote("drained " ~ text(packet));
             if (packet >= 1) break;
         }
 

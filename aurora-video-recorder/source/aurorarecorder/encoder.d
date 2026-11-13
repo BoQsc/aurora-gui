@@ -14,9 +14,11 @@ module aurorarecorder.encoder;
  * - Writing a frame blocks while ffmpeg is busy. That is expected
  *   back-pressure; the loop captures the next frame after the write returns,
  *   so memory use stays flat.
- * - Pacing uses a monotonic clock and never writes duplicate frames to catch
- *   up. A late frame makes the video a few milliseconds short instead of
- *   stalling everything behind an ever-growing backlog.
+ * - Pacing uses a monotonic clock. When a capture or a pipe write takes longer
+ *   than one frame interval, the held frame is written again for the missed
+ *   slots. Rawvideo has no timestamps, so this is the only way video time can
+ *   stay equal to real time; writing fewer frames makes the whole recording
+ *   play back fast.
  * - The worker never touches a widget or a D object whose access is not
  *   atomic. It publishes `RecorderStatus`, a seqlock-style snapshot that the
  *   window's tick timer polls: the writer bumps the sequence counter before
@@ -45,9 +47,11 @@ version (Windows)
         SetHandleInformation, SetInformationJobObject, STARTF_USESHOWWINDOW,
         STARTF_USESTDHANDLES, STARTUPINFOW, SW_HIDE, TRUE,
         GetExitCodeProcess, WaitForSingleObject, WriteFile, FlushFileBuffers,
-        CREATE_NO_WINDOW,
+        TerminateProcess, CREATE_NO_WINDOW,
         AssignProcessToJobObject, CreateNamedPipeW, ConnectNamedPipe,
         OVERLAPPED, CreateEventW, GetLastError, ERROR_PIPE_CONNECTED,
+        ERROR_IO_PENDING, GetOverlappedResult, WAIT_OBJECT_0,
+        WAIT_TIMEOUT, CancelIoEx,
         FILE_FLAG_OVERLAPPED,
         PIPE_ACCESS_OUTBOUND, PIPE_READMODE_BYTE,
         PIPE_TYPE_BYTE, PIPE_WAIT;
@@ -101,6 +105,8 @@ struct RecordingJob
     bool systemAudio;
     uint systemAudioRate;
     uint systemAudioChannels;
+    /// Per-recording name of the screen-sound pipe (empty until it is made).
+    string systemAudioPipe;
     /// Window to follow while recording (0 = a fixed region).
     size_t windowHandle;
 }
@@ -223,7 +229,9 @@ string[] encoderArguments(RecordingJob job)
     {
         args ~= [
             "-f", "f32le", "-ar", text(job.systemAudioRate),
-            "-ac", text(job.systemAudioChannels), "-i", systemAudioUrl(),
+            "-ac", text(job.systemAudioChannels), "-i",
+            job.systemAudioPipe.length > 0 ? job.systemAudioPipe :
+                systemAudioUrl(),
         ];
     }
 
@@ -255,8 +263,11 @@ string[] encoderArguments(RecordingJob job)
         args ~= [
             "-map", "0:v:0", "-map", "1:a:0",
             "-c:a", "aac", "-b:a", "160k",
-            "-shortest",
         ];
+        // No `-shortest` here: this app owns the screen-sound pipe and closes
+        // it just before video stdin. If the audio path ever stops early,
+        // shortening the video to the audio length would silently cut the
+        // recording; a shorter audio track is the lesser problem.
     }
     args ~= ["-movflags", "+faststart", job.outputPath];
     return args;
@@ -269,7 +280,12 @@ string[] encoderArguments(RecordingJob job)
  */
 string systemAudioUrl()
 {
-    return r"\\.\pipe\aurora-video-recorder-audio";
+    import core.atomic : atomicOp;
+    import core.sys.windows.windows : GetCurrentProcessId;
+    static shared int sequence;
+    const nth = atomicOp!"+="(sequence, 1);
+    return text(r"\\.\pipe\aurora-video-recorder-audio-",
+        GetCurrentProcessId(), "-", nth);
 }
 
 /**
@@ -462,8 +478,11 @@ final class ScreenEncoder
                 if (!audio.start())
                 {
                     // Sound is a convenience: record silently rather than
-                    // failing the whole recording.
+                    // failing the whole recording. Clear the job flag too:
+                    // otherwise ffmpeg opens an audio input whose pipe has no
+                    // writer and waits for EOF forever on Stop.
                     audio = null;
+                    _job.systemAudio = false;
                 }
                 else
                 {
@@ -474,6 +493,8 @@ final class ScreenEncoder
                 }
             }
             scope (exit) if (audio !is null) audio.shutdown();
+            if (_job.systemAudio)
+                _job.systemAudioPipe = systemAudioUrl();
 
             HANDLE logHandle = openLog(_job.outputPath ~ ".log");
             HANDLE writeEnd;
@@ -482,7 +503,8 @@ final class ScreenEncoder
             const started = createProcess(_job.ffmpegPath,
                 // Arguments are built after the device reported its format.
                 buildCommandLine(_job.ffmpegPath, encoderArguments(_job)),
-                logHandle, process, writeEnd, audioWriteEnd, audio !is null);
+                logHandle, process, writeEnd, audioWriteEnd, audio !is null,
+                _job.systemAudioPipe);
             closeHandle(logHandle);
             if (!started)
             {
@@ -521,17 +543,26 @@ final class ScreenEncoder
             if (!cancelled)
                 recordLoop(surface, writeEnd, frames, writeError);
 
-            // End the audio stream before closing video stdin so ffmpeg keeps
-            // the tail of the sound with `-shortest`.
+            // Close video stdin first. ffmpeg can then finish the video
+            // stream and keep draining the audio pipe; waiting for the audio
+            // writer while video is still "live" deadlocked once ffmpeg's
+            // audio queue filled, leaving the app stuck in "Finishing".
+            CloseHandle(writeEnd);
+            _status.set(RecorderPhase.stopping, frames, _job.outputPath, "");
+
+            // End the screen-sound stream and flush its tail. `writeAudioPipe`
+            // abandons a blocked write shortly after this flag is set, so the
+            // join cannot wait forever.
             atomicStore!(MemoryOrder.rel)(stopAudio, true);
             if (audio !is null) audio.requestStop();
             if (audioThread !is null) audioThread.join();
 
-            // Closing stdin makes ffmpeg flush the last frames and write the
-            // MP4 trailer; only then is the file playable.
-            CloseHandle(writeEnd);
-            _status.set(RecorderPhase.stopping, frames, _job.outputPath, "");
-            WaitForSingleObject(process.hProcess, INFINITE);
+            // A healthy ffmpeg flushes and writes the MP4 trailer in well
+            // under this. Never leave the UI in "Finishing" forever if it
+            // does not.
+            const waitResult = WaitForSingleObject(process.hProcess, 30_000);
+            const timedOut = waitResult == WAIT_TIMEOUT;
+            if (timedOut) TerminateProcess(process.hProcess, 1);
             // ffmpeg's own verdict, used below to tell a real encoder failure
             // from a write that merely lost the race with a normal shutdown.
             DWORD exitCode;
@@ -544,6 +575,10 @@ final class ScreenEncoder
             if (cancelled)
                 _status.set(RecorderPhase.failed, frames, _job.outputPath,
                     "Recording was cancelled.");
+            else if (timedOut)
+                _status.set(RecorderPhase.failed, frames, _job.outputPath,
+                    "ffmpeg did not finish within 30 seconds; the file may " ~
+                    "be incomplete.");
             else if (frames == 0)
             {
                 // No frame ever reached ffmpeg, so the file is a bare header
@@ -585,33 +620,164 @@ final class ScreenEncoder
             ref shared bool stopAudio)
         {
             scope (exit) if (audioEnd !is null) CloseHandle(audioEnd);
-            // The pipe was created overlapped, so a client that has not
-            // connected yet makes WriteFile return ERROR_IO_PENDING instead of
-            // blocking: retry until ffmpeg is listening.
+            // ffmpeg opens the pipe after it starts reading. Wait for that
+            // connection before taking PCM, so the samples captured during
+            // startup are not dropped.
             bool connected;
+            bool havePcm;
+            MonoTime connectedAt;
             while (!atomicLoad!(MemoryOrder.acq)(stopAudio))
             {
-                auto pcm = audio.take();
                 if (!connected)
                 {
-                    if (ConnectNamedPipe(audioEnd, null) != FALSE ||
-                        GetLastError() == ERROR_PIPE_CONNECTED)
-                        connected = true;
-                    else if (GetLastError() == ERROR_PIPE_CONNECTED)
-                        connected = true;
-                    Thread.sleep(dur!"msecs"(20));
-                    continue;
+                    connected = connectAudioPipe(audioEnd, stopAudio);
+                    if (!connected)
+                    {
+                        Thread.sleep(dur!"msecs"(20));
+                        continue;
+                    }
+                    connectedAt = MonoTime.currTime;
                 }
+                auto pcm = audio.take();
                 if (pcm.length > 0)
                 {
-                    if (!writeFrame(audioEnd, pcm.ptr, pcm.length)) return;
+                    havePcm = true;
+                    if (!writeAudioPipe(audioEnd, pcm.ptr, pcm.length,
+                            stopAudio))
+                        return;
                 }
                 else
+                {
+                    // A connected pipe with no samples makes ffmpeg block
+                    // opening the audio input, which in turn fills the video
+                    // pipe. Close the audio side so the recording continues
+                    // silently instead of freezing.
+                    if (!havePcm &&
+                        MonoTime.currTime - connectedAt > msecs(2000))
+                    {
+                        return;
+                    }
                     Thread.sleep(dur!"msecs"(5));
+                }
             }
             // Flush what the device produced before the stop request.
             auto tail = audio.take();
-            if (tail.length > 0) writeFrame(audioEnd, tail.ptr, tail.length);
+            if (tail.length > 0)
+                writeAudioPipe(audioEnd, tail.ptr, tail.length, stopAudio);
+        }
+
+        /**
+         * Wait until ffmpeg connects to the screen-sound pipe.
+         *
+         * The pipe was created overlapped so this wait can be interrupted by
+         * Stop. Calling ConnectNamedPipe with a null OVERLAPPED on such a
+         * handle is undefined, hence the explicit event.
+         */
+        private static bool connectAudioPipe(HANDLE pipe,
+            ref shared bool stopAudio)
+        {
+            OVERLAPPED overlapped;
+            overlapped.hEvent = CreateEventW(null, TRUE, FALSE, null);
+            if (overlapped.hEvent is null) return false;
+            scope (exit) CloseHandle(overlapped.hEvent);
+
+            if (ConnectNamedPipe(pipe, &overlapped) != FALSE)
+            {
+                return true;
+            }
+            const error = GetLastError();
+            if (error == ERROR_PIPE_CONNECTED)
+                return true;
+            if (error != ERROR_IO_PENDING)
+                return false;
+
+            while (!atomicLoad!(MemoryOrder.acq)(stopAudio))
+            {
+                if (WaitForSingleObject(overlapped.hEvent,
+                        cast(DWORD) 100) != WAIT_OBJECT_0)
+                    continue;
+                DWORD transferred;
+                return GetOverlappedResult(pipe, &overlapped, &transferred,
+                    FALSE) != FALSE;
+            }
+            return false;
+        }
+
+        /**
+         * Write PCM into the overlapped named pipe.
+         *
+         * A full pipe makes WriteFile return FALSE with ERROR_IO_PENDING: that
+         * is normal back-pressure, not a closed pipe. Passing a null OVERLAPPED
+         * here used to report it as a write failure, which closed the audio
+         * stream early.
+         */
+        private static bool writeAudioPipe(HANDLE pipe, const void* data,
+            size_t bytes, ref shared bool stopAudio)
+        {
+            auto cursor = cast(const(ubyte)*) data;
+            size_t remaining = bytes;
+            while (remaining > 0)
+            {
+                const uint slice = remaining > (1 << 20) ?
+                    1 << 20 : cast(uint) remaining;
+                OVERLAPPED overlapped;
+                overlapped.hEvent = CreateEventW(null, TRUE, FALSE, null);
+                if (overlapped.hEvent is null) return false;
+
+                DWORD written;
+                BOOL ok = WriteFile(pipe, cursor, slice, &written,
+                    &overlapped);
+                if (ok == FALSE)
+                {
+                    const error = GetLastError();
+                    if (error != ERROR_IO_PENDING)
+                    {
+                        CloseHandle(overlapped.hEvent);
+                        return false;
+                    }
+                    bool stopping;
+                    MonoTime abortAt;
+                    while (true)
+                    {
+                        const wait = WaitForSingleObject(overlapped.hEvent,
+                            cast(DWORD) 50);
+                        if (wait == WAIT_OBJECT_0) break;
+                        if (wait != WAIT_TIMEOUT)
+                        {
+                            CloseHandle(overlapped.hEvent);
+                            return false;
+                        }
+                        if (!stopping &&
+                            atomicLoad!(MemoryOrder.acq)(stopAudio))
+                        {
+                            stopping = true;
+                            abortAt = MonoTime.currTime + msecs(1000);
+                        }
+                        if (stopping && MonoTime.currTime > abortAt)
+                        {
+                            // The stack OVERLAPPED must outlive the operation:
+                            // cancel it and wait for completion before
+                            // returning, or shutting down could reuse it.
+                            CancelIoEx(pipe, &overlapped);
+                            WaitForSingleObject(overlapped.hEvent, INFINITE);
+                            CloseHandle(overlapped.hEvent);
+                            return false;
+                        }
+                    }
+                    if (GetOverlappedResult(pipe, &overlapped, &written,
+                            FALSE) == FALSE)
+                    {
+                        CloseHandle(overlapped.hEvent);
+                        return false;
+                    }
+
+                }
+                CloseHandle(overlapped.hEvent);
+                if (written == 0) return false;
+                cursor = cursor + written;
+                remaining -= written;
+            }
+            return true;
         }
 
         /**
@@ -638,18 +804,12 @@ final class ScreenEncoder
             writeError = "";
 
             const started = MonoTime.currTime;
-            // Every tick must produce a frame. Capture cannot always keep up
-            // (measured: ~48 fps at 1920x1080 against a 60 fps stream), and
-            // skipping the write shortened the timeline: 5 s of recording
-            // became 2.6 s of video, which plays back at roughly double speed.
-            // Holding the previous frame keeps video time equal to real time.
+            // Capture cannot always keep up (measured: ~52 fps at 1920x1080
+            // against a 60 fps stream). Rawvideo has no timestamps, so ffmpeg
+            // advances the video by one frame interval per frame written. The
+            // frame count therefore has to follow the clock, not the capture
+            // rate, or the whole recording plays back fast.
             bool haveFrame;
-            // Real capture cost, measured as the loop runs. A 1920x1080
-            // BitBlt costs more than a 60 fps slot (measured: ~48 fps), and
-            // pacing to the declared rate simply ran out of time: 5 s of
-            // recording produced 4.2 s of video. Pacing to this figure keeps
-            // one captured frame per tick, so video time equals real time.
-            long captureCostNs;
             for (long index = 0; !stopRequested(); index++)
             {
                 if (index > 0)
@@ -676,46 +836,52 @@ final class ScreenEncoder
                             surface.setDrawCursor(_job.drawCursor);
                     }
                 }
-                // A failed capture reuses the previous frame rather than
-                // shifting later frames earlier in the timeline.
-                const captureBegan = MonoTime.currTime;
                 const captured = surface.captureInto();
-                const cost = (MonoTime.currTime - captureBegan).total!"nsecs";
-                if (cost > captureCostNs) captureCostNs = cost;
                 if (captured)
                     haveFrame = true;
                 else if (!haveFrame)
                     continue; // nothing captured yet, so there is nothing to hold
 
+                if (!writeDueFrames(started, frameIntervalNs, surface,
+                        writeEnd, frameBytes, frames, writeError))
+                    break;
+            }
+            // Fill the last partial interval too, so the file reaches the real
+            // stop time even when the loop stops between two slots.
+            if (haveFrame && frameBytes > 0)
+                writeDueFrames(started, frameIntervalNs, surface, writeEnd,
+                    frameBytes, frames, writeError);
+            if (frames > 0)
+                _status.setFrames(frames);
+        }
+
+        /**
+         * Write the current surface until the file covers every frame slot
+         * that has elapsed since `started`.
+         *
+         * This runs on each pass, not only at stop: a slow capture or a pipe
+         * that blocks would otherwise put fewer frames on the timeline than
+         * the wall clock has advanced, compressing the recording into a fast
+         * video. Repeating the held frame fills those slots.
+         */
+        private bool writeDueFrames(MonoTime started, long frameIntervalNs,
+            ScreenSurface surface, HANDLE writeEnd, size_t frameBytes,
+            ref long frames, ref string writeError)
+        {
+            const elapsedNs = (MonoTime.currTime - started).total!"nsecs";
+            const due = elapsedNs / frameIntervalNs + 1;
+            while (frames < due)
+            {
                 if (!writeFrame(writeEnd, surface.pixels(), frameBytes))
                 {
                     writeError = "ffmpeg stopped accepting frames; the " ~
                         "file was closed early (see the .log file).";
-                    break;
+                    return false;
                 }
                 frames++;
                 _status.setFrames(frames);
             }
-            // Fill the tail so the last tick reaches the real stop time. The
-            // loop can stop mid-interval (and a slow capture can fall behind),
-            // which otherwise leaves the video shorter than the recording and
-            // playing back fast.
-            if (haveFrame && frameBytes > 0)
-            {
-                const elapsedNs = (MonoTime.currTime - started).total!"nsecs";
-                const due = elapsedNs / frameIntervalNs + 1;
-                while (frames < due && !writeError.length)
-                {
-                    if (!writeFrame(writeEnd, surface.pixels(), frameBytes))
-                    {
-                        writeError = "ffmpeg stopped accepting frames; the " ~
-                            "file was closed early (see the .log file).";
-                        break;
-                    }
-                    frames++;
-                }
-                _status.setFrames(frames);
-            }
+            return true;
         }
 
         /// Write one frame to ffmpeg's stdin; false when the pipe closed.
@@ -766,7 +932,8 @@ final class ScreenEncoder
          */
         private static bool createProcess(string applicationName,
             string commandLine, HANDLE logHandle, ref PROCESS_INFORMATION process,
-            ref HANDLE writeEnd, ref HANDLE audioWriteEnd, bool audioRequested)
+            ref HANDLE writeEnd, ref HANDLE audioWriteEnd, bool audioRequested,
+            string audioPipe)
         {
             writeEnd = null;
             audioWriteEnd = null;
@@ -786,7 +953,7 @@ final class ScreenEncoder
 
             // Optional screen-sound pipe, as a named pipe server this process
             // writes and ffmpeg reads by URL.
-            audioWriteEnd = createAudioPipe(audioRequested);
+            audioWriteEnd = createAudioPipe(audioRequested, audioPipe);
             if (audioRequested && audioWriteEnd is null)
             {
                 CloseHandle(readEnd);
@@ -842,12 +1009,13 @@ final class ScreenEncoder
          * Create the named-pipe server for screen sound. The caller connects
          * it once ffmpeg is running.
          */
-        private static HANDLE createAudioPipe(bool requested)
+        private static HANDLE createAudioPipe(bool requested, string name)
         {
             if (!requested) return null;
+            if (name.length == 0) return null;
             // FILE_FLAG_OVERLAPPED so connecting never blocks: ffmpeg opens the
             // pipe only once it starts reading, which happens after this call.
-            HANDLE pipe = CreateNamedPipeW(toUTF16z(systemAudioUrl()),
+            HANDLE pipe = CreateNamedPipeW(toUTF16z(name),
                 PIPE_ACCESS_OUTBOUND | FILE_FLAG_OVERLAPPED,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1,
                 4 * 1024 * 1024, 4 * 1024 * 1024, 0, null);
