@@ -5,7 +5,6 @@ import auroraopencode.contextcheckpoint : requestMessageBytes;
 import auroraopencode.contextpolicy;
 import auroraopencode.projectioncache : projectContext, RequestProjectionCache, ProjectionRevision;
 import auroraopencode.goalmode : goalActive;
-import auroraopencode.planprogress : planReconciliationDue;
 import auroraopencode.taskpolicy : diagnosticToolAllowed;
 import auroraopencode.completionhandoff : completionHandoffInstruction;
 import auroraopencode.turnpolicy : hasIncompleteTaskSteps;
@@ -77,13 +76,16 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     RequestProjectionCache projection = null)
 {
     PreparedRequest result;
+    import auroraopencode.executioncontrol : executionReadyToAnswer;
+    const finalAnswer = policy.finalAnswer || (policy.toolsEnabled && !policy.diagnosticReview &&
+        !policy.orchestratorEnabled && executionReadyToAnswer(session));
     import auroraopencode.answercontract : answerContract;
     const responseContract = answerContract(latestActualUserRequest(session), policy.verbosity);
     if (policy.toolsEnabled)
     {
         ChatRequestMessage system;
         system.role = "system";
-        if (policy.finalAnswer || policy.summaryOnly)
+        if (finalAnswer || policy.summaryOnly)
             system.content = "Produce the final response now from " ~
                 "the evidence already gathered. No tools are available in " ~
                 "this request. Give the concise useful result and accurately state " ~
@@ -126,7 +128,7 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
             "Use at most four focused tool rounds. Source and screenshots are evidence; prior claims are not proof.";
         result.messages ~= review;
     }
-    if (policy.toolsEnabled && !policy.finalAnswer && !policy.summaryOnly)
+    if (policy.toolsEnabled && !finalAnswer && !policy.summaryOnly)
         foreach (tool; policy.availableTools)
         {
             if (policy.diagnosticReview && !diagnosticToolAllowed(tool.name)) continue;
@@ -144,28 +146,7 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     ChatRequestMessage contract;
     contract.role = "system"; contract.content = responseContract;
     result.messages ~= contract;
-    string outcomeCheck;
-    if (policy.toolsEnabled && !policy.finalAnswer && !policy.summaryOnly &&
-        !policy.diagnosticReview && !policy.orchestratorEnabled &&
-        (session.contract.intent == "implementation" || session.contract.intent == "diagnosis") &&
-        !taskInvestigation(session) && !answerOnlyRequest(latestActualUserRequest(session)) &&
-        !hasIncompleteTaskSteps(session) && (session.taskSteps.length || session.verificationStatus == "passed"))
-    {
-        auto requested = session.contract.requestedOutcome;
-        const latest = latestActualUserRequest(session);
-        if (latest != requested && requestIntent(latest) != RequestIntent.continuation) requested ~= "\n" ~ latest;
-        outcomeCheck = "Outcome check before the final reply: compare the implemented behavior and executed checks with this exact user request:\n" ~
-            taskExcerpt(requested, 4000) ~ "\nA completed checklist and green checks do not prove behavior the checks never exercised. " ~
-            "Preserve explicit triggers, interactions and constraints; do not substitute a weaker behavior because it is easier. " ~
-            "If something is missing, fix and check that gap using the normal tools. Otherwise reply now from the existing evidence; do not add audits or repeat passing checks.";
-        if (session.verificationStatus == "required" || session.verificationStatus == "failed")
-        {
-            const missing = missingVerificationInput(session);
-            if (missing.length) outcomeCheck ~= "\nVerification lost a tracked input: " ~ taskExcerpt(missing, 1000) ~
-                ". Restore the required deliverable/checker input and retain it through one final relevant check. This is a concrete reason for rechecking.";
-        }
-    }
-    const fixedBytes = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools) + outcomeCheck.length + 64;
+    const fixedBytes = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools) + 64;
     result.summaryByteBudget = compactionSummaryCapacity(policy.contextLimit, fixedBytes);
     result.oldAnchor = checkpointOnActivePath(session) ? session.compactedThroughMessageId : "";
     result.oldSummary = result.oldAnchor.length ? session.compactionSummary : "";
@@ -184,22 +165,5 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     result.contextCompacted = policy.compactionEnabled &&
         (checkpointOnActivePath(session) || result.fallbackCompacted);
     result.messages ~= history;
-    if (outcomeCheck.length)
-    {
-        ChatRequestMessage check;
-        check.role = "system"; check.content = outcomeCheck;
-        result.messages ~= check;
-    }
-    else if (policy.toolsEnabled && !policy.finalAnswer && !policy.summaryOnly &&
-        !policy.diagnosticReview && !policy.orchestratorEnabled && planReconciliationDue(session))
-    {
-        ChatRequestMessage reconcile;
-        reconcile.role = "system";
-        reconcile.content = "Application control: the phase-change reminder was skipped. Your next action is update_plan " ~
-            "to reconcile the visible checklist with the evidence already gathered: mark actually finished outcomes and " ~
-            "the current active outcome, preserving unfinished requirements. Do this before more execution. " ~
-            "Do not add scope or repeat checks. Normal execution resumes after this plan update.";
-        result.messages ~= reconcile;
-    }
     return result;
 }

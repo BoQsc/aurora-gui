@@ -1026,6 +1026,7 @@ public struct TaskContract
     TaskWorkContext work;
     TaskWorkItem[] workItems;
     string goal;
+    string workspace;
 }
 
 public void writeTaskContract(ref JSONValue root, const ref ChatSession session, bool includePlanHistory = true)
@@ -1037,6 +1038,7 @@ public void writeTaskContract(ref JSONValue root, const ref ChatSession session,
     value["currentIntent"] = session.contract.currentIntent;
     value["requestedOutcome"] = session.contract.requestedOutcome;
     value["goal"] = session.contract.goal;
+    value["workspace"] = session.contract.workspace;
     value["constraints"] = JSONValue(session.contract.constraints);
     value["decisions"] = JSONValue(session.contract.decisions);
     value["blocker"] = session.contract.blocker;
@@ -1086,6 +1088,7 @@ public void readTaskContract(ref ChatSession session, JSONValue root)
                 field("intent"), field("currentIntent"), field("requestedOutcome"),
                 list("constraints"), list("decisions"), field("blocker"));
             session.contract.goal = field("goal");
+            session.contract.workspace = field("workspace");
             if (auto items = "workItems" in value.object) session.contract.workItems = taskWorkItemsFromJson(*items);
             if (auto work = "workContext" in value.object)
                 if (work.type == JSONType.object)

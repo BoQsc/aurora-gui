@@ -2836,6 +2836,7 @@ public struct ChangeContext
     DeveloperToolPolicy developer;
     // experimental: planmode - refuse mutations until the user approves.
     bool planMode;
+    bool desktopRestricted;
 }
 
 /// One filesystem path in Aurora's append-only mutation journal. File contents
@@ -6528,6 +6529,11 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
     {
         if (cancellation !is null && cancellation.cancelled())
             return ToolExecution(call.name, "Stopped: tool cancelled before it started.", true);
+        if (changeContext.desktopRestricted && call.name == "computer")
+            return ToolExecution(call.name, "Desktop input is disabled by the user's restriction. Continue using source and non-desktop tools.", true);
+        import auroraopencode.isolation : isolatedToolError;
+        const isolationError = isolatedToolError(call.name, call.arguments, workspace);
+        if (isolationError.length) return ToolExecution(call.name, isolationError, true);
         // experimental: planmode - the user armed Plan mode for this
         // conversation, so nothing may change until the plan is approved.
         if (changeContext.planMode && planBlocksTool(call.name, call.arguments))

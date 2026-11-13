@@ -1,6 +1,6 @@
 module auroraopencode.conversationactor;
 
-import auroraopencode.planprogress : planProgressGuidance;
+import auroraopencode.executioncontrol : executionToolRecovery;
 
 import auroraopencode.core;
 import auroraopencode.conversationencode;
@@ -42,7 +42,7 @@ import auroraopencode.planhistory : recordPlanHistory;
 // experimental: planmode - delete with source/auroraopencode/planmode.d
 import auroraopencode.planmode : experimentalPlanModeEnabled, planModePromptBlock;
 import auroraopencode.goalmutation : resetTaskForNewGoal, restoreGoalTask;
-import auroraopencode.outputrecovery : answerReplayed, goalAuditStalled, taskAuditStalled, outputRecoveryCount, maxOutputRecoveries, unfinishedTaskRecoveryInstruction;
+import auroraopencode.outputrecovery : outputRecoveryCount, maxOutputRecoveries;
 import auroraopencode.outputguard : outputRecoveryMarker;
 import auroraopencode.imagehistory : pruneHistoryImages, completedReplyImageIds;
 import core.sync.mutex : Mutex;
@@ -590,6 +590,9 @@ public final class ConversationActor
             engine.client = new OpenCodeClient(config.baseUrl, config.apiKey, ProviderRetryPolicy(budget.msecs));
             engine.client.setEventWake(&notify); clientBudgetMs = budget;
         }
+        import auroraopencode.taskpolicy : taskWorkspace;
+        config.workspace = taskWorkspace(session, config.workspace);
+        session.contract.workspace = config.workspace;
         refreshVerification();
         if (images.prepare(session, config.request.imageLimit)) engine.invalidateProjection();
         auto policy = config.request;
@@ -1116,6 +1119,8 @@ public final class ConversationActor
         const workspace = batchConfig.workspace;
         ChangeContext context; context.conversationId = session.id; context.turnId = to!string(id);
         context.diagnosticReadOnly = batchConfig.request.diagnosticReview;
+        import auroraopencode.executioncontrol : desktopRestricted;
+        context.desktopRestricted = desktopRestricted(session);
         context.planMode = session.planMode && experimentalPlanModeEnabled();
         context.developerCaptured = true; context.developer = batchConfig.developer;
         context.computer = ComputerUseContext(true, sessionRoutingKey(session),
@@ -1212,14 +1217,10 @@ public final class ConversationActor
             images.images = engine.pendingToolImages; engine.pendingToolImages = null; append(images);
             pruneHistoryImages(session, activeMessagePath(session), config.request.imageLimit);
         }
-        if (!diagnosticActive && executionRecoveryDue(session))
-        {
-            internalNote(executionDiagnosisMarker ~ "Repeated tools added no supported outcome. Reject the unsuccessful hypothesis and inspect a reduced failing case or a different source.");
-            beginDiagnostic();
-        }
         applySteering();
-        const progressGuidance = planProgressGuidance(session);
-        if (progressGuidance.length) internalNote(progressGuidance);
+        const obstacle = executionToolRecovery(session);
+        if (!diagnosticActive && obstacle.length)
+        { internalNote(obstacle); beginDiagnostic(); }
         request();
     }
     private void applySteering()
@@ -1241,19 +1242,11 @@ public final class ConversationActor
         updateLast();
         if (event.cancelled) { applyStop(); return; }
         if (diagnosticActive) { finishDiagnostic(); applySteering(); request(); return; }
-        const auditStall = goalAuditStalled(session) || (config.request.toolsEnabled && taskAuditStalled(session));
-        if (answerReplayed(session) || auditStall)
-        {
-            if (outputRecoveryCount(session) >= maxOutputRecoveries)
-            { fail("Provider output repeatedly added no progress. Retry continues the preserved task and goal."); return; }
-            internalNote(outputRecoveryMarker ~ (auditStall ? unfinishedTaskRecoveryInstruction : "The response added no new action or evidence. Continue the unfinished task with a different useful action."));
-            beginDiagnostic();
-            request(); return;
-        }
         auto policy = config.turn; policy.toolsEnabled = config.request.toolsEnabled; policy.finishReason = event.finishReason;
         policy.diagnosticAvailable = config.diagnosticModel.length > 0;
         policy.pendingChildren = waitingChildren;
         const decision = decideTurn(session, policy);
+        if (decision.action == TurnAction.failed) { fail(decision.status); return; }
         if (decision.diagnosticRequests > 0) beginDiagnostic();
         if (decision.action == TurnAction.applySteering) applySteering();
         if (decision.recordedSummary.length)

@@ -126,6 +126,11 @@ bool initializeLegacyTask(ref ChatSession session)
 void acceptTaskRequest(ref ChatSession session, string text, string messageId, bool steering = false)
 {
     initializeLegacyTask(session);
+    scope(exit) if (reportedFailureRequest(text) && session.objective.length)
+    {
+        session.verificationStatus = "required";
+        session.taskStatus = "active";
+    }
     // Migrate the old implicit association before moving work to the archive.
     if (!session.contract.goal.length && session.goal.length &&
         (session.contract.requestedOutcome == session.goal || session.objective == session.goal ||
@@ -386,16 +391,18 @@ string[string] taskEvidenceIndex(const ref ChatSession session, bool currentChec
     bool current = true;
     import auroraopencode.recipeevidence : RecipeEvidenceCache;
     RecipeEvidenceCache recipes;
+    bool contradicted;
     foreach_reverse (index; taskMessagePath(session))
     {
         const ref message = session.messages[index];
+        if (message.role == "user" && !message.internal && reportedFailureRequest(message.content)) contradicted = true;
         if (currentChecks) recipes.observe(message);
         const recipe = currentChecks ? recipes.key(message) : "";
         if (!recipe.length && session.verificationScope.length && message.verificationScope == session.verificationScope &&
-            !message.verificationCheck.length) current = false;
+            (message.failed || !message.verificationCheck.length)) current = false;
         const kind = evidenceKind(message);
         if (!kind.length) continue;
-        const fresh = currentChecks && (recipe.length ? recipes.current(message, session.verificationScope) :
+        const fresh = currentChecks && !contradicted && (recipe.length ? recipes.current(message, session.verificationScope) :
             current && session.verificationScope.length && message.verificationScope == session.verificationScope);
         const proof = kind == "verify" ? (fresh ? "verify-current|" : "verify|") ~ message.verificationCheck : kind;
         result[message.id] = proof;

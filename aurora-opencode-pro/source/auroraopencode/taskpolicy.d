@@ -9,7 +9,7 @@ import std.path : buildPath, dirName, isAbsolute;
 import std.regex : matchAll;
 import std.string : strip, toLower, startsWith, split, join;
 import auroraopencode.taskflow : taskMessagePath, taskEvidenceIndex;
-import auroraopencode.requestintent : answerOnlyRequest, requestIntent, RequestIntent;
+import auroraopencode.requestintent : answerOnlyRequest, requestIntent, RequestIntent, reportedFailureRequest, artifactChangeRequested;
 
 /// Only real user messages can retarget a task. Tool output, summaries and
 /// restart reasons cannot change the checkout that owns its effects/evidence.
@@ -51,13 +51,12 @@ private string observedTaskWorkspace(const ref ChatSession session, string proje
     static string[string] resolved;
     const cacheKey = sha256Of(session.id ~ "\n" ~ projectWorkspace ~ "\n" ~ latest).toHexString().idup;
     if (auto cached = cacheKey in resolved) { remember(*cached); return *cached; }
-    string selected;
+    string selected = session.contract.workspace;
     foreach (index; path)
     {
         const message = session.messages[index];
         if (message.role != "user" || message.internal) continue;
-        if (answerOnlyRequest(message.content) ||
-            (session.contract.intent != "analysis" && requestIntent(message.content) == RequestIntent.analysis)) continue;
+
         string messageRoot, messageWorkspace;
         bool ambiguous;
         foreach (match; matchAll(message.content, `(?<![:/A-Za-z0-9])(?:[A-Za-z]:[\\/]|/(?!/))(?:(?![A-Za-z]:[\\/]|[ \t]+/(?!/))[^\r\n<>"` ~ "`" ~ `])+`))
@@ -136,22 +135,29 @@ string checkWorkspace(string program, const(string)[] args, string workdir, stri
     return "";
 }
 
+private string latestTaskRequestForEvidence(const ref ChatSession session)
+{
+    foreach_reverse (index; taskMessagePath(session))
+        if (session.messages[index].role == "user" && !session.messages[index].internal)
+            return session.messages[index].content;
+    return "";
+}
+
 string[] requiredEvidence(const ref ChatSession session)
 {
-    string request = session.contract.requestedOutcome.length ? session.contract.requestedOutcome : session.objective;
-    foreach (index; taskMessagePath(session))
-        if (session.messages[index].role == "user" && !session.messages[index].internal &&
-            !answerOnlyRequest(session.messages[index].content) &&
-            (session.contract.intent == "analysis" || requestIntent(session.messages[index].content) != RequestIntent.analysis))
-            request ~= "\n" ~ session.messages[index].content;
-    request = request.toLower();
-    const visual = request.canFind("render") || request.canFind("layout") ||
-        request.canFind("screenshot") || request.canFind("visual correctness");
-    string[] result;
-    if (visual) result = ["compile", "tests", "render"];
-    if (visual && request.canFind("interact"))
-        result ~= "interaction";
-    return result;
+    if (session.contract.intent == "analysis" || session.contract.currentIntent == "analysis") return null;
+    const current = latestTaskRequestForEvidence(session);
+    const outcome = session.contract.requestedOutcome.length ? session.contract.requestedOutcome : session.objective;
+    // Repairs need behavioral evidence. Incidental prose such as "layout" or
+    // "screenshot" cannot manufacture extra receipt categories. Specific
+    // interactions remain acceptance criteria in the outcome ledger.
+    import std.regex : matchFirst;
+    const operationOnly = cast(bool)matchFirst(outcome.toLower().strip(),
+        `^(?:please )?(?:run|launch|open|build|compile|rebuild|publish|package)\b`);
+    const implementation = session.contract.intent == "implementation" && !operationOnly;
+    return implementation || artifactChangeRequested(outcome) || artifactChangeRequested(current) ||
+        reportedFailureRequest(current) || session.verificationStatus == "required"
+        ? ["tests"] : null;
 }
 
 bool satisfiesEvidence(string check, const(string)[] required)

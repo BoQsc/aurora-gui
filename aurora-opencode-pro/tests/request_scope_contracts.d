@@ -42,7 +42,7 @@ int main()
         "A new action inherited the paused trading task");
     assert(s.taskArchive.length == 1 && s.taskArchive[0] == old,
         "Suspending old work must preserve its exact recoverable state");
-    assert(!requiredEvidence(s).length, "Old mockup acceptance contaminated the fullscreen request");
+    assert(requiredEvidence(s) == ["tests"], "Old mockup categories contaminated the fullscreen repair");
     assert(s.goalStatus == "paused", "New work resumed the paused goal");
     auto context = durableTaskPrompt(s, true);
     assert(context.indexOf("Background") >= 0 && context.indexOf("mockup") >= 0,

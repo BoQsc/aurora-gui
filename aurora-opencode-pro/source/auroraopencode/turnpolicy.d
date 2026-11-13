@@ -1,8 +1,8 @@
 module auroraopencode.turnpolicy;
 
 import auroraopencode.core : ChatSession;
-import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction,
-    taskAwaitingInput;
+import auroraopencode.taskcontinuation : taskAwaitingInput;
+import auroraopencode.executioncontrol : executionState, executionShouldContinue;
 import auroraopencode.taskflow : taskInvestigation;
 import auroraopencode.worktracking : requiredWorkRemaining;
 import auroraopencode.goalmode : goalActive, goalNeedsHumanInput, goalContinuationInstruction,
@@ -13,7 +13,7 @@ import auroraopencode.orchestrator : experimentalOrchestratorIsRouter, experimen
 import auroraopencode.contextpolicy : latestActualUserRequest;
 import auroraopencode.requestintent : workRestrictionRequest;
 
-enum TurnAction { settle, interrupted, applySteering, request, waitInput, waitChildren, reportChild }
+enum TurnAction { settle, failed, interrupted, applySteering, request, waitInput, waitChildren, reportChild }
 
 struct TurnPolicy
 {
@@ -80,8 +80,8 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         result.status = "Waiting for required information. Reply to continue.";
         return result;
     }
-    const continuation = taskContinuation(session, policy.toolsEnabled, policy.strictPlan);
-    const settled = continuation.action == TaskContinuationAction.settle;
+    const execution = executionState(session, policy.strictPlan);
+    const settled = !executionShouldContinue(session, policy.toolsEnabled, execution);
     void request(string guidance, string status, bool active = true)
     {
         result.action = TurnAction.request;
@@ -135,10 +135,20 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     if (result.clearBlocker) result.taskStatus = "active";
     if (!settled)
     {
-        const replan = continuation.action == TaskContinuationAction.replan;
-        request(continuation.guidance(), replan ? "Revising the plan for the blocked step…" : "Following the plan…");
-        if (replan && policy.diagnosticAvailable) result.diagnosticRequests = 4;
+        const state = execution;
+        if (state.attempts >= 2)
+        {
+            result.action = TurnAction.failed;
+            result.turnStatus = "failed";
+            result.taskStatus = "active";
+            result.status = "Execution recovery did not resolve the recorded outcome. " ~
+                (state.failure.length ? state.failure : state.remaining);
+            return result;
+        }
+        request(state.guidance(), state.attempts ? "Recovering the unresolved outcome…" : "Completing the requested outcome…");
+        if (state.attempts && policy.diagnosticAvailable) result.diagnosticRequests = 1;
         return result;
+
     }
     // A goal that needs tools cannot progress through a request that offers
     // none, and an answer/analysis goal is finished by its reply. Both settle

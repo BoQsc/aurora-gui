@@ -69,6 +69,7 @@ int main()
     root.applyPlanForTesting(
         `{"plan":[{"step":"Implement the feature","status":"completed"},` ~
         `{"step":"Verify the feature","status":"completed"}]}`);
+    root.appendOwnedToolResultForTesting("implementation", "edit", "Applied the implementation.", "{}", 1, 0, "+implemented");
     root.setTaskStateForTesting("Implement and verify the feature.", "completed",
         "passed");
     assert(!root.completionWouldContinueForTesting(),

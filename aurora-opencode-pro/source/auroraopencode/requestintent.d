@@ -194,7 +194,7 @@ bool actionApprovalRequest(string text)
     if (phrase.length == 4 && phrase[0] == "take" && phrase[1] == "care" &&
         phrase[2] == "of" && phrase[3] == "it")
         return true;
-    if (["yes", "yeah", "yep", "sure", "ok", "okay", "proceed"].canFind(phrase[0]) &&
+    if (["yes", "yeah", "yep", "sure", "ok", "okay", "proceed", "approved", "approve"].canFind(phrase[0]) &&
         (phrase.length == 1 || (phrase.length == 2 && ["now", "then"].canFind(phrase[1]))))
         return true;
     // An approval can introduce the next concrete step ("Go ahead, start with
@@ -302,4 +302,13 @@ bool explicitPlanReplacementRequested(string text)
                 (words.canFind("plan") || words.canFind("checklist") || words.canFind("steps") || words.canFind("outcomes"))) return true;
         }
     return false;
+}
+
+/// A new failure report supersedes earlier passing checks. This is deliberately
+/// separate from action intent: a complaint can also ask for an explanation.
+bool reportedFailureRequest(string text)
+{
+    import std.regex : matchFirst;
+    const value = text.toLower();
+    return cast(bool)matchFirst(value, `\b(?:not fixed|not working|does not work|doesn't work|does nothing|no longer|still broken|still not|incorrect|bugged|regress\w*|speed(?:ed)? up|incredibly fast|selects? (?:the )?wrong)\b`);
 }

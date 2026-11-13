@@ -125,12 +125,12 @@ int main()
         "A why-question did not continue the unfinished fix");
     request(s, "New task: fix the backend parser.");
     assert(s.contract.id != visual && s.taskArchive.length == 1);
-    assert(requiredEvidence(s).length == 0 && s.taskSteps.length == 0);
+    assert(requiredEvidence(s) == ["tests"] && s.taskSteps.length == 0);
     const parserTask = s.contract.id;
     request(s, "Now fix the remaining parser case.");
     assert(s.contract.id == parserTask, "A phase transition discarded unfinished work");
     request(s, "How does rendering work?");
-    assert(requiredEvidence(s).length == 0, "A question contaminated the active task's verification requirements");
+    assert(requiredEvidence(s) == ["tests"], "A question manufactured extra verification categories");
     request(s, "Continue the parser task.");
     assert(unfinishedTask(s), "An untracked action request silently completed");
     s.taskStatus = "waiting_input";
@@ -176,6 +176,7 @@ int main()
         "Approving the analysis did not authorize implementation");
     assert(!taskInvestigation(s));
 
+    setStrictPlanSetting(true);
     request(s, "Now implement and verify the parser.");
     const initial = parseJSON(`[{"id":"fix","step":"Fix parser","kind":"edit","done":"Reject invalid input","status":"in_progress"},{"id":"verify","step":"Verify parser","kind":"verify","done":"Regression tests pass","status":"pending"}]`);
     s.taskSteps = normalizedPlan(s, initial, null);
@@ -302,5 +303,6 @@ int main()
     writeln("MEASURE contract_scenarios=15 provider_requests=0 history_messages=", branch.messages.length,
         " completion_decisions=100 decision_milliseconds=", evaluationMs,
         " total_milliseconds=", (MonoTime.currTime - started).total!"msecs");
+    setStrictPlanSetting(false);
     return 0;
 }

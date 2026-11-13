@@ -18415,7 +18415,12 @@ private string _suggestExcludeId;
             boundary.content = controlHistoryBoundary;
             appendMessage(session, boundary);
         }
-        const content = durableTaskCheckpointPrefix ~ state;
+        import auroraopencode.executioncontrol : executionState;
+        import std.digest.sha : sha256Of;
+        import std.digest : toHexString;
+        const key = sha256Of(executionState(session).fingerprint ~ "\n" ~ latestActualUserRequest(session) ~
+            "\n" ~ session.objective ~ "\n" ~ taskStepsToJson(session.taskSteps).toString() ~ "\n" ~ session.contract.constraints.join("\n")).toHexString().idup;
+        const content = durableTaskCheckpointPrefix ~ "Execution: " ~ key ~ "\n" ~ state;
         foreach_reverse (index; activeMessagePath(session))
         {
             const message = session.messages[index];
@@ -18424,7 +18429,7 @@ private string _suggestExcludeId;
             if (!message.internal ||
                 !message.content.startsWith(durableTaskCheckpointPrefix))
                 continue;
-            if (message.content == content) return false;
+            if (message.content.startsWith(durableTaskCheckpointPrefix ~ "Execution: " ~ key ~ "\n")) return false;
             break;
         }
         ChatMessage checkpoint;
@@ -21789,6 +21794,13 @@ private void pollButtonSuggestionRequest()
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
         auto session = &_sessions[sessionIndex];
         const decision = decideTurn(*session, turnPolicy(sessionIndex, cancelled));
+        if (decision.action == TurnAction.failed)
+        {
+            failAssistantMessage(decision.status, true);
+            session.turnStatus = "failed"; session.taskStatus = "active";
+            publishThreadUpdated(*session); markDirty();
+            return;
+        }
         if (decision.recordedSummary.length)
         {
             ChatMessage summary;
@@ -22798,10 +22810,13 @@ private void pollButtonSuggestionRequest()
         if (_current == sessionIndex) rebuildMessageColumn();
         const requestId = _activeRequestId;
         const workspace = workspaceForSession(sessionIndex);
+        _sessions[sessionIndex].contract.workspace = workspace;
         ChangeContext changeContext;
         changeContext.conversationId = _sessions[sessionIndex].id;
         changeContext.turnId = to!string(requestId);
         changeContext.diagnosticReadOnly = _execution.diagnosticActive;
+        import auroraopencode.executioncontrol : desktopRestricted;
+        changeContext.desktopRestricted = desktopRestricted(_sessions[sessionIndex]);
         changeContext.planMode = _sessions[sessionIndex].planMode &&
             experimentalPlanModeEnabled();
         changeContext.developerCaptured = true;
@@ -23079,7 +23094,7 @@ private void pollButtonSuggestionRequest()
             _preparingToolCalls.length = 0;
             _messagesScroll.invalidate();
             refreshBubbleActions();
-            queueStalePlanGuidance(*session);
+
             appendPendingProgressGuidance(*session);
             if (_pendingToolImages.length > 0)
             {
@@ -23137,22 +23152,14 @@ private void pollButtonSuggestionRequest()
             if (!_toolContinuationPaused && !hasPendingSubagents(session.id))
             {
                 appendQueuedGuidance(*session);
-                if (executionRecoveryDue(*session))
+                import auroraopencode.executioncontrol : executionToolRecovery;
+                const obstacle = executionToolRecovery(*session);
+                if (obstacle.length)
                 {
-                    ChatMessage checkpoint;
-                    checkpoint.role = "user"; checkpoint.internal = true;
-                    checkpoint.content = executionDiagnosisMarker ~
-                        "Repeated tool results add no new evidence. Reject the unsuccessful hypothesis and try a different " ~
-                        "source, tool or reduced failing case. Complete independent outcomes while recovering. " ~
-                        "Plan rewrites and varied queries are not progress. Continue until the outcomes are verified; " ~
-                        "do not ask the user to restart the task.";
-                    appendMessage(*session, checkpoint);
-                    if (_settings.diagnosticModel.length) _execution.diagnosticRequestsRemaining = 4;
+                    ChatMessage note; note.role = "user"; note.internal = true; note.content = obstacle;
+                    appendMessage(*session, note);
+                    if (_settings.diagnosticModel.length) _execution.diagnosticRequestsRemaining = 1;
                 }
-                if (readOnlyExplorationCount(*session) >=
-                    explorationCheckpointCalls &&
-                    !hasExplorationCheckpoint(*session))
-                    appendExplorationCheckpoint(*session);
                 _execution.toolContinuationPending = true;
             }
         }
@@ -32910,28 +32917,6 @@ private void pollButtonSuggestionRequest()
                     else applyToolResult(*event);
                     break;
                 case OpenCodeEventKind.done:
-                    if (!event.cancelled && toolsEnabledForSession(_sessions[runtimeIndex]) &&
-                        !completionHandoffPending(_sessions[runtimeIndex]))
-                    {
-                        const explanationOnly = explanationOnlyRequest(
-                            latestActualUserRequest(_sessions[runtimeIndex]));
-                        string issue;
-                        if (taskAuditStalled(_sessions[runtimeIndex]))
-                            issue = "task_audit_stalled";
-                        else if (!explanationOnly &&
-                            goalAuditStalled(_sessions[runtimeIndex]))
-                            issue = "goal_audit_stalled";
-                        else if (!explanationOnly &&
-                            answerReplayed(_sessions[runtimeIndex]))
-                            issue = "replayed_prose";
-                        if (issue.length > 0)
-                        {
-                            auto failure = *event;
-                            failure.outputIssue = issue;
-                            handleOutputFailure(failure);
-                            break;
-                        }
-                    }
                     if (!event.cancelled)
                     {
                         _autoResendCount = 0;

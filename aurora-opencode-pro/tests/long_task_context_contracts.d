@@ -86,7 +86,7 @@ int main()
     receipt(s, "compile", "verify:compile");
     receipt(s, "tests", "verify:tests");
     receipt(s, "render", "verify:render");
-    assert(!satisfiesEvidence(verificationCoverage(s), requiredEvidence(s)));
+    assert(satisfiesEvidence(verificationCoverage(s), requiredEvidence(s)), "A behavioral test still required incidental receipt categories");
     assert(evidenceMatches(s, s.taskSteps[$ - 2], "call-render"));
     assert(evidenceMatches(s, s.taskSteps[$ - 1], "call-tests"));
     assert(!evidenceMatches(s, s.taskSteps[$ - 1], "call-compile"));
@@ -114,7 +114,7 @@ int main()
     ChatSession restored; restoreActiveTaskState(restored, activeTaskStateJson(s));
     assert(restored.verificationScope == s.verificationScope);
     ChatSession renderOnly; renderOnly.objective = "Correct the web browser layout";
-    assert(requiredEvidence(renderOnly).length == 3, "Product name invented an interaction requirement");
+    assert(requiredEvidence(renderOnly).length == 0, "Layout wording manufactured mandatory receipt categories");
     writeln("PASS bounded UTF-8 task context preserves objective, position, return point, constraints and full saved audit");
     writeln("PASS partial checks support outcomes; aggregate coverage, failed checks and changed source remain enforced");
     return 0;

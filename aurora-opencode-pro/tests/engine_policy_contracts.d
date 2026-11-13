@@ -31,7 +31,7 @@ int main()
     session.taskSteps = [TaskStep("Implement", "in_progress"), TaskStep("Verify", "pending")];
     turn.toolsEnabled = true;
     decision = decideTurn(session, turn);
-    assert(decision.action == TurnAction.request && decision.guidance.indexOf("unfinished") >= 0);
+    assert(decision.action == TurnAction.request && decision.guidance.indexOf("Implement") >= 0 && decision.guidance.indexOf("Verify") >= 0);
     session.queuedGuidance = ["Preserve compatibility"];
     assert(decideTurn(session, turn).action == TurnAction.applySteering);
     turn.cancelled = true;
@@ -106,10 +106,10 @@ int main()
     session.verificationStatus = "passed";
     append(session, "user", session.contract.requestedOutcome);
     prepared = prepareAgentRequest(session, request);
-    assert(prepared.messages[$ - 1].content.indexOf("Outcome check before the final reply") >= 0);
+    assert(prepared.messages[$ - 1].content.indexOf("Outcome check before the final reply") < 0);
     assert(prepared.messages[$ - 1].content.indexOf("hovering Checkpoint") >= 0);
-    assert(prepared.tools.length == 2 && session.taskSteps[0].status == "completed",
-        "Outcome reconciliation restricted tools or rewrote completion");
+    assert(prepared.tools.length == 0 && session.taskSteps[0].status == "completed",
+        "Verified completion exposed tools for another audit or rewrote the plan");
     session.taskSteps[0].status = "in_progress";
     assert(prepareAgentRequest(session, request).messages[$ - 1].content.indexOf("Outcome check before the final reply") < 0);
     writeln("PASS turn decisions preserve evidence, steering, goals and delegation; request modes isolate capabilities");

@@ -38,7 +38,7 @@ bool turnControlState(const ref ChatMessage message)
 {
     if (!message.internal || message.images.length) return false;
     if (supersededControlState(message)) return true;
-    foreach (prefix; ["Persistent goal continuation:", "Continuation request:",
+    foreach (prefix; ["Execution recovery:", "Execution obstacle:", "Persistent goal continuation:", "Continuation request:",
         "Proactive action checkpoint:", "Agent output recovery:",
         "Execution diagnosis checkpoint:", "Completion handoff requested:",
         "The user resumed the", "The user started the", "The user updated the"])

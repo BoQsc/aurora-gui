@@ -34,7 +34,12 @@ void applyTaskPlan(ref ChatSession session, string arguments)
             {
                 string[] values;
                 foreach (item; field.array) if (item.type == JSONType.string) values ~= item.str;
-                if (key == "constraints") session.contract.constraints = values;
+                if (key == "constraints")
+                {
+                    foreach (constraint; session.contract.constraints)
+                        if (constraint.startsWith("User restriction: ") && !values.canFind(constraint)) values ~= constraint;
+                    session.contract.constraints = values;
+                }
                 else
                 {
                     foreach (decision; session.contract.decisions)

@@ -77,6 +77,13 @@ public ChatRequestMessage[] projectRequestMessages(
         {
             const message = session.messages[path[slot]];
             const controlKind = controlStateKind(message);
+            if (message.internal && (message.content.startsWith("Plan progress checkpoint: ") ||
+                message.content.startsWith("Progress guidance: ") ||
+                message.content.startsWith("Continuation: unfinished authorized work\n") ||
+                message.content.startsWith("Agent output recovery: The reply claimed completion") ||
+                message.content.startsWith("Exploration checkpoint:")))
+            { ++slot; continue; }
+
             if ((controlKind == ControlStateKind.checkpoint && slot < retireCheckpoint) ||
                 (controlKind == ControlStateKind.continuation && slot < retireContinuation) ||
                 (controlKind == ControlStateKind.progress && slot < retireProgress))

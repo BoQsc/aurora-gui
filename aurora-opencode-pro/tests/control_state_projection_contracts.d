@@ -55,7 +55,7 @@ int main()
     // state only at a new human turn or an explicit control boundary). Two
     // records per kind are far below controlHistoryLimit, so nothing is retired.
     const livePrefix = projectRequestMessages(session);
-    assert(livePrefix.length == 6,
+    assert(livePrefix.length == 4,
         "unexpected live wire length " ~ to!string(livePrefix.length));
 
     add(session, "user", durableTaskCheckpointPrefix ~ " state-1", true);
@@ -67,20 +67,19 @@ int main()
 
     // One real request, one assistant/tool envelope, and the control records in
     // their original order.
-    assert(wire.length == 9, "unexpected wire length " ~ to!string(wire.length));
+    assert(wire.length == 5, "unexpected wire length " ~ to!string(wire.length));
     assert(wire[0].role == "user" && wire[0].content == "Implement the feature.");
-    assert(wire[4].role == "assistant" && wire[4].toolCalls.length == 1 &&
-        wire[4].toolCalls[0].id == "call-1");
-    assert(wire[5].role == "tool" && wire[5].toolCallId == "call-1" &&
-        wire[5].content == "file contents");
+    assert(wire[2].role == "assistant" && wire[2].toolCalls.length == 1 &&
+        wire[2].toolCalls[0].id == "call-1");
+    assert(wire[3].role == "tool" && wire[3].toolCallId == "call-1" &&
+        wire[3].content == "file contents");
     foreach (i, message; livePrefix)
         assert(wire[i].role == message.role && wire[i].content == message.content,
             "the live request prefix was rewritten by the next tool round");
     assert(hasContent(wire, "state-0") && hasContent(wire, "state-1"),
         "an ordinary checkpoint streak was retired mid-turn");
-    assert(hasContent(wire, "continuation-0") && hasContent(wire, "continuation-1") &&
-        hasContent(wire, "guidance-0") && hasContent(wire, "guidance-1"),
-        "ordinary continuation/progress records were retired mid-turn");
+    assert(!hasContent(wire, "continuation-0") && !hasContent(wire, "guidance-1"),
+        "Retired continuation/progress controls reached the provider");
     assert(session.messages.length == before,
         "projection must not delete stored control history");
 
@@ -91,11 +90,11 @@ int main()
     add(session, "user", taskContinuationMarker ~ " continuation-2", true);
     add(session, "user", progressGuidancePrefix ~ " guidance-2", true);
     const next = projectRequestMessages(session);
-    assert(next.length == 7, "unexpected next wire length " ~ to!string(next.length));
+    assert(next.length == 5, "unexpected next wire length " ~ to!string(next.length));
     assert(!hasContent(next, "state-1") && !hasContent(next, "continuation-1") &&
         !hasContent(next, "guidance-1"), "prior-turn controls leaked into the new turn");
-    assert(hasContent(next, "state-2") && hasContent(next, "continuation-2") &&
-        hasContent(next, "guidance-2"), "newest controls were lost");
+    assert(hasContent(next, "state-2") && !hasContent(next, "continuation-2") &&
+        !hasContent(next, "guidance-2"), "Current state or retired-control filtering changed");
     assert(next[0].content == "Implement the feature." &&
         next[1].content == "" && next[2].content == "file contents" &&
         next[3].content == "Now verify it.", "ordinary history changed");

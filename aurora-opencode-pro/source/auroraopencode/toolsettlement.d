@@ -13,7 +13,7 @@ import auroraopencode.historyrecall : readHistory;
 import auroraopencode.taskcontinuation : taskInputError;
 import auroraopencode.goalmode : goalCompletionError;
 import auroraopencode.taskpolicy : verificationCoverage, requiredEvidence, satisfiesEvidence, sameCheckout;
-import std.json : JSONValue, parseJSON;
+import std.json : JSONValue, JSONType, parseJSON;
 import std.string : startsWith, indexOf;
 
 struct ToolResultPolicy
@@ -27,7 +27,7 @@ struct ToolResultPolicy
 struct ToolSettlement
 {
     ChatMessage message;
-    bool checkerAttempt, scopedVerification, acceptedVerification;
+    bool checkerAttempt, scopedVerification, acceptedVerification, currentFailure;
     OrchestratorDirective routing;
 }
 
@@ -82,6 +82,8 @@ ToolSettlement settleToolResult(const ref ChatSession session,
     {
         JSONValue receipt;
         receipt["toolCallId"] = event.toolCallId;
+        receipt["evidenceLevel"] = event.verificationCheck == "dmd compile" ? "compilation" : "executed_checker";
+        receipt["physicalInteraction"] = "not established by a checker receipt";
         receipt["check"] = event.verificationCheck;
         receipt["acceptedForCurrentSource"] = scopedVerification;
         receipt["coverageComplete"] = acceptedVerification;
@@ -121,11 +123,26 @@ ToolSettlement settleToolResult(const ref ChatSession session,
     toolMessage.diffDeletions = event.diffDeletions;
     toolMessage.toolDiff = event.diffText;
     toolMessage.workspaceChanged = event.workspaceChanged;
-    toolMessage.verificationCheck = scopedVerification ? event.verificationCheck : "";
-    toolMessage.verificationScope = checkerAttempt ? session.verificationScope : "";
+    toolMessage.verificationCheck = scopedVerification || toolFailed ? event.verificationCheck : "";
+    if (toolFailed && checkerAttempt)
+        try
+        {
+            const args = parseJSON(toolArgs);
+            if (auto kind = "check" in args.object)
+                if (kind.type == JSONType.string && kind.str == "tests") toolMessage.verificationCheck = "verify:tests";
+            const report = parseJSON(event.text);
+            if (auto failed = "failedStep" in report.object)
+                if (failed.type == JSONType.object)
+                    if (auto kind = "kind" in failed.object)
+                        if (kind.type == JSONType.string) toolMessage.verificationCheck = "verify:" ~ kind.str;
+        }
+        catch (Exception) {}
+    toolMessage.verificationScope = checkerAttempt && sameCheckout(policy.verificationWorkspace, policy.workspace) &&
+        event.verificationRevision == policy.currentRevision ? session.verificationScope : "";
     toolMessage.toolElapsedMs = event.elapsedMs;
     toolMessage.time = policy.timestamp;
     return ToolSettlement(toolMessage, checkerAttempt, scopedVerification, acceptedVerification,
+        toolFailed && checkerAttempt && sameCheckout(policy.verificationWorkspace, policy.workspace) && event.verificationRevision == policy.currentRevision,
         toolFailed ? OrchestratorDirective.init : routing);
 }
 
@@ -154,12 +171,14 @@ bool advanceToolTaskState(ref ChatSession session, const ref ToolSettlement sett
     const prose = !settled.message.failed && isPlainDocumentMutation(event.toolName, arguments);
     if (!prose && (event.workspaceChanged || isSubstantiveMutation(event.toolName,
         settled.message.failed, event.diffAdditions, event.diffDeletions, event.diffText))) requireCheck();
+    else if (settled.currentFailure) requireCheck();
     else if (settled.acceptedVerification) passCheck();
     else if (settled.checkerAttempt && !settled.scopedVerification &&
         !(priorStatus == "passed" && priorScope == session.verificationScope)) requireCheck();
-    // A revision is conservative; explicit recipe inputs can establish that
-    // cleanup did not alter the checked deliverable or checker source.
-    if (!settled.message.failed && event.toolName == "remove" && session.verificationStatus == "required")
+    // A changed workspace is not necessarily a changed deliverable. Explicit
+    // receipt inputs decide whether generated output or probe cleanup actually
+    // invalidated a passing check. Apply this to every mutation, not just remove.
+    if (!settled.message.failed && session.verificationStatus == "required")
     {
         const coverage = verificationCoverage(session);
         if (coverage.length > "verify:".length && satisfiesEvidence(coverage, requiredEvidence(session))) passCheck();
