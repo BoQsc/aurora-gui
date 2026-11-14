@@ -51,7 +51,9 @@ int main()
 
     // The prompt and per-request contract must require resolution rather than a
     // bare explanation, while the explicit explanation request stays answer-only.
-    assert(toolSteeringPrompt(false).indexOf("Why = diagnose the cause and resolve it") >= 0);
+    // The system prompt itself no longer carries the old "Why = diagnose" line;
+    // diagnosis is enforced per request by the answer contract below.
+    assert(toolSteeringPrompt(false).indexOf("A question asks for an answer; investigate as needed") >= 0);
     assert(answerContract("Why does the provider stall?", "").indexOf("Do not stop at an explanation") >= 0);
     assert(answerContract("Explain why the provider stalls.", "").indexOf("Do not stop at an explanation") < 0);
     assert(goalIsAnswerOnly("Why did it stop?"),
