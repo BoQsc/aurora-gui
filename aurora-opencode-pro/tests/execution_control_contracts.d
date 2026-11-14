@@ -5,6 +5,7 @@ import auroraopencode.taskflow : acceptTaskRequest, taskEvidenceIndex;
 import auroraopencode.taskpolicy : taskWorkspace, verificationCoverage;
 import auroraopencode.turnpolicy;
 import auroraopencode.requestintent;
+import auroraopencode.contextpolicy : latestActualUserRequest;
 import auroraopencode.requestpolicy;
 import auroraopencode.taskmutation : applyTaskPlan;
 import auroraopencode.tools : executeTool, ChangeContext;
@@ -71,12 +72,21 @@ int main()
     RequestPolicy finishedPolicy;finishedPolicy.toolsEnabled=true;
     finishedPolicy.availableTools=[OpenCodeToolDef("read","Read a file",`{"type":"object"}`)];
     assert(executionReadyToAnswer(s));
+    // A follow-up that points at work not yet done keeps its tools. Treating it
+    // as the final answer left none, so the model wrote its lookup as text and
+    // the turn ended with no result at all.
+    append(s,"user","C:\\work\\project hope you fixed the upstream too");
+    assert(!directQuestionRequest(latestActualUserRequest(s)));
+    assert(prepareAgentRequest(s,finishedPolicy).tools.length==1,
+        "A follow-up that needs a lookup ended with no tools and no result");
+    append(s,"user","Explain the change once more.");
+    assert(directQuestionRequest(latestActualUserRequest(s)));
     assert(prepareAgentRequest(s,finishedPolicy).tools.length==0,
-        "Completed verified work exposed tools for another unnecessary audit");
+        "A direct question after completed work exposed tools for another unnecessary audit");
     s.taskSteps ~= TaskStep("Newly discovered required outcome","pending");
     assert(!executionReadyToAnswer(s) && prepareAgentRequest(s,finishedPolicy).tools.length==1,
         "Final answer handoff hid tools while a real outcome remained");
-    writeln("PASS verified completion hands directly to the final answer; new outcomes keep execution available");
+    writeln("PASS a question answers directly; work that still needs tools is not cut off with no result");
 
     s = pending(); s.verificationStatus="passed"; s.verificationScope="current";
     append(s,"tool","Checks passed",false,"run");

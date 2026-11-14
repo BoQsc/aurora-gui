@@ -148,6 +148,25 @@ bool explanationOnlyRequest(string text)
 
 bool answerOnlyRequest(string text) { return requestIntent(text) == RequestIntent.clarification; }
 
+/// A follow-up that opens with "how/whether/why... scope" asks for a direct
+/// answer, not another action round. After a completed turn the final-answer
+/// handoff otherwise withheld every tool, so the model emitted its lookup as
+/// literal `<tool_calls>` text and the turn ended with no result at all.
+bool directQuestionRequest(string text)
+{
+    if (explicitExplanationOnly(text)) return true;
+    const words = requestWords(text);
+    size_t i;
+    while (i < words.length &&
+        ["so", "now", "then", "please", "instead", "just", "and", "but"].canFind(words[i])) ++i;
+    if (i >= words.length) return false;
+    return ["what", "how", "whether", "why", "when", "where", "who", "which",
+        "is", "are", "was", "were", "does", "did", "do", "can", "could", "would",
+        "should", "will", "explain", "describe", "summarize", "summarise", "recap",
+        "status", "any", "anything"].canFind(words[i]) ||
+        (text.length && text[$ - 1] == '?');
+}
+
 /// The current request explicitly limits work: an explanation was asked for, or
 /// the user said not to edit/implement/fix. An active goal waits for the user to
 /// lift that restriction. A plain question ("what is left?") is not a

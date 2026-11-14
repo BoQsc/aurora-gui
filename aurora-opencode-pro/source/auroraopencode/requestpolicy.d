@@ -10,7 +10,7 @@ import auroraopencode.completionhandoff : completionHandoffInstruction;
 import auroraopencode.turnpolicy : hasIncompleteTaskSteps;
 import auroraopencode.taskflow : taskInvestigation, missingVerificationInput;
 import auroraopencode.taskcontext : taskExcerpt;
-import auroraopencode.requestintent : answerOnlyRequest, requestIntent, RequestIntent;
+import auroraopencode.requestintent : answerOnlyRequest, directQuestionRequest, requestIntent, RequestIntent;
 import auroraopencode.orchestrator : experimentalOrchestratorFilterTools;
 import std.json : JSONValue, JSONType, parseJSON;
 
@@ -77,8 +77,13 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
 {
     PreparedRequest result;
     import auroraopencode.executioncontrol : executionReadyToAnswer;
+    import auroraopencode.contextpolicy : latestActualUserRequest;
+    // Ready-to-answer means "produce the reply". Only a direct question gets
+    // the tool-less handoff; new work, a path to fix, or a reference to
+    // something not yet done still needs the tools to deliver a result.
     const finalAnswer = policy.finalAnswer || (policy.toolsEnabled && !policy.diagnosticReview &&
-        !policy.orchestratorEnabled && executionReadyToAnswer(session));
+        !policy.orchestratorEnabled && executionReadyToAnswer(session) &&
+        directQuestionRequest(latestActualUserRequest(session)));
     import auroraopencode.answercontract : answerContract;
     const responseContract = answerContract(latestActualUserRequest(session), policy.verbosity);
     if (policy.toolsEnabled)
