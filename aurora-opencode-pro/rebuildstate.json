@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy committed source fb6e1d3 (diagnosis_intent_contracts assertion aligned with the surviving prompt line) so the delivered binary is built from the pushed source.",
+  "reason": "",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-14 09:51:24.0723769 UTC",
-  "finishedAt": "2026-11-14 09:52:23.9611039 UTC",
-  "durationMs": 59888,
+  "startedAt": "2026-11-14 22:35:04.5928296 UTC",
+  "finishedAt": "2026-11-14 22:36:03.7355781 UTC",
+  "durationMs": 59142,
   "exitCode": 0,
   "errors": [],
-  "publishStatus": "published",
-  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (21f58b944793).",
+  "publishStatus": "failed",
+  "publishDetail": "Publishing with installed runtime required: MSVCR120.dll",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

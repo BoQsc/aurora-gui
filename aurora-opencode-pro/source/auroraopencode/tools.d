@@ -7238,7 +7238,7 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
         case "request_input":
         {
             import auroraopencode.taskcontinuation : taskBlockerError;
-            const error = taskBlockerError(call.arguments);
+            const error = taskBlockerError(call.arguments, context.planMode);
             if (error.length) return ToolExecution(call.name, "Error: " ~ error, true);
             const args = parseJSON(call.arguments);
             const reason = jsonString(args, "reason");

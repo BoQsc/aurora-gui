@@ -11,6 +11,7 @@ import threading
 package = Path(__file__).resolve().parents[1]
 counts = collections.Counter()
 failures = []
+only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv and sys.argv.index("--only") + 1 < len(sys.argv) else ""
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
@@ -65,6 +66,26 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 reason = "tool_calls"
             else:
                 content = f"Short claim of completion {number}."
+        if mode == "plan-approval":
+            plan_approval = {"reason": "Plan mode is blocking every write. The implementation plan is recorded, but only the user can approve it or turn Plan mode off.",
+                             "required_fact": "Explicit approval to execute the recorded plan, or Plan mode turned off.",
+                             "question": "Plan mode is still active and is rejecting the file edits. Please approve the recorded plan or turn off Plan mode so I can create splitpane.d.",
+                             "checked": ["The requested path was inspected.", "The plan was recorded with update_plan.", "The write was rejected because Plan mode is active."],
+                             "independent_work_complete": True, "blocked_steps": ["planstep"]}
+            if "plan-step" not in results:
+                delta = {"tool_calls": [{"index": 0, "id": "plan-step", "type": "function", "function": {
+                    "name": "update_plan", "arguments": json.dumps({"plan": [{"id": "planstep", "step": "Create splitpane.d with the 0BSD header", "kind": "edit", "status": "in_progress"}]})}}]}
+                reason = "tool_calls"
+            elif "plan-write" not in results:
+                delta = {"tool_calls": [{"index": 0, "id": "plan-write", "type": "function", "function": {
+                    "name": "write", "arguments": json.dumps({"filePath": "splitpane.d", "content": "// SPDX-License-Identifier: 0BSD\n"})}}]}
+                reason = "tool_calls"
+            elif "plan-approval" not in results:
+                delta = {"tool_calls": [{"index": 0, "id": "plan-approval", "type": "function", "function": {
+                    "name": "request_input", "arguments": json.dumps(plan_approval)}}]}
+                reason = "tool_calls"
+            else:
+                content = "Waiting for plan approval."
         if mode == "unoffered" or (mode == "mixed-offer" and number == 1):
             delta = {"tool_calls": [{"index": 0, "id": "unoffered", "type": "function", "function": {
                 "name": "write", "arguments": json.dumps({"filePath": "forbidden.txt", "content": "forbidden"})}}]}
@@ -91,13 +112,18 @@ class Provider(http.server.BaseHTTPRequestHandler):
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Provider)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 try:
-    env = dict(os.environ, AURORA_CONTRACT_PROVIDER_BASE=f"http://127.0.0.1:{server.server_port}/v1")
+    env = dict(os.environ, AURORA_CONTRACT_PROVIDER_BASE=f"http://127.0.0.1:{server.server_port}/v1",
+               AURORA_ACTOR_RECOVERY_MODES=only)
     result = subprocess.run([sys.executable, str(package / "tests/run_architecture_checks.py"),
                              "actor_recovery_contracts"], cwd=package.parent, env=env, timeout=150)
     assert result.returncode == 0, "Actor recovery fixture failed"
     expected = {"retry": 2, "retry-stop": 1, "transient-cap": 3, "budget": 1,
                 "quota": 2, "bad-output": 4, "summary": 2, "summary-error": 2, "task-stall": 7, "unoffered": 4, "mixed-offer": 2}
-    assert counts == expected, f"Unexpected retries or tool recovery loops: {dict(counts)}"
+    expected["plan-approval"] = 4
+    if only:
+        assert set(counts) == set(only.split(",")), f"Unexpected recovery modes: {dict(counts)}"
+    else:
+        assert counts == expected, f"Unexpected retries or tool recovery loops: {dict(counts)}"
     assert not failures, failures
     print("PASS real HTTP retry budgets, quota reset, Stop, bounded output repair and tool-free handoff", dict(counts))
 finally:

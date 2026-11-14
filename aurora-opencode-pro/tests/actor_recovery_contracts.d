@@ -12,6 +12,7 @@ import std.json : JSONValue, JSONType, parseJSON;
 import std.path : absolutePath, buildPath;
 import std.process : environment;
 import std.stdio : writeln;
+import std.string : indexOf, split;
 
 int main()
 {
@@ -20,16 +21,20 @@ int main()
     const directory = absolutePath("actor-recovery-" ~ to!string(MonoTime.currTime.ticks));
     mkdirRecurse(directory); setOpencodeStateDirectoryForTesting(buildPath(directory, "state"));
 
-    foreach (mode; ["retry", "retry-stop", "transient-cap", "budget", "quota", "bad-output", "summary", "summary-error", "task-stall", "unoffered", "mixed-offer"])
+    string[] modes = ["retry", "retry-stop", "transient-cap", "budget", "quota", "bad-output", "summary", "summary-error", "task-stall", "unoffered", "mixed-offer", "plan-approval"];
+    const only = environment.get("AURORA_ACTOR_RECOVERY_MODES", "");
+    if (only.length) modes = only.split(",");
+    foreach (mode; modes)
     {
         const workspace = buildPath(directory, mode); mkdirRecurse(workspace);
         ChatSession initial; initial.id = "recovery-" ~ mode; initial.model = "actor-" ~ mode;
         const persistent = mode == "budget" || mode == "transient-cap" || mode == "bad-output" || mode == "retry-stop" || mode == "unoffered";
         if (persistent) { initial.goal = "Deliver the user's requested analysis"; initial.goalStatus = "active"; }
+        initial.planMode = mode == "plan-approval";
         ActorConfiguration config; config.baseUrl = base; config.apiKey = "fixture";
         config.workspace = workspace; config.recordTrace = true;
         config.outageBudgetMs = mode == "budget" || mode == "quota" ? 250 : 15_000;
-        config.request.toolsEnabled = mode == "bad-output" || mode == "summary" || mode == "summary-error" || mode == "task-stall" || mode == "unoffered" || mode == "mixed-offer";
+        config.request.toolsEnabled = mode == "bad-output" || mode == "summary" || mode == "summary-error" || mode == "task-stall" || mode == "unoffered" || mode == "mixed-offer" || mode == "plan-approval";
         config.request.contextLimit = 64_000;
         config.request.baseSystemPrompt = buildSystemPrompt(config.request.toolsEnabled, workspace, "win32", "auto");
         config.request.availableTools = nativeOnlyToolDefinitions();
@@ -110,6 +115,28 @@ int main()
             assert(!exists(buildPath(workspace, "must-not-exist.txt")), "Summary executed an unavailable tool");
             assert(state["messages"].array[$ - 1]["content"].str.length > 80, "Missing evidence fallback");
             assert(latest["execution"]["phase"].str == "completed", "Summary fallback left execution in a tool phase");
+        }
+        if (mode == "plan-approval")
+        {
+            assert(state["taskStatus"].str == "waiting_input", "Plan approval did not pause the task");
+            assert(state["planMode"].boolean, "Plan approval disarmed Plan mode");
+            bool acceptedInput, blockedWrite;
+            foreach (message; state["messages"].array)
+            {
+                if (message["role"].str != "tool") continue;
+                const name = message["toolName"].str;
+                const text = message["content"].str;
+                assert(text.indexOf("Execution recovery did not resolve") < 0,
+                    "Plan approval started execution recovery");
+                assert(text.indexOf("Recover internally") < 0,
+                    "Plan approval was rejected as a routine permission question");
+                const failed = "failed" in message.object && message["failed"].boolean;
+                if (name == "write") blockedWrite = failed;
+                if (name == "request_input") acceptedInput = !failed;
+            }
+            assert(blockedWrite, "Plan mode did not block the write");
+            assert(acceptedInput, "The plan approval request was not accepted");
+            assert(!exists(buildPath(workspace, "splitpane.d")), "Plan mode allowed the blocked write");
         }
         const trace = actor.recordedTrace();
         write(buildPath(workspace, "trace.json"), trace); write(buildPath(workspace, "final.json"), snapshot);

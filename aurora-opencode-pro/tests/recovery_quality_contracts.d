@@ -3,6 +3,7 @@ import auroraopencode.core;
 import auroraopencode.taskflow;
 import auroraopencode.taskcontinuation;
 import auroraopencode.taskpolicy;
+import auroraopencode.turnpolicy;
 import auroraopencode.tools;
 import auroraopencode.checkout : canonicalPath;
 import auroraopencode.verification : workspaceCommandEffect, WorkspaceCommandEffect;
@@ -30,6 +31,31 @@ int main(string[] argv)
         "A delivery-permission question was accepted as an essential missing fact");
     const essential = `{"required_fact":"Deployment destination","reason":"Destination absent from local configuration","question":"Which deployment server should I use?","checked":["Local deployment configuration"],"independent_work_complete":true}`;
     assert(!taskBlockerError(essential).length, taskBlockerError(essential));
+    const planApproval = `{"reason":"Plan mode is blocking every write and execution attempt. The implementation plan is already recorded, but I need the user to approve it or disable Plan mode before I can create the requested files and run the script.","required_fact":"Explicit approval to execute the recorded plan, or Plan mode turned off.","question":"Plan mode is still active and is rejecting the file edits. Please approve the recorded plan or turn off Plan mode so I can create splitpane.d and progressbar.d, add and run the header script, and verify the result.","checked":["The requested paths and existing files were inspected.","The four-step plan was recorded with update_plan.","apply_patch was attempted twice and was rejected both times because Plan mode is active."],"independent_work_complete":true,"blocked_steps":["splitpane"]}`;
+    assert(taskBlockerError(planApproval).indexOf("Recover internally") >= 0,
+        "Plan approval outside Plan mode was accepted as a routine fact");
+    assert(taskBlockerError(planApproval).indexOf("Preserve the running application") < 0,
+        "Plan approval recovery guidance still told the model to preserve a window");
+    assert(!taskBlockerError(planApproval, true).length, taskBlockerError(planApproval, true));
+    assert(taskBlockerError(permission, true).indexOf("Recover internally") >= 0,
+        "Plan mode turned a routine permission trap into a user-owned fact");
+    ChatSession planApprovalSession;
+    append(planApprovalSession,"plan-user","user","Add splitpane and progressbar.");
+    planApprovalSession.objective="Add splitpane and progressbar.";
+    planApprovalSession.taskStatus="waiting_input";
+    planApprovalSession.planMode=true;
+    planApprovalSession.taskSteps=[TaskStep("Add splitpane","pending","splitpane")];
+    append(planApprovalSession,"plan-input","tool","Required information: plan approval","request_input");
+    planApprovalSession.messages[$-1].toolArgs=planApproval;
+    assert(taskAwaitingInput(planApprovalSession), "A genuine Plan approval pause did not hold the task");
+    assert(taskContinuation(planApprovalSession,true).action == TaskContinuationAction.settle);
+    planApprovalSession.turnStatus="running";
+    TurnPolicy planPolicy; planPolicy.toolsEnabled=true;
+    const planDecision=decideTurn(planApprovalSession,planPolicy);
+    assert(planDecision.action == TurnAction.settle && planDecision.taskStatus == "waiting_input",
+        "An accepted Plan approval still started execution recovery");
+    planApprovalSession.planMode=false;
+    assert(!taskAwaitingInput(planApprovalSession), "A stale Plan approval pause survived Plan mode");
     ChatSession waiting;
     append(waiting,"user","user","Deploy the prepared result.");
     waiting.objective="Deploy the prepared result."; waiting.taskStatus="waiting_input";
@@ -67,6 +93,10 @@ int main(string[] argv)
     const root=absolutePath(buildPath(tempDir(),"aurora-recovery-"~to!string(MonoTime.currTime.ticks)));
     mkdirRecurse(buildPath(root,".git")); mkdirRecurse(buildPath(root,"src"));
     setOpencodeStateDirectoryForTesting(buildPath(root,"state"));
+    ChangeContext planContext; planContext.planMode=true;
+    auto planRequest=executeTool(OpenCodeToolCall("plan-tool","request_input",planApproval),root,null,planContext);
+    assert(!planRequest.failed,planRequest.output);
+    assert(executeTool(OpenCodeToolCall("plan-tool-off","request_input",planApproval),root).failed);
     const source=buildPath(root,"src/main.d");
     const code="import core.thread; import core.time; int main(string[] a) { if(a.length>1) Thread.sleep(60.seconds); return 0; }\n";
     write(source,code);

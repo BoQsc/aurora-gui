@@ -106,7 +106,17 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
     return result;
 }
 
-string taskBlockerError(string arguments)
+/// Only the user can approve a recorded plan or turn Plan mode off. In Plan
+/// mode that is an essential missing fact, not a permission question about
+/// routine execution, so it must be allowed to pause the task.
+private bool planApprovalRequest(string context)
+{
+    if (!matchFirst(context, `\bplan mode\b`)) return false;
+    return matchFirst(context, `\b(?:approve|approval|accept|disable|turn(?:ed)? off|switch off|leave)\b`) ||
+        matchFirst(context, `\b(?:may|can|should|could) (?:i|we)\b.*\b(?:start|execute|run|apply|proceed|implement)\b`);
+}
+
+string taskBlockerError(string arguments, bool planMode = false)
 {
     try
     {
@@ -129,6 +139,7 @@ string taskBlockerError(string arguments)
                 return "Continue the authorized work. Do not ask permission for routine execution or verification.";
         const need = field("required_fact").toLower().split().join(" ");
         const context = (field("reason") ~ " " ~ need ~ " " ~ field("question")).toLower().split().join(" ");
+        if (planMode && planApprovalRequest(context)) return "";
         // Committing and publishing a completed delivery is authorized work,
         // not an essential missing fact. A dirty worktree is a delivery
         // constraint to handle or report, so do not let a permission question
@@ -138,7 +149,11 @@ string taskBlockerError(string arguments)
             return "Recover internally: committing and publishing this task's completed delivery is authorized work, not missing user information. Commit or publish only the work this task changed; if that is not possible, report the local-only limitation instead of pausing for permission. Do not commit unrelated work without authorization.";
         if (matchFirst(need, `\b(permission|approval|consent|whether i|whether we|may i|can i|allowed to|close .*window|close .*process)\b`) ||
             matchFirst(question, `\b(do you want me to|will you .*yourself|(?:may|should) i (?:close|stop|kill|run|test|continue)|permission to|say continue)\b`))
-            return "Recover internally: this asks for permission for a routine workaround, not missing user information. Preserve the running application; build and test a unique output instead of closing its window.";
+        {
+            if (matchFirst(context, `\b(?:close|closing|rebuild|window|executable|running (?:application|app)|mapped image)\b`))
+                return "Recover internally: this asks for permission for a routine workaround, not missing user information. Preserve the running application; build and test a unique output instead of closing its window.";
+            return "Recover internally: this asks for permission for a routine workaround, not missing user information. Continue the authorized work with the available tools and report the actual outcome instead of pausing.";
+        }
         if (matchFirst(context, `\b(?:which|what) (?:implementation |testing |test |verification |build |code |file |command |tool |library |language |design )?(?:approach|option|method|way|file|test|command|tool|library|language|design)\b`) ||
             matchFirst(need, `\b(?:preferred|routine|implementation|testing|test|verification|build|code) (?:approach|option|method|choice|file|test|command|tool|library|language|design)\b`))
             return "Choose a reasonable default and continue. Implementation, file, test, tool and verification choices are routine execution decisions, not missing user information.";
@@ -162,7 +177,7 @@ string taskBlockerError(string arguments)
 
 string taskInputError(const ref ChatSession session, string arguments)
 {
-    const error = taskBlockerError(arguments);
+    const error = taskBlockerError(arguments, session.planMode);
     if (error.length) return error;
     const value = parseJSON(arguments);
     string[] remaining;
