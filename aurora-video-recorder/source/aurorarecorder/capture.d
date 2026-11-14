@@ -25,6 +25,7 @@ version (Windows)
         CURSOR_SHOWING, DrawIconEx, DI_NORMAL, DIB_RGB_COLORS,
         DeleteDC, DeleteObject, GdiFlush, GetCursorInfo, GetDC,
         GetSystemMetrics, HBITMAP, HDC, HGDIOBJ, ReleaseDC, SRCCOPY,
+        StretchBlt, SetStretchBltMode, COLORONCOLOR,
         SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
         SM_YVIRTUALSCREEN, SelectObject;
 }
@@ -39,7 +40,13 @@ final class ScreenSurface
     private HBITMAP _bitmap;
     private HGDIOBJ _previousBitmap;
     private void* _pixels;
+    /// Output size; fixed for the whole recording so ffmpeg's frame size never
+    /// changes. For a recorded window this is the size it had when recording
+    /// started.
     private CaptureRect _rect;
+    /// Screen area copied into the output surface. A window that moves or
+    /// leaves fullscreen changes this, but never `_rect`.
+    private CaptureRect _source;
 
     /// Create the surface for `rect`. False (object left closed) when the
     /// memory DC or the DIB could not be created.
@@ -49,6 +56,7 @@ final class ScreenSurface
         if (!rect.valid()) return false;
 
         _rect = rect;
+        _source = rect;
         _screenDc = GetDC(null);
         if (_screenDc is null) return false;
 
@@ -85,6 +93,9 @@ final class ScreenSurface
 
     CaptureRect rect() const { return _rect; }
 
+    /// Screen area to capture next. Invalid holds the previous frame.
+    void setSource(CaptureRect source) { _source = source; }
+
     /// Bytes in one frame (width * height * 4).
     size_t frameBytes() const
     {
@@ -97,10 +108,24 @@ final class ScreenSurface
     /// Copy the screen region into the buffer. False on GDI failure.
     bool captureInto()
     {
-        if (!active()) return false;
-        if (BitBlt(_memoryDc, 0, 0, _rect.width, _rect.height, _screenDc,
-            _rect.x, _rect.y, SRCCOPY) == 0)
-            return false;
+        if (!active() || !_source.valid()) return false;
+        if (_source.width == _rect.width && _source.height == _rect.height)
+        {
+            if (BitBlt(_memoryDc, 0, 0, _rect.width, _rect.height, _screenDc,
+                _source.x, _source.y, SRCCOPY) == 0)
+                return false;
+        }
+        else
+        {
+            // A recorded window can leave fullscreen or be resized. Scale it
+            // into the fixed output surface rather than changing the stream
+            // size, which ffmpeg cannot accept mid-recording.
+            SetStretchBltMode(_memoryDc, COLORONCOLOR);
+            if (StretchBlt(_memoryDc, 0, 0, _rect.width, _rect.height,
+                _screenDc, _source.x, _source.y, _source.width, _source.height,
+                SRCCOPY) == 0)
+                return false;
+        }
         if (_drawCursor) drawCursor();
         // GDI flushes lazily; the pixels are read right after this returns,
         // from the same thread, so wait for the copy to land.
@@ -130,9 +155,13 @@ final class ScreenSurface
         if (info.hCursor is null) return;
 
         // Screen coordinates to frame coordinates.
-        int x = cast(int) info.ptScreenPos.x - _rect.x;
-        int y = cast(int) info.ptScreenPos.y - _rect.y;
-        if (x < 0 || y < 0 || x >= _rect.width || y >= _rect.height) return;
+        int x = cast(int) info.ptScreenPos.x - _source.x;
+        int y = cast(int) info.ptScreenPos.y - _source.y;
+        if (x < 0 || y < 0 || x >= _source.width || y >= _source.height) return;
+        if (_source.width != _rect.width)
+            x = x * _rect.width / _source.width;
+        if (_source.height != _rect.height)
+            y = y * _rect.height / _source.height;
         DrawIconEx(_memoryDc, x, y, info.hCursor, 0, 0, 0, null, DI_NORMAL);
     }
 
@@ -160,6 +189,7 @@ final class ScreenSurface
         }
         _pixels = null;
         _rect = CaptureRect.init;
+        _source = CaptureRect.init;
     }
 }
 
@@ -169,6 +199,7 @@ final class ScreenSurface
     bool open(CaptureRect) { return false; }
     bool active() const { return false; }
     CaptureRect rect() const { return CaptureRect.init; }
+    void setSource(CaptureRect) {}
     size_t frameBytes() const { return 0; }
     void* pixels() const { return null; }
     bool captureInto() { return false; }

@@ -27,7 +27,8 @@ module aurorarecorder.encoder;
 
 import aurorarecorder.capture : ScreenSurface;
 import aurorarecorder.loopback : SystemAudioCapture;
-import aurorarecorder.windowpicker : keepWindowOnTop;
+import aurorarecorder.windowpicker : keepWindowOnTop, windowCaptureRect,
+    windowMinimised;
 import aurorarecorder.settings : CaptureRect, stopMarginSeconds;
 
 import core.stdc.stdio : fclose, FILE, fopen;
@@ -780,20 +781,6 @@ final class ScreenEncoder
             return true;
         }
 
-        /**
-         * Window recording follows the window: when it moves or is resized the
-         * captured rectangle changes, and the surface is reopened for the new
-         * size. The stream keeps its original dimensions so ffmpeg never sees
-         * a size change mid-recording; a differently sized window is scaled
-         * into it.
-         */
-        private static CaptureRect followedRect(size_t handle, CaptureRect current)
-        {
-            import aurorarecorder.windowpicker : windowCaptureRect;
-            const rect = windowCaptureRect(cast(HWND) handle);
-            return rect.valid() ? rect : current;
-        }
-
         /// Pace, capture and write frames until `stop()`.
         private void recordLoop(ScreenSurface surface, HANDLE writeEnd,
             ref long frames, ref string writeError)
@@ -820,20 +807,23 @@ final class ScreenEncoder
                     if (next > now) Thread.sleep(next - now);
                 }
 
-                // A recorded window can move while it is being recorded.
+                // A recorded window can move, leave fullscreen or be
+                // minimised by Alt+Tab while it is being recorded. Follow it
+                // into a fixed-size surface: resizing the stream itself would
+                // make ffmpeg reject the next frame. While it is minimised or
+                // off-screen, an invalid source holds the last good frame.
                 if (_job.windowHandle != 0)
                 {
-                    // Capture reads the screen, so the recorded window must
-                    // not be covered. Raising it without activating it keeps
-                    // the game's keyboard focus where it is.
-                    keepWindowOnTop(cast(HWND) _job.windowHandle);
-                    const target = followedRect(_job.windowHandle,
-                        surface.rect());
-                    if (target.x != surface.rect().x ||
-                        target.y != surface.rect().y)
+                    HWND window = cast(HWND) _job.windowHandle;
+                    if (windowMinimised(window))
+                        surface.setSource(CaptureRect.init);
+                    else
                     {
-                        if (surface.open(target))
-                            surface.setDrawCursor(_job.drawCursor);
+                        // Capture reads the screen, so the recorded window must
+                        // not be covered. Raising it without activating it
+                        // keeps the game's keyboard focus where it is.
+                        keepWindowOnTop(window);
+                        surface.setSource(windowCaptureRect(window));
                     }
                 }
                 const captured = surface.captureInto();

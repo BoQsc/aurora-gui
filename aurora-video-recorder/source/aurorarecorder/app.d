@@ -788,8 +788,24 @@ final class RecorderRoot : VBox
 
         const Size client = _window.logicalClientSize();
         const Rect list = _windowList.bounds();
-        auto line = format("client=%dx%d root=%s list.visible=%s list=%s rows=%d\n",
-            client.width, client.height, bounds().to!string,
+        bool resizable;
+        version (Windows)
+        {
+            import aurora.platform.win32 : PlatformWindow;
+            import core.sys.windows.windows : GetWindowLongPtrW, GWL_STYLE,
+                HWND, WS_THICKFRAME;
+            auto native = cast(PlatformWindow) _window.nativeWindow();
+            if (native !is null)
+            {
+                HWND hwnd = cast(HWND) native.hwnd();
+                resizable = hwnd !is null &&
+                    (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_THICKFRAME) != 0;
+            }
+        }
+        auto line = format(
+            "client=%dx%d resizable=%s root=%s list.visible=%s list=%s rows=%d\n",
+            client.width, client.height, resizable ? "yes" : "no",
+            bounds().to!string,
             _windowList.visible() ? "yes" : "no", list.to!string,
             _windowList.children().length);
         fprintf(f, "%s", line.toStringz);
@@ -1149,12 +1165,12 @@ private WindowOptions recorderWindowOptions()
     options.title = "Aurora Video Recorder";
     // Shown before the first frame paints; the state icons replace it later.
     options.iconPath = iconPathFor("icon.ico");
-    // The panel's rows lay out at ~732 logical pixels inside 12 px insets, so
-    // the client must be at least that wide or the content is clipped and the
-    // right-hand buttons move outside their drawn position.
-    options.width = 820;
+    // The panel's rows lay out at ~732 logical pixels inside 12 px insets. The
+    // extra width leaves room for the scrollbar that appears when the window
+    // is made shorter than the panel.
+    options.width = 840;
     options.height = 980;
-    options.resizable = false;
+    options.resizable = true;
     options.decorated = true;
     options.darkTitleBar = true;
     options.lowLatency = true;
@@ -1215,7 +1231,9 @@ int run(string[] args, string executablePath = "")
     auto hotkey = new GlobalHotkey(null);
     auto root = new RecorderRoot(window, controller, hotkey, chord,
         settingsFile);
-    window.setRoot(root);
+    // The window is resizable; a vertical viewport keeps every control
+    // reachable when it is made shorter than the panel's preferred height.
+    window.setRoot(new ScrollView(root));
     root.refreshTheme(); // Colors resolve once the widget is attached.
     root.registerHotkey(); // After setRoot so the result can be shown.
     root.loadMicrophones(controller.ffmpegPath());

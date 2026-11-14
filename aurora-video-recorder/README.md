@@ -3,6 +3,8 @@
 Quick MP4 screen recording for Windows, built with
 [Aurora-D](../vendor/aurora-d-0.4.5). One window, one **Record** button: pick
 what to record, press Record, press Stop, and the file is ready to play.
+The window is resizable; when it is shorter than the panel, a scrollbar keeps
+every control reachable.
 
 ## Run
 
@@ -112,13 +114,16 @@ real global hotkey and confirms a simulated chord fires it. Pass
 keeps up with the clock while recording (skipping the interactive hotkey and
 window checks). `--stop` records with screen audio and checks that Stop
 finishes promptly instead of waiting in "Finishing the file...".
+`--window` records a test window while it is moved, resized and minimised,
+checking that the recording continues and keeps its original video size.
 
 ## Limitations
 
 - Windows only.
 - Window capture records a window's client area. A minimised window cannot be
-  recorded, and a window that changes size keeps the recording's original
-  dimensions (frames are cropped rather than scaled).
+  recorded while it is minimised, so the last good frame is held; a window
+  that changes size (for example leaving fullscreen after Alt+Tab) is scaled
+  into the recording's original dimensions.
 - Whole-desktop capture records a single image of every monitor, so monitors
   with different heights are padded rather than recorded separately.
 - No region selector; this is meant to be the fastest path to an MP4.

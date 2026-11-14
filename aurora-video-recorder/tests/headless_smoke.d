@@ -20,12 +20,13 @@ import aurorarecorder.ffmpeg : findFfmpeg;
 import aurorarecorder.hotkey : GlobalHotkey, HotkeyChord, chordFromText,
     defaultHotkey, describeHotkey, hotkeyAlt, hotkeyControl, hotkeyKeyAllowed,
     hotkeyShift, hotkeyWin;
-import aurorarecorder.recorder : RecorderOptions;
+import aurorarecorder.recorder : RecorderController, RecorderOptions,
+    RecorderSnapshot;
 import aurorarecorder.settings;
 import aurorarecorder.settingsfile : parseSettings, serializeSettings;
 
 import core.thread : Thread, dur;
-import core.time : MonoTime;
+import core.time : MonoTime, msecs;
 import std.array : join;
 import std.conv : to;
 import std.datetime : Clock, Duration, LocalTime;
@@ -407,6 +408,8 @@ private void checkPickerInApp()
         import std.file : readText;
         const text = readText(report);
 
+        check(text.indexOf("resizable=yes") >= 0,
+            "the recorder window is resizable");
         check(text.indexOf("list.visible=yes") >= 0,
             "the window list is visible when opened");
         const rowCount = countOccurrences(text, "  row ");
@@ -933,16 +936,201 @@ private void checkSystemAudioStop(string ffmpeg)
         "the screen-audio recording is a readable H.264 MP4: " ~ probe);
 }
 
+/**
+ * A recorded window must survive leaving fullscreen, moving, resizing and
+ * being minimised by Alt+Tab.
+ *
+ * Changing the capture surface size mid-recording used to send ffmpeg frames
+ * that did not match the stream's declared size. The stream now keeps its
+ * starting size and the window is scaled into it; a minimised window holds the
+ * last good frame instead of stopping.
+ */
+private void checkWindowResilience(string ffmpeg)
+{
+    version (Windows)
+    {
+        import core.sys.windows.windows : CreateWindowExW, DestroyWindow,
+            HWND, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE,
+            SWP_NOZORDER, SetWindowPos, ShowWindow, UpdateWindow,
+            WS_OVERLAPPEDWINDOW, WS_VISIBLE;
+        import std.utf : toUTF16z;
+        import aurorarecorder.windowpicker : windowCaptureRect;
+
+        HWND window = CreateWindowExW(0, toUTF16z("STATIC"),
+            toUTF16z("Aurora window test"), WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            80, 80, 640, 480, null, null, null, null);
+        if (window is null)
+        {
+            writeln("  (could not create a test window; skipping)");
+            return;
+        }
+        scope (exit) DestroyWindow(window);
+        ShowWindow(window, SW_SHOW);
+        UpdateWindow(window);
+        pumpMessages();
+
+        const rect = evenCaptureRect(windowCaptureRect(window));
+        if (!rect.valid())
+        {
+            writeln("  (test window has no capture rect; skipping)");
+            return;
+        }
+
+        const root = buildPath(tempDir(), "aurora-video-recorder-smoke");
+        if (!exists(root))
+            mkdirRecurse(root);
+        writeln(format("  window resilience at %dx%d", rect.width,
+            rect.height));
+
+        RecorderOptions options;
+        options.target = CaptureTarget.window;
+        options.windowHandle = cast(size_t) window;
+        options.windowTitle = "Aurora window test";
+        options.fps = 30;
+        options.quality = 28;
+        options.drawCursor = false;
+        options.systemAudio = false;
+        options.outputFolder = root;
+        RecorderController.normalizeOptions(options);
+        auto controller = new RecorderController(options, ffmpeg);
+
+        const now = Clock.currTime(LocalTime());
+        Timestamp stamp;
+        stamp.year = now.year;
+        stamp.month = now.month;
+        stamp.day = now.day;
+        stamp.hour = now.hour;
+        stamp.minute = now.minute;
+        stamp.second = now.second;
+        check(controller.start(stamp), "window recording starts: " ~
+            controller.lastMessage());
+        if (!controller.isRecording())
+        {
+            controller.shutdown();
+            return;
+        }
+
+        const deadline = Clock.currTime + dur!"seconds"(10);
+        RecorderSnapshot first;
+        while (Clock.currTime < deadline)
+        {
+            first = controller.poll();
+            if (first.frames > 0 || first.phase == RecorderPhase.failed)
+                break;
+            pumpMessages();
+            Thread.sleep(dur!"msecs"(10));
+        }
+        if (first.phase == RecorderPhase.failed || first.frames == 0)
+        {
+            check(false, "window recording failed to start: " ~ first.error);
+            controller.shutdown();
+            return;
+        }
+
+        sleepRecording(controller, 500);
+        // Leave fullscreen/windowed geometry behind: a larger, moved window.
+        SetWindowPos(window, null, 140, 120, 800, 600,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+        sleepRecording(controller, 700);
+        // Alt+Tab out of a game can minimise it.
+        ShowWindow(window, SW_MINIMIZE);
+        sleepRecording(controller, 700);
+        ShowWindow(window, SW_RESTORE);
+        sleepRecording(controller, 700);
+
+        const frames = controller.poll().frames;
+        controller.stop();
+        // The test window belongs to this thread, and the recorder calls
+        // SetWindowPos on it. Keep pumping while waiting, as the app's own
+        // message loop does, or that cross-thread call can block the worker.
+        const stopDeadline = Clock.currTime + dur!"seconds"(15);
+        while (controller.hasEncoder() && Clock.currTime < stopDeadline)
+        {
+            controller.poll();
+            pumpMessages();
+            Thread.sleep(dur!"msecs"(20));
+        }
+        controller.poll();
+        check(!controller.hasEncoder(), "window recording stops within 15 seconds");
+        const output = controller.lastFinishedPath();
+        check(output.length > 0 && exists(output),
+            "window recording survives resize/minimise: " ~
+            controller.lastMessage());
+        check(frames >= 50,
+            format("window recording kept its timeline (%d frames)",
+                frames));
+
+        const ffprobe = findFfprobe(ffmpeg);
+        if (ffprobe.length == 0 || output.length == 0) return;
+        int code;
+        const probe = runCapture(ffprobe, [
+            "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name,width,height",
+            "-of", "default=noprint_wrappers=1", output,
+        ], code);
+        check(code == 0, "ffprobe reads the resized window recording: " ~ probe);
+        check(probe.indexOf(format("width=%d", rect.width)) >= 0 &&
+            probe.indexOf(format("height=%d", rect.height)) >= 0,
+            "the window recording keeps its original dimensions: " ~ probe);
+        writeln(format("  window resilience: %d frames, %dx%d",
+            frames, rect.width, rect.height));
+    }
+    else
+        writeln("  (window recording is Windows-only; skipping)");
+}
+
+/// Pump the test window's messages so it stays responsive and visible.
+private void pumpMessages()
+{
+    version (Windows)
+    {
+        import core.sys.windows.windows : DispatchMessageW, MSG, PM_REMOVE,
+            PeekMessageW, TranslateMessage;
+        MSG message;
+        while (PeekMessageW(&message, null, 0, 0, PM_REMOVE) != 0)
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+}
+
+private void sleepPumping(int milliseconds)
+{
+    const end = MonoTime.currTime + msecs(milliseconds);
+    while (MonoTime.currTime < end)
+    {
+        pumpMessages();
+        Thread.sleep(dur!"msecs"(20));
+    }
+    pumpMessages();
+}
+
+/// Hold the window responsive while polling the controller like the UI tick.
+private void sleepRecording(RecorderController controller, int milliseconds)
+{
+    const end = MonoTime.currTime + msecs(milliseconds);
+    while (MonoTime.currTime < end)
+    {
+        controller.poll();
+        pumpMessages();
+        Thread.sleep(dur!"msecs"(20));
+    }
+    controller.poll();
+}
+
 int main(string[] args)
 {
     bool requireLive;
     bool pacingOnly;
     bool stopOnly;
+    bool windowOnly;
     foreach (arg; args[1 .. $])
     {
         if (arg == "--require-live") requireLive = true;
         if (arg == "--pacing") pacingOnly = true;
         if (arg == "--stop") stopOnly = true;
+        if (arg == "--window") windowOnly = true;
     }
 
     checkSettings();
@@ -950,7 +1138,7 @@ int main(string[] args)
     checkSettingsFile();
     checkAudioParsing();
     checkCommandLine();
-    if (!pacingOnly && !stopOnly)
+    if (!pacingOnly && !stopOnly && !windowOnly)
     {
         checkHotkeyLive();
         checkPickerInApp();
@@ -974,6 +1162,11 @@ int main(string[] args)
     {
         writeln("  live recording with ", ffmpeg);
         checkSystemAudioStop(ffmpeg);
+    }
+    else if (windowOnly)
+    {
+        writeln("  live recording with ", ffmpeg);
+        checkWindowResilience(ffmpeg);
     }
     else
     {
