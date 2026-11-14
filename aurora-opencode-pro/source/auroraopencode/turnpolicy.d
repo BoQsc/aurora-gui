@@ -1,6 +1,6 @@
 module auroraopencode.turnpolicy;
 
-import auroraopencode.core : ChatSession;
+import auroraopencode.core : ChatSession, ChatMessage, activeMessagePath;
 import auroraopencode.taskcontinuation : taskAwaitingInput;
 import auroraopencode.executioncontrol : executionState, executionShouldContinue;
 import auroraopencode.taskflow : taskInvestigation;
@@ -12,6 +12,7 @@ import auroraopencode.completionhandoff : completionHandoffNeeded, completionHan
 import auroraopencode.orchestrator : experimentalOrchestratorIsRouter, experimentalOrchestratorAgentName;
 import auroraopencode.contextpolicy : latestActualUserRequest;
 import auroraopencode.requestintent : workRestrictionRequest;
+import std.string : strip;
 
 enum TurnAction { settle, failed, interrupted, applySteering, request, waitInput, waitChildren, reportChild }
 
@@ -96,6 +97,29 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     if (!goalActive(session) && settled && completionHandoffPending(session) &&
         completionHandoffNeeded(session, policy.finishReason))
         result.recordedSummary = recordedCompletionHandoff(session);
+    // A settled turn whose request carried no tools and whose reply is empty
+    // ends with nothing to show. Re-ask with the tools it was missing instead
+    // of reporting a completed turn that produced no result.
+    else if (settled && !policy.toolsEnabled)
+    {
+        string reply;
+        foreach (index; activeMessagePath(session))
+        {
+            const ref message = session.messages[index];
+            if (message.role == "assistant" && !message.internal && !message.failed &&
+                !message.toolCalls.length) reply = message.content;
+        }
+        if (!reply.strip.length)
+        {
+            result.action = TurnAction.request;
+            result.turnStatus = "running";
+            result.taskStatus = "active";
+            result.guidance = "The previous request offered no tools and produced an empty reply. " ~
+                "Use the available tools to deliver the result now, then state the outcome.";
+            result.status = "Retrying with tools…";
+            return result;
+        }
+    }
     if (policy.orchestratorEnabled && session.agents.length &&
         !(session.parentSessionId.length && !settled))
     {

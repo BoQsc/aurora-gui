@@ -88,6 +88,20 @@ int main()
         "Final answer handoff hid tools while a real outcome remained");
     writeln("PASS a question answers directly; work that still needs tools is not cut off with no result");
 
+    // A tool-less request that returns an empty reply must not settle as a
+    // completed turn with nothing to show.
+    s = pending(); s.verificationStatus="passed";
+    append(s,"tool","Changed the requested implementation",false,"edit");
+    s.messages[$-1].workspaceChanged=true;
+    append(s,"assistant","  ",false);
+    s.messages[$-1].finishReason="stop";
+    s.taskSteps[0].status="completed";
+    TurnPolicy noTools; noTools.toolsEnabled=false; noTools.finishReason="stop";
+    auto blank = decideTurn(s,noTools);
+    assert(blank.action == TurnAction.request && blank.guidance.indexOf("no tools")>=0,
+        "An empty tool-less reply settled as a completed turn with no result");
+    writeln("PASS an empty tool-less reply is retried instead of settling with no result");
+
     s = pending(); s.verificationStatus="passed"; s.verificationScope="current";
     append(s,"tool","Checks passed",false,"run");
     s.messages[$-1].verificationCheck="verify:tests,interaction";
