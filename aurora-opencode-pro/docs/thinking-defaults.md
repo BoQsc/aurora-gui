@@ -15,6 +15,12 @@ conversation think? — and is shared by the composer selector, its dropdown, th
 live "Thinking…" phase label and the outgoing request, so the label cannot
 disagree with what is sent.
 
+The displayed mode is `thinkingMenuMode`: on resolves through
+`effectiveReasoningEffort` (`low`/`medium`/`high`, otherwise the model default),
+off is `off`. The selector's text and the dropdown's single checked row are both
+built from it, so a route recorded as `off` can no longer be printed as
+"Low" through `thinkingEffortLabel`'s fallback.
+
 - On when this conversation's own switch is on, or when the route resolves on:
   an explicit per-route effort, the saved global switch, or the model default
   (`high` for DeepSeek 4.1 Flash, `low` for everything else).
@@ -22,6 +28,10 @@ disagree with what is sent.
   a deliberate Off is not re-enabled by the DeepSeek default. `setReasoningControlForModel`
   accepts `off`, and `setThinkingMode` records it — choosing Off in any
   conversation is itself an explicit per-route choice.
+- That explicit `off` also wins over a conversation's older `true` flag.
+  Otherwise the request would send the model's default effort while the selector
+  showed the route's `off` as `Low`, and the value appeared to change on every
+  switch to a chat created before the choice.
 - A stale `false` flag (older Settings file, older conversation) no longer
   drags a DeepSeek 4.1 Flash route to Off.
 - A non-GUI (console/command-line) run keeps its own low-latency route
@@ -29,6 +39,20 @@ disagree with what is sent.
   Settings enable Thinking. That model id deliberately does not match the
   DeepSeek 4.1 Flash default, and `app.d` does not mirror either value into the
   saved Settings, so a shell launch leaves the GUI's own choice alone.
+
+## Set once, then show it
+
+Opening a conversation only reflects its state; it no longer copies that chat's
+flag into `_settings.thinking`. The saved app-wide switch and the per-route
+records change when the user picks a mode (`setThinkingMode`), so browsing chats
+cannot rewrite the default that the next new chat inherits.
+
+Because the mode is resolved per endpoint/model, every place that can change the
+active route re-pushes the selector: a new chat, the model picker, a provider
+preset switch, the Settings connection save, a catalog realignment of an
+unavailable model id, and the console-default switch. Before that, the selector
+kept the previous route's text and only jumped when a conversation switch
+refreshed it.
 
 The provider adapter still sends `reasoning_effort` only when `thinking` is true,
 and maps an unset effort onto `defaultReasoningEffortForModel`.
@@ -45,6 +69,10 @@ and maps an unset effort onto `defaultReasoningEffortForModel`.
 - `tests/headless_pro_smoke.d` — the Thinking dropdown's checkmark and the
   selector label for a conversation whose stored flag is `false`, plus the
   Off/Low/Medium/High menu and the per-model effort it persists.
+- `tests/thinking_mode_switch_contracts.d` — High in one chat, Off in the next,
+  switching back and forth keeps the selector and request on the chosen mode, a
+  per-route Off beats the older chat's `true` flag (no "Low" fallback), and
+  opening a conversation leaves the saved Thinking switch alone.
 
 Run the focused fixtures with the recipe below (it also covers the checkout-lock
 contracts described in `tool-lease-scope.md`):

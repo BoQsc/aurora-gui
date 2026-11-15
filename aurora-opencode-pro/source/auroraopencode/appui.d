@@ -18756,6 +18756,7 @@ private string _suggestExcludeId;
         updateStatus("New conversation. Ask away!");
         refreshUsageBadge();
         refreshTimerBadge(true);
+        refreshThinkingControl();
     }
 
     private void selectSession(int index)
@@ -18817,7 +18818,10 @@ private string _suggestExcludeId;
         adoptSessionProvider(index);
         _settings.model = resolveAvailableModel(_sessions[index].model);
         _sessions[index].model = _settings.model;
-        _settings.thinking = _sessions[index].thinking;
+        // Opening a conversation must not rewrite the saved app-wide mode: the
+        // composer resolves this chat's own Thinking state, and Settings keeps
+        // the mode the user chose. Browsing chats used to leak a chat's flag
+        // into Settings, and the next rebuild persisted it.
         _modelButton.setText(_settings.model);
         refreshThinkingControl();
         markDirty();
@@ -26839,6 +26843,10 @@ private void pollButtonSuggestionRequest()
                 _settings.model = _models[cast(size_t) index];
                 if (_current >= 0) _sessions[_current].model = _settings.model;
                 _modelButton.setText(_settings.model);
+                // The Thinking record is keyed by route, so a model pick can
+                // change the selected mode. Push it now instead of waiting for
+                // the next conversation switch to refresh the label.
+                refreshThinkingControl();
                 // Discovery is keyed by model and provider. Retain it so returning
                 // to a model keeps the server's configured context window.
                 saveSettingsSoon();
@@ -26989,6 +26997,7 @@ private void pollButtonSuggestionRequest()
         _modelsFetched = false;
         applyApiKeyToClient();
         updateModelButton();
+        refreshThinkingControl();
         refreshUsageBadge();
         _client.fetchModels();
         updateStatus("Provider switched to " ~ preset.name ~ ".");
@@ -27000,20 +27009,15 @@ private void pollButtonSuggestionRequest()
         if (_thinkingTooltipOpen)
             setTooltipOpen(_thinkingBox, thinkingToggleTooltipText,
                 _thinkingTooltip, _thinkingTooltipOpen, false, true);
-        const model = _settings.model;
+        const model = activeThinkingModel();
         const control = reasoningControlForModel(_settings,
             _settings.baseUrl, model);
-        const thinkingOn = effectiveThinkingForRoute(activeSessionThinking(),
-            model);
-        const effort = control.effort.length > 0 ? control.effort
-            : defaultReasoningEffortForModel(model);
+        const selectedMode = thinkingMenuMode();
         ContextMenuItem[] items;
         items ~= ContextMenuItem.command("Thinking mode",
             delegate() {}, "", false);
         foreach (mode; ["off", "low", "medium", "high"])
-            items ~= thinkingModeMenuItem(mode,
-                mode == "off" ? !thinkingOn
-                : (thinkingOn && mode == effort));
+            items ~= thinkingModeMenuItem(mode, mode == selectedMode);
         items ~= ContextMenuItem.separatorItem();
         if (_reasoningCapsBaseUrl == _settings.baseUrl && _llamaCppEndpoint)
         {
@@ -27045,15 +27049,16 @@ private void pollButtonSuggestionRequest()
     private void setThinkingMode(string mode)
     {
         const enabled = mode != "off";
+        const model = activeThinkingModel();
         _settings.thinking = enabled;
         if (_current >= 0) _sessions[_current].thinking = enabled;
         // Record the choice for this route, `off` included. Without an explicit
         // record a model that reasons by default (DeepSeek 4.1 Flash) would turn
         // Thinking back on the next time its default is resolved.
         auto control = reasoningControlForModel(_settings,
-            _settings.baseUrl, _settings.model);
+            _settings.baseUrl, model);
         setReasoningControlForModel(_settings, _settings.baseUrl,
-            _settings.model, mode, control.budgetTokens);
+            model, mode, control.budgetTokens);
         saveSettingsNow();
         refreshThinkingControl();
     }
@@ -27088,22 +27093,57 @@ private void pollButtonSuggestionRequest()
     private bool effectiveThinkingForRoute(bool sessionChose, string model)
     {
         if (_consoleDefaultModel.length > 0) return sessionChose;
+        // An explicit per-route Off is the user's latest decision for this
+        // endpoint/model. A conversation that still carries an older `true`
+        // flag must not resurrect Thinking: the request would then send the
+        // model's default effort while the label showed the route's "off" as
+        // "Low" (thinkingEffortLabel's fallback).
+        if (reasoningControlForModel(_settings, _settings.baseUrl, model).effort ==
+            "off")
+            return false;
         return sessionChose || effectiveThinkingForModel(_settings,
             _settings.baseUrl, model);
+    }
+
+    /// The conversation model whose Thinking record the composer describes.
+    /// `_settings.model` normally mirrors it, but the conversation's own id is
+    /// what the request sends, so the label follows the chat when they drift
+    /// apart (catalog refresh, restore ordering).
+    private string activeThinkingModel() const
+    {
+        return _current >= 0 && _current < cast(int) _sessions.length &&
+            _sessions[_current].model.length > 0
+            ? _sessions[_current].model : _settings.model;
+    }
+
+    /// The effort a thinking request actually carries. `off` (and an unset
+    /// record) resolves to the model's default exactly as the provider adapter
+    /// does, so `off` can never be printed or checked as an effort level.
+    private static string effectiveReasoningEffort(const ref Settings settings,
+        string baseUrl, string model)
+    {
+        const effort = reasoningControlForModel(settings, baseUrl, model).effort;
+        return effort == "low" || effort == "medium" || effort == "high"
+            ? effort : defaultReasoningEffortForModel(model);
+    }
+
+    /// The one mode the label and the dropdown describe for the active chat.
+    /// Keeping the menu's checked row on this value means it cannot disagree
+    /// with the label or with the request.
+    private string thinkingMenuMode()
+    {
+        const model = activeThinkingModel();
+        return effectiveThinkingForRoute(activeSessionThinking(), model)
+            ? effectiveReasoningEffort(_settings, _settings.baseUrl, model)
+            : "off";
     }
 
     /// The composer selector's label for the chat's current mode.
     private string thinkingModeLabel()
     {
-        // Resolve the conversation's effective state, so a model that reasons by
-        // default (DeepSeek 4.1 Flash) reads High instead of Off while the
-        // saved Settings never recorded a choice for it.
-        if (!effectiveThinkingForRoute(activeSessionThinking(), _settings.model))
-            return "Thinking: Off";
-        const effort = reasoningControlForModel(_settings, _settings.baseUrl,
-            _settings.model).effort;
-        return "Thinking: " ~ thinkingEffortLabel(effort.length > 0
-            ? effort : defaultReasoningEffortForModel(_settings.model));
+        const mode = thinkingMenuMode();
+        return mode == "off" ? "Thinking: Off"
+            : "Thinking: " ~ thinkingEffortLabel(mode);
     }
 
     /// Push the active chat's mode onto the composer selector.
@@ -29340,6 +29380,9 @@ private void pollButtonSuggestionRequest()
                 updateModelButton();
                 refreshUsageBadge();
             }
+            // The endpoint/model pair is the route whose Thinking choice the
+            // composer shows, so a save must re-resolve the label.
+            refreshThinkingControl();
             if (auto project = activeProject())
             {
                 if (workspace.length > 0 && workspace != project.path)
@@ -29756,6 +29799,8 @@ private void pollButtonSuggestionRequest()
                 if (_modelButton !is null) _modelButton.setText(resolved);
             }
         }
+        // A realigned model id is a different Thinking route.
+        refreshThinkingControl();
         if (!_client.busy())
             updateStatus("Models refreshed.");
         refreshUsageBadge();
@@ -32762,7 +32807,6 @@ private void pollButtonSuggestionRequest()
                     _current = 0;
                 adoptSessionProvider(_current);
                 _settings.model = _sessions[_current].model;
-                _settings.thinking = _sessions[_current].thinking;
                 _modelButton.setText(_settings.model);
                 refreshThinkingControl();
                 if (_input !is null && _sessions[_current].draft.length > 0)
@@ -32896,7 +32940,6 @@ private void pollButtonSuggestionRequest()
                 _current = 0;
             adoptSessionProvider(_current);
             _settings.model = _sessions[_current].model;
-            _settings.thinking = _sessions[_current].thinking;
             _modelButton.setText(_settings.model);
             refreshThinkingControl();
             // Put back a prompt the user typed but never sent, so a restart or
@@ -35197,6 +35240,7 @@ private void pollButtonSuggestionRequest()
     {
         _consoleDefaultModel = model;
         _consoleDefaultThinking = thinking;
+        refreshThinkingControl();
     }
 
     /// Open a fresh conversation under the project named `name`, creating that
@@ -36584,6 +36628,42 @@ private void pollButtonSuggestionRequest()
     public string thinkingModeLabelForTesting()
     {
         return thinkingModeLabel();
+    }
+
+    /// Test-only: the text the composer Thinking selector actually renders.
+    public string thinkingControlTextForTesting()
+    {
+        return _thinkingBox is null ? "" : to!string(_thinkingBox.text());
+    }
+
+    /// Test-only: the mode the Thinking dropdown marks as selected.
+    public string thinkingMenuModeForTesting()
+    {
+        return thinkingMenuMode();
+    }
+
+    /// Test-only: the app-wide Thinking switch held in Settings, which is not
+    /// the active conversation's own flag.
+    public bool settingsThinkingForTesting() const
+    {
+        return _settings.thinking;
+    }
+
+    /// Test-only: the Thinking mode the next request carries for the active
+    /// conversation ("off", or "on:<effort>"), resolved by the same helpers the
+    /// label and request use.
+    public string requestReasoningForTesting()
+    {
+        const model = activeThinkingModel();
+        return effectiveThinkingForRoute(activeSessionThinking(), model)
+            ? "on:" ~ effectiveReasoningEffort(_settings, _settings.baseUrl, model)
+            : "off";
+    }
+
+    /// Test-only: choose a Thinking mode exactly as a dropdown row does.
+    public void setThinkingModeForTesting(string mode)
+    {
+        setThinkingMode(mode);
     }
 
 
