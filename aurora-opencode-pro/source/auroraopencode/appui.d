@@ -105,7 +105,8 @@ import auroraopencode.orchestrator : setOrchestratorSetting,
 import auroraopencode.planmode : experimentalPlanModeEnabled,
     experimentalStrictPlanEnabled, planModePromptBlock, setPlanModeSetting,
     setStrictPlanSetting, trackedPlanPromptBlock;
-import auroraopencode.requestintent : diagnosticFollowUpRequest, explanationOnlyRequest, answerOnlyRequest;
+import auroraopencode.requestintent : diagnosticFollowUpRequest, explanationOnlyRequest,
+    answerOnlyRequest, controlInstructionText;
 import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateError, incrementalPlan,
     explorationGuidance, supportedStep, remapTaskContract, stalledExecutionTools, executionDiagnosisMarker, executionRecoveryDue,
     restoreBranchTask, initializeLegacyTask, taskHasActionEvidence, taskInvestigation, workContextForPlan, retainNestedWork, rememberPlanRevision, planUpdateText;
@@ -23536,12 +23537,14 @@ private void pollButtonSuggestionRequest()
         if (session.queuedGuidance.length == 0) return false;
         foreach (text; session.queuedGuidance)
         {
+            const control = controlInstructionText(text);
             ChatMessage guidance;
             guidance.role = "user";
+            guidance.internal = control;
             guidance.content = text;
             guidance.time = currentTimestamp();
             appendMessage(session, guidance);
-            acceptTaskRequest(session, text, session.activeLeafId, true);
+            if (!control) acceptTaskRequest(session, text, session.activeLeafId, true);
         }
         session.queuedGuidance.length = 0;
         session.taskStatus = "active";

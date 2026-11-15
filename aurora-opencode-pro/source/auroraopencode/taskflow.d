@@ -125,6 +125,10 @@ bool initializeLegacyTask(ref ChatSession session)
 
 void acceptTaskRequest(ref ChatSession session, string text, string messageId, bool steering = false)
 {
+    // Control records are part of the current turn, not a new user request.
+    // Accepting one as a task used the execution-recovery prose itself as the
+    // next objective and started an unrelated verification loop.
+    if (controlInstructionText(text)) return;
     initializeLegacyTask(session);
     scope(exit) if (reportedFailureRequest(text) && session.objective.length)
     {

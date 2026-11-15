@@ -3,7 +3,7 @@ module request_scope_contracts;
 import auroraopencode.core;
 import auroraopencode.taskflow;
 import auroraopencode.taskcontinuation;
-import auroraopencode.contextpolicy : durableTaskPrompt;
+import auroraopencode.contextpolicy : durableTaskPrompt, latestActualUserRequest;
 import auroraopencode.taskpolicy : requiredEvidence;
 import auroraopencode.turnpolicy;
 import std.conv : to;
@@ -64,6 +64,27 @@ int main()
         "Continue resurrected an arbitrary unfinished archived task");
     request(s, "Thanks");
     assert(taskContinuation(s, true).action == TaskContinuationAction.settle);
+
+    // Recovery, plan-review and goal guidance are control state for the running
+    // turn. They may be appended as user-role messages, but they must not
+    // become a new objective or replace the latest human request.
+    ChatSession recovering;
+    request(recovering, "Implement the parser fix and verify it.");
+    const recoveringId = recovering.contract.id;
+    const recoveringObjective = recovering.objective;
+    acceptTaskRequest(recovering,
+        "Execution recovery did not resolve the recorded outcome. Verify the reported behavior on the current deliverable and actual execution path.",
+        "control-recovery");
+    assert(recovering.contract.id == recoveringId && recovering.objective == recoveringObjective,
+        "An execution-recovery instruction became a new task");
+    acceptTaskRequest(recovering,
+        "Plan review reminder: {\"phase\":0,\"results\":5}",
+        "control-review");
+    assert(recovering.contract.id == recoveringId && recovering.objective == recoveringObjective,
+        "A plan-review reminder became a new task");
+    recovering.queuedGuidance ~= "The user updated the persistent goal:\nPublish the parser fix";
+    assert(latestActualUserRequest(recovering) == "Implement the parser fix and verify it.",
+        "Queued goal control guidance replaced the latest actual user request");
     import auroraopencode.worktracking : readPlanText;
     assert(readPlanText(s, `{"task_id":"request-0","view":"details"}`).indexOf("exact") >= 0);
     import auroraopencode.goalmutation : restoreGoalTask;

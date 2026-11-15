@@ -187,6 +187,35 @@ bool explanationOnlyRequest(string text)
 
 bool answerOnlyRequest(string text) { return requestIntent(text) == RequestIntent.clarification; }
 
+/// Internal control records can be appended as user-role messages so the model
+/// sees them, but they are not user instructions and must never become a new
+/// task objective. Recovery, plan review, goal continuation and handoff text
+/// all belong to the turn that is already running.
+bool controlInstructionText(string text)
+{
+    const value = text.strip;
+    foreach (prefix; [
+        "Durable task-state checkpoint.",
+        "Internal control-history boundary.",
+        "Progress guidance",
+        "Plan progress checkpoint",
+        "Plan review reminder",
+        "Continuation: unfinished authorized work",
+        "Execution recovery",
+        "Execution obstacle",
+        "Persistent goal continuation",
+        "Continuation request",
+        "Proactive action checkpoint",
+        "Agent output recovery",
+        "Execution diagnosis checkpoint",
+        "Completion handoff requested",
+        "The user resumed the",
+        "The user started the",
+        "The user updated the"])
+        if (value.startsWith(prefix)) return true;
+    return false;
+}
+
 /// A follow-up that opens with "how/whether/why... scope" asks for a direct
 /// answer, not another action round. After a completed turn the final-answer
 /// handoff otherwise withheld every tool, so the model emitted its lookup as

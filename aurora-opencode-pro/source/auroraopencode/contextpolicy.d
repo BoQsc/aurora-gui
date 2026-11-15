@@ -6,7 +6,8 @@ import auroraopencode.projectioncache : projectContext, RequestProjectionCache, 
 import auroraopencode.taskcontext : taskContext;
 import auroraopencode.taskpolicy : requiredEvidence;
 import auroraopencode.taskflow : taskInvestigation;
-import auroraopencode.requestintent : RequestIntent, answerOnlyRequest, requestIntent;
+import auroraopencode.requestintent : RequestIntent, answerOnlyRequest, requestIntent,
+    controlInstructionText;
 import auroraopencode.goalmode : goalActive, goalAnswerDelivered, goalPromptBlock;
 import std.array : appender, join, split;
 import std.algorithm : canFind, min, max;
@@ -17,7 +18,9 @@ import std.json : JSONValue, JSONType, parseJSON;
 /// Internal checkpoints cannot supersede the human's latest request.
 public string latestActualUserRequest(const ref ChatSession session)
 {
-    if (session.queuedGuidance.length > 0) return session.queuedGuidance[$ - 1];
+    if (session.queuedGuidance.length > 0)
+        foreach_reverse (text; session.queuedGuidance)
+            if (!controlInstructionText(text)) return text;
     foreach_reverse (index; activeMessagePath(session))
         if (session.messages[index].role == "user" && !session.messages[index].internal)
             return session.messages[index].content;

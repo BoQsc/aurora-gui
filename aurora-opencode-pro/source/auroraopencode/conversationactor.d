@@ -29,6 +29,7 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeE
 import auroraopencode.repository : RepositoryRuntime;
 import auroraopencode.runtime : AgentRuntimeEvent, AgentEventKind;
 import auroraopencode.requestpolicy : RequestPolicy, prepareAgentRequest;
+import auroraopencode.requestintent : controlInstructionText;
 import auroraopencode.turnpolicy : TurnPolicy, TurnAction, decideTurn, hasIncompleteTaskSteps;
 import auroraopencode.toolsettlement : ToolResultPolicy, settleToolResult, advanceToolTaskState;
 import auroraopencode.toolprotocol : normalizeToolCalls;
@@ -557,10 +558,13 @@ public final class ConversationActor
     private void appendUser(string text, ChatPromptContext context = ChatPromptContext.init, bool steering = false)
     {
         diagnosticRemaining = 0; diagnosticActive = false; diagnosticUsed = false;
-        ChatMessage message; message.role = "user"; message.content = text; message.images = context.images;
+        const control = controlInstructionText(text);
+        ChatMessage message; message.role = "user"; message.internal = control;
+        message.content = text; message.images = context.images;
         message.inputId = context.inputId;
         message.inputCommitted = context.inputCommitted;
-        append(message); acceptTaskRequest(session, text, session.activeLeafId, steering);
+        append(message);
+        if (!control) acceptTaskRequest(session, text, session.activeLeafId, steering);
         if (context.text.length)
         {
             ChatMessage detail; detail.role = "user"; detail.internal = true; detail.content = context.text;

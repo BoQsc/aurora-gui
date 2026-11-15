@@ -22,6 +22,11 @@ of resuming unrelated implementation work.
 The request classifier recognizes explicit amendment references, not semantic
 similarity. The full request remains visible to the model. Paused goal ownership
 cannot turn a corrective action into a continuation of its obsolete checklist.
+Execution recovery, output recovery, plan review, goal continuation and other
+control records are control state for the running turn. They may appear as
+user-role messages, but they never retarget the task or become a new objective;
+only a real user instruction can do that. The steering paths mark control records
+internal and the latest-actual-request projection skips them.
 
 The bounded working context includes a small background-task index. `read_plan`
 with `task_id` retrieves exact archived acceptance without activating it.

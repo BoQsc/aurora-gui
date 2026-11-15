@@ -4,6 +4,7 @@ import auroraopencode.taskflow;
 import auroraopencode.taskcontinuation;
 import auroraopencode.taskpolicy;
 import auroraopencode.runtime;
+import auroraopencode.planmode : setStrictPlanSetting;
 import std.json : JSONValue, parseJSON;
 import std.conv : to;
 import std.stdio : writeln;
@@ -21,6 +22,11 @@ void request(ref ChatSession s, string content)
 
 int main()
 {
+    // This fixture covers strict-plan continuity: completed outcomes and their
+    // proof must survive a later partial plan. Default planning intentionally
+    // accepts a shorter current list.
+    setStrictPlanSetting(true);
+    scope (exit) setStrictPlanSetting(false);
     ChatSession s;
     request(s, "Implement the parser and retain regression tests.");
     const identity = s.contract.id;
