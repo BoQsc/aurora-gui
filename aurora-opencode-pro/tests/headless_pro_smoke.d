@@ -1165,6 +1165,8 @@ private void verifyConversationReferenceDrag(OpenCodeRoot root,
     assert(sessionIndex >= 0, "No conversation row to reference");
     const title = root.sessionTitleForTesting(sessionIndex);
     assert(title.length > 0, "The referenced conversation needs a title");
+    const id = root.sessionIdForTesting(sessionIndex);
+    assert(id.length > 0, "The referenced conversation needs a stable id");
     const activeBefore = root.currentSessionForTesting();
     const pinnedBefore = root.sessionPinnedForTesting(sessionIndex);
 
@@ -1184,7 +1186,7 @@ private void verifyConversationReferenceDrag(OpenCodeRoot root,
     driver.mouseUp();
     root.tickTree(0.02);
 
-    const expected = "Drag: @conversation \"" ~ title ~ "\" ";
+    const expected = "Drag: @conversation:" ~ id ~ " \"" ~ title ~ "\" ";
     assert(root.inputTextForTesting() == expected,
         "Dropping on the prompt should insert a reference at the caret, got '" ~
         root.inputTextForTesting() ~ "'");
@@ -1194,6 +1196,25 @@ private void verifyConversationReferenceDrag(OpenCodeRoot root,
         "Dropping on the prompt must not change the conversation's pin state");
     assert(input.focused(),
         "Dropping a reference should put the caret in the prompt field");
+
+    const messagesBefore = root.sessionMessageCountForTesting(activeBefore);
+    assert(root.appendConversationReferenceContextsForTesting(
+        root.inputTextForTesting()),
+        "The reference token did not produce hidden request context");
+    assert(root.sessionMessageCountForTesting(activeBefore) == messagesBefore + 1,
+        "The reference context was not appended to the conversation");
+    const context = root.lastMessageContentInSessionForTesting(activeBefore);
+    assert(context.indexOf("Title: " ~ title) >= 0,
+        "Reference context lost the conversation title: " ~ context);
+    assert(context.indexOf("Conversation ID: " ~ id) >= 0,
+        "Reference context lost the conversation id: " ~ context);
+    const historyFile = root.threadFilePathForTesting(id);
+    assert(context.indexOf("History file: " ~ historyFile) >= 0,
+        "Reference context lost the absolute history-file path: " ~ context);
+    assert(context.indexOf("History file status:") >= 0,
+        "Reference context lost the history-file status: " ~ context);
+    assert(context.indexOf("Messages:") >= 0,
+        "Reference context lost the conversation message count: " ~ context);
 
     // A plain click still selects. Selection moved to release so a drag can
     // leave the current conversation intact.
@@ -3554,6 +3575,8 @@ int main(string[] args)
         assert(sessionIndex >= 0, "Need a conversation row to reference");
         const title = root.sessionTitleForTesting(sessionIndex);
         assert(title.length > 0, "The referenced conversation needs a title");
+        const id = root.sessionIdForTesting(sessionIndex);
+        assert(id.length > 0, "The referenced conversation needs a stable id");
         const pinnedBefore = root.sessionPinnedForTesting(sessionIndex);
         root.setInputForTesting("Use this: ");
         root.tickTree(0.02);
@@ -3572,7 +3595,7 @@ int main(string[] args)
             root.sessionDragGhostActionForTesting() ~ "'");
         driver.mouseUp();
         root.tickTree(0.02);
-        const expected = "Use this: @conversation \"" ~ title ~ "\" ";
+        const expected = "Use this: @conversation:" ~ id ~ " \"" ~ title ~ "\" ";
         assert(root.inputTextForTesting() == expected,
             "Dropping on the prompt should insert a reference at the caret, got '" ~
             root.inputTextForTesting() ~ "'");

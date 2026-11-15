@@ -9026,16 +9026,19 @@ private final class ChatInput : TextArea
         return true;
     }
 
-    /// Insert a reference to another conversation at the caret. The reference
-    /// stays ordinary composer text, so it can be edited or removed like any
-    /// other part of the prompt.
-    public void insertConversationReference(string title)
+    /// Insert a reference to another conversation at the caret. The stable id
+    /// makes the reference resolvable; the title keeps it readable. The
+    /// reference stays ordinary composer text, so it can be edited or removed
+    /// like any other part of the prompt.
+    public void insertConversationReference(string id, string title)
     {
         if (_suggestion.length > 0) setSuggestion("");
+        auto safeId = id.strip;
         auto safeTitle = title.strip;
         if (safeTitle.length == 0) safeTitle = "New chat";
         const quote = safeTitle.indexOf('"') >= 0 ? "'" : "\"";
-        auto reference = "@conversation " ~ quote ~ safeTitle ~ quote;
+        auto reference = (safeId.length > 0 ? "@conversation:" ~ safeId
+            : "@conversation") ~ " " ~ quote ~ safeTitle ~ quote;
 
         const text = textUtf32();
         size_t begin = cursorIndex();
@@ -23732,6 +23735,71 @@ private void pollButtonSuggestionRequest()
         }
     }
 
+    /// Hidden metadata for every `@conversation:<id>` token in a prompt. The
+    /// visible token stays short; the model gets the stable id and the absolute
+    /// history-file path it can read when the request actually needs another
+    /// conversation's contents.
+    private string conversationReferenceContext(string text)
+    {
+        enum string prefix = "@conversation:";
+        auto context = appender!string();
+        bool[string] seen;
+        int attached;
+        foreach (token; text.split())
+        {
+            if (attached >= 3 || !token.startsWith(prefix)) continue;
+            auto id = token[prefix.length .. $];
+            while (id.length > 0 &&
+                (id[$ - 1] == ',' || id[$ - 1] == '.' || id[$ - 1] == ';' ||
+                 id[$ - 1] == ':' || id[$ - 1] == ')' || id[$ - 1] == ']'))
+                id = id[0 .. $ - 1];
+            if (id.length == 0 || id in seen) continue;
+            int sessionIndex = -1;
+            foreach (index, candidateSession; _sessions)
+                if (candidateSession.id == id)
+                {
+                    sessionIndex = cast(int) index;
+                    break;
+                }
+            if (sessionIndex < 0) continue;
+            seen[id] = true;
+            const ref conversation = _sessions[sessionIndex];
+            auto title = conversation.title.strip;
+            if (title.length == 0) title = "New chat";
+            const path = threadFilePath(id);
+            if (attached == 0)
+                context.put("Referenced conversations (read-only metadata; " ~
+                    "read a history file only when this request needs it):");
+            context.put("\n- Title: " ~ title);
+            context.put("\n  Conversation ID: " ~ id);
+            context.put("\n  History file: " ~ path);
+            context.put(exists(path) ? "\n  History file status: on disk"
+                : "\n  History file status: not written yet");
+            context.put("\n  Messages: " ~
+                to!string(conversation.messages.length));
+            const workspace = workspaceForSession(sessionIndex);
+            if (workspace.length > 0)
+                context.put("\n  Workspace: " ~ workspace);
+            ++attached;
+        }
+        return context.data;
+    }
+
+    /// Append one hidden context message for the conversation references in
+    /// `text`. Returns false when the prompt names no known conversation.
+    private bool appendConversationReferenceContexts(ref ChatSession session,
+        string text)
+    {
+        const context = conversationReferenceContext(text);
+        if (context.length == 0) return false;
+        ChatMessage note;
+        note.role = "user";
+        note.internal = true;
+        note.content = context;
+        appendMessage(session, note);
+        return true;
+    }
+
     /// `/btw` opens an independent lightweight conversation seeded with the
     /// durable objective and latest user request. The main task can keep running
     /// in its own runtime and its checklist/status are not changed.
@@ -24459,6 +24527,7 @@ private void pollButtonSuggestionRequest()
             context.content = strip(attachmentContextBlock(attachments));
             appendMessage(*session, context);
         }
+        appendConversationReferenceContexts(*session, baseText);
         addUserBubble(userMessage.content, images);
         _input.setText("");
         clearAttachments();
@@ -24804,6 +24873,7 @@ private void pollButtonSuggestionRequest()
         appendMessage(*session, userMessage);
         acceptTaskRequest(*session, text, session.activeLeafId);
         appendComposerContext(*session, text, workspaceForSession(sessionIndex));
+        appendConversationReferenceContexts(*session, text);
         session.taskStatus = "active";
         session.turnStatus = "running";
         publishThreadUpdated(*session);
@@ -31336,7 +31406,7 @@ private void pollButtonSuggestionRequest()
             return;
         auto title = _sessions[sessionIndex].title.strip;
         if (title.length == 0) title = "New chat";
-        _input.insertConversationReference(title);
+        _input.insertConversationReference(_sessions[sessionIndex].id, title);
         updateStatus("Referenced conversation \"" ~ title ~ "\" in the message.");
     }
 
@@ -35652,6 +35722,19 @@ private void pollButtonSuggestionRequest()
     public void sendForTesting()
     {
         sendMessage();
+    }
+
+    /// Test-only: the absolute history file a conversation id resolves to.
+    public string threadFilePathForTesting(string id)
+    {
+        return threadFilePath(id);
+    }
+
+    /// Test-only: run the same hidden-context builder the send path uses.
+    public bool appendConversationReferenceContextsForTesting(string text)
+    {
+        if (_current < 0) return false;
+        return appendConversationReferenceContexts(_sessions[_current], text);
     }
 
     /// Test-only: dispatch the composer's Alt+Enter action (queue the typed
