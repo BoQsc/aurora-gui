@@ -1,0 +1,14 @@
+{
+  "name": "aurora-window-widget",
+  "description": "Standard window and control widgets for Aurora applications",
+  "authors": ["aurora-gui contributors"],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
+  "targetType": "library",
+  "version": "0.1.0",
+  "sourcePaths": [
+    "source",
+    "../aurora-d-0.4.5/source"
+  ],
+  "libs-windows": ["user32", "gdi32", "shell32"]
+}
