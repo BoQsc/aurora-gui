@@ -4,6 +4,7 @@ import aurora;
 import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core;
 import auroraopencode.runtime : readAgentRuntimeEvents, projectAgentRuntimeEvents;
+import auroraopencode.tools : executeTool;
 import core.sync.semaphore : Semaphore;
 import core.thread : Thread;
 import core.time : MonoTime, seconds, msecs;
@@ -71,6 +72,10 @@ private void child(string state)
         diag["error"] = root.lastAssistantErrorForTesting();
         diag["activity"] = root.activityTextForTesting();
         diag["storageBlocked"] = root.storageBlockedForTesting();
+        diag["busy"] = root.sessionBusyDetailsForTesting(root.currentSessionForTesting());
+        const status = executeTool(OpenCodeToolCall("diag-status", "tool_status", "{}"),
+            buildPath(state, "workspace"));
+        diag["toolStatus"] = status.output;
         write(buildPath(state, "child-diag.json"), diag.toString());
     }
     assert(root.pendingToolResultsForTesting() == 0 && root.toolMessageCountForTesting() == 3);
