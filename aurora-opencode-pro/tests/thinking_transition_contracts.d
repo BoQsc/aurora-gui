@@ -20,7 +20,9 @@ import std.string : indexOf;
 /// produced the answer. The live header now carries a `no new output for Ns`
 /// clock for that window and drops it on the next fragment. This fixture drives
 /// the real widget tree through both a synthetic turn and a real HTTP provider
-/// that stalls between the reasoning stream and the answer.
+/// that stalls between the reasoning stream and the answer. The header stays a
+/// status line: it shows the pulse, token count and rate, never the streamed
+/// reasoning text itself.
 int main()
 {
     const state = buildPath(tempDir(), "aurora-thinking-transition-" ~
@@ -72,8 +74,8 @@ int main()
     root.beginStreamForTesting();
     root.streamReasoningForTesting("Considering the request.");
     until(delegate() { return root.liveThinkingHeaderForTesting().indexOf("Thinking") >= 0; });
-    assert(root.liveThinkingHeaderForTesting().indexOf("Considering the request.") >= 0,
-        "live Thinking header hid the reasoning it was producing: [" ~
+    assert(root.liveThinkingHeaderForTesting().indexOf("Considering the request.") < 0,
+        "live Thinking header echoed the reasoning text: [" ~
         root.liveThinkingHeaderForTesting() ~ "]");
     assert(root.liveThinkingHeaderForTesting().indexOf("no new output") < 0,
         "quiet note appeared before the reply actually went quiet");

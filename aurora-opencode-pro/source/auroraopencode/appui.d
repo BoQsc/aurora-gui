@@ -1274,9 +1274,6 @@ private final class MessageBubble : Widget
     private bool _thinkingHover;
     private double _thinkingElapsed = 0;
     private bool _thinkingLive;
-    // Latest line of live reasoning. Shown in the collapsed header so the
-    // Thinking phase is visibly producing content instead of only a pulse.
-    private string _thinkingPreview;
     // Seconds since the last streamed reasoning or answer fragment, used by the
     // live Thinking header to explain a quiet gap (`no new output for Ns`).
     private double _quietSeconds = 0.0;
@@ -1644,8 +1641,6 @@ private final class MessageBubble : Widget
         _thinkingBuffered.length = 0;
         _thinkingSpill = "";
         _thinkingDirty = false;
-        _thinkingPreview = "";
-        updateThinkingPreview(value);
         ++_thinkingGen;
         invalidate();
     }
@@ -1771,41 +1766,9 @@ private final class MessageBubble : Widget
         }
         _thinkingBuffered ~= toUTF32(chunk);
         _thinkingDirty = true;
-        updateThinkingPreview(chunk);
         ++_thinkingGen;
         _quietSeconds = 0.0;
         invalidate();
-    }
-
-    /// Keep the newest reasoning line bounded for the collapsed live header.
-    /// Reasoning usually has line breaks, so this tracks the current line; a
-    /// long unbroken burst is truncated to its newest characters rather than
-    /// turning the header into another growing layout.
-    private void updateThinkingPreview(string chunk)
-    {
-        if (chunk.length == 0) return;
-        if (chunk.length > 512)
-        {
-            size_t cut = chunk.length - 512;
-            while (cut < chunk.length && (cast(ubyte) chunk[cut] & 0xc0) == 0x80)
-                ++cut;
-            chunk = chunk[cut .. $];
-        }
-        size_t afterBreak;
-        bool foundBreak;
-        foreach (index, char c; chunk)
-            if (c == '\n' || c == '\r')
-            {
-                afterBreak = index + 1;
-                foundBreak = true;
-            }
-        const tail = foundBreak ? chunk[afterBreak .. $] : _thinkingPreview ~ chunk;
-        auto chars = toUTF32(tail);
-        size_t start;
-        while (start < chars.length && (chars[start] == ' ' || chars[start] == '\t' ||
-            chars[start] == '\r' || chars[start] == '\n')) ++start;
-        if (chars.length - start > 64) start = chars.length - 64;
-        _thinkingPreview = to!string(chars[start .. $]);
     }
 
     void appendContent(string chunk)
@@ -3453,8 +3416,8 @@ private final class MessageBubble : Widget
         string text = toggle ~ " Thinking";
         if (_thinkingLive || _tokensLive)
         {
-            // Pulsing indicator right after the label, so the long reasoning
-            // preview at the end can never push the live signal off-screen.
+            // Pulsing indicator right after the label, so a narrow window clips
+            // the counters rather than the live signal.
             const phase = cast(int) (_thinkingElapsed * 2) & 1;
             text ~= phase == 0 ? " ▌" : " ▐";
         }
@@ -3477,12 +3440,6 @@ private final class MessageBubble : Widget
             if (quiet > 0)
                 text ~= "  · no new output for " ~ to!string(quiet) ~ "s";
         }
-        // Last, so a narrow window clips the preview rather than the live
-        // status. This is what makes the Thinking phase visibly produce
-        // content instead of only pulsing.
-        if (_thinkingCollapsed && _content.length == 0 &&
-            (_thinkingLive || _tokensLive) && _thinkingPreview.length > 0)
-            text ~= "  · " ~ _thinkingPreview;
         return text;
     }
 
