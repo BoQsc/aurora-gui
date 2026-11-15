@@ -1435,6 +1435,10 @@ int main(string[] args)
         assert(hidden.length == 5, "Expected five historical starters");
         assert(!root.introExtrasShownForTesting(),
             "Historical starters should start collapsed");
+        assert(root.introActionBoundsForTesting().width == 0,
+            "New buttons action should stay folded with the historical starters");
+        assert(!root.clickGenerateIntroButtonsForTesting(),
+            "A folded action must not open the suggestions dialog");
         auto intro = requireWidget!Widget(root, "oc-intro");
         const more = root.introExtrasToggleBoundsForTesting();
         assert(more.width > 0 && more.height > 0,
@@ -1446,6 +1450,15 @@ int main(string[] args)
         assert(root.introExtrasShownForTesting(),
             "A real click on More should reveal the historical starters");
         assert(paintProjection(root, driver), "Expanded intro did not paint");
+        assert(root.introActionBoundsForTesting().width > 0,
+            "Expanded block should show the New buttons action");
+        assert(root.clickGenerateIntroButtonsForTesting(),
+            "Expanded action should open the suggestions dialog");
+        root.tickTree(0.02);
+        assert(root.suggestDialogOpenForTesting(),
+            "The suggestions dialog should be open after the click");
+        root.dismissSuggestDialogForTesting();
+        root.tickTree(0.02);
         const firstExtra = cast(int) visible.length;
         assert(root.clickIntroSuggestionForTesting(firstExtra),
             "An expanded historical starter should be clickable");
@@ -7183,6 +7196,12 @@ int main(string[] args)
         // "New buttons from recent chats" dialog: clicking the pill opens it and
         // the generated options must be laid out as visible rows, not merely
         // recorded - this guards the popup relayout after dynamic rows are added.
+        // The action is folded with the historical starters, so reveal it first.
+        assert(root.clickIntroExtrasToggleForTesting(),
+            "The More toggle should reveal the action pill");
+        root.tickTree(0.02);
+        assert(root.introExtrasShownForTesting(),
+            "The action pill should be available after expanding");
         assert(root.clickGenerateIntroButtonsForTesting(),
             "Clicking the pill should open the suggestions dialog");
         root.tickTree(0.02);
@@ -7194,6 +7213,9 @@ int main(string[] args)
             "Suggestion rows were not laid out (popup relayout missing)");
         assert(paintProjection(root, driver), "The suggestions dialog did not paint");
         root.dismissSuggestDialogForTesting();
+        root.tickTree(0.02);
+        assert(root.clickIntroExtrasToggleForTesting(),
+            "The historical starters should fold again");
         root.tickTree(0.02);
 
         // The first message replaces the welcome with the transcript.

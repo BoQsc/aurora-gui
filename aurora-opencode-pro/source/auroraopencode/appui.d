@@ -11043,6 +11043,7 @@ private immutable string generalAuroraOpencodeSuggestion = "General Aurora Openc
 /// Empty-state action pill: unlike the suggestion pills it does not prefill the
 /// composer. Clicking it asks the agent to propose new starter buttons from
 /// recent conversations and shows them in a dialog, one Add action per option.
+/// It is folded behind the same small toggle as the historical starters.
 private immutable string buttonSuggestionActionLabel =
     "New buttons from recent chats";
 
@@ -11094,9 +11095,10 @@ private final class IntroOverlay : Widget
     // The highlight persists between clicks (it is not hover); pressing the
     // same pill again toggles it off.
     private int _selected = -1;
-    // Optional trailing action pill. Unlike a suggestion pill it is not a
-    // prompt toggle: clicking it runs `onGenerateSuggestions` (which opens the
-    // "new buttons from recent chats" dialog) instead of inserting text.
+    // Optional action pill shown only while the historical starters are
+    // expanded. Unlike a suggestion pill it is not a prompt toggle: clicking it
+    // runs `onGenerateSuggestions` (which opens the "new buttons from recent
+    // chats" dialog) instead of inserting text.
     private string _actionLabel;
     private Rect _actionRect;
     private bool _actionHover;
@@ -11154,8 +11156,14 @@ private final class IntroOverlay : Widget
     private void toggleExtras()
     {
         _extrasShown = !_extrasShown;
-        if (!_extrasShown && _selected >= cast(int) _suggestions.length)
-            _selected = -1;
+        if (!_extrasShown)
+        {
+            if (_selected >= cast(int) _suggestions.length) _selected = -1;
+            // The action pill is folded with the starters, so a stale rect must
+            // not keep accepting clicks until the next paint.
+            _actionRect = Rect.init;
+            _actionHover = false;
+        }
         _hover = -1;
         invalidate();
     }
@@ -11189,8 +11197,8 @@ private final class IntroOverlay : Widget
         invalidate();
     }
 
-    /// Set (empty string clears) the trailing action pill shown below the
-    /// suggestion pills.
+    /// Set (empty string clears) the action pill shown at the end of the
+    /// expanded starter block.
     void setActionLabel(string value)
     {
         if (_actionLabel == value) return;
@@ -11245,7 +11253,8 @@ private final class IntroOverlay : Widget
     /// Test-only: click the action pill exactly as a left click would.
     public bool clickGenerateForTesting()
     {
-        if (_actionLabel.length == 0 || onGenerateSuggestions is null)
+        if (!_extrasShown || _actionLabel.length == 0 ||
+            onGenerateSuggestions is null)
             return false;
         onGenerateSuggestions();
         return true;
@@ -11410,7 +11419,10 @@ private final class IntroOverlay : Widget
                 rowGap * (cast(int) rows.length - 1);
 
         int block = iconSize + 18 + titleH + 8 + subtitleH;
-        const actionWidth = _actionLabel.length > 0
+        // The action pill belongs to the expanded block, so it appears only
+        // after the small toggle has revealed the historical starters.
+        const showAction = _extrasShown && _actionLabel.length > 0;
+        const actionWidth = showAction
             ? minInt(contentWidth,
                 cast(int) layoutFor(toUTF32(_actionLabel), opencodeFontBase)
                     .measuredSize().width + 2 * pillPadH)
@@ -11423,10 +11435,10 @@ private final class IntroOverlay : Widget
                     .measuredSize().width + 2 * morePadH)
             : 0;
         if (rows.length > 0) block += 26 + pillsH;
+        if (showAction)
+            block += (rows.length > 0 ? rowGap : 26) + pillHeight;
         if (hasExtras)
-            block += (rows.length > 0 ? rowGap : 26) + moreHeight;
-        if (_actionLabel.length > 0)
-            block += (rows.length > 0 || hasExtras ? rowGap : 26) + pillHeight;
+            block += (rows.length > 0 || showAction ? rowGap : 26) + moreHeight;
         int y = maxInt(24, (height - block) / 2 - 16);
         const centerX = width / 2;
 
@@ -11454,7 +11466,7 @@ private final class IntroOverlay : Widget
         _pillPrompts.length = 0;
         _actionRect = Rect.init;
         _extrasRect = Rect.init;
-        if (rows.length == 0 && !hasExtras && _actionLabel.length == 0) return;
+        if (rows.length == 0 && !hasExtras && !showAction) return;
         if (rows.length > 0)
         {
         y += 26;
@@ -11489,27 +11501,9 @@ private final class IntroOverlay : Widget
             y += pillHeight + rowGap;
         }
         }
-        // The small toggle that reveals (and folds) the historical starters.
-        if (hasExtras)
+        if (showAction)
         {
             if (rows.length == 0) y += 26;
-            const moreX = maxInt(0, (width - moreWidth) / 2);
-            _extrasRect = Rect(moreX, y, moreWidth, moreHeight);
-            canvas.drawRoundedRect(_extrasRect, moreHeight / 2,
-                faded(_extrasHover ? opencodeSelection : opencodeField),
-                faded(_extrasHover ? opencodeAccent : opencodeBorder), 1);
-            canvas.drawTextInRect(
-                Rect(moreX + morePadH, y,
-                    maxInt(1, moreWidth - 2 * morePadH), moreHeight),
-                toUTF32(moreText),
-                faded(_extrasHover ? opencodeText : opencodeMuted), 1,
-                HorizontalAlign.center, VerticalAlign.middle, true,
-                FontRole.ui, cast(FontFace) theme().uiFont);
-            y += moreHeight + rowGap;
-        }
-        if (_actionLabel.length > 0)
-        {
-            if (rows.length == 0 && !hasExtras) y += 26;
             const actionX = maxInt(0, (width - actionWidth) / 2);
             _actionRect = Rect(actionX, y, actionWidth, pillHeight);
             canvas.drawRoundedRect(_actionRect, pillHeight / 2,
@@ -11521,6 +11515,25 @@ private final class IntroOverlay : Widget
                     maxInt(1, actionWidth - 2 * pillPadH), pillHeight),
                 toUTF32(_actionLabel),
                 faded(_actionHover ? opencodeText : opencodeAccent), 1,
+                HorizontalAlign.center, VerticalAlign.middle, true,
+                FontRole.ui, cast(FontFace) theme().uiFont);
+            y += pillHeight + rowGap;
+        }
+        // The small toggle that reveals (and folds) the historical starters
+        // and the action pill. It closes the expanded block.
+        if (hasExtras)
+        {
+            if (rows.length == 0 && !showAction) y += 26;
+            const moreX = maxInt(0, (width - moreWidth) / 2);
+            _extrasRect = Rect(moreX, y, moreWidth, moreHeight);
+            canvas.drawRoundedRect(_extrasRect, moreHeight / 2,
+                faded(_extrasHover ? opencodeSelection : opencodeField),
+                faded(_extrasHover ? opencodeAccent : opencodeBorder), 1);
+            canvas.drawTextInRect(
+                Rect(moreX + morePadH, y,
+                    maxInt(1, moreWidth - 2 * morePadH), moreHeight),
+                toUTF32(moreText),
+                faded(_extrasHover ? opencodeText : opencodeMuted), 1,
                 HorizontalAlign.center, VerticalAlign.middle, true,
                 FontRole.ui, cast(FontFace) theme().uiFont);
         }
@@ -35731,6 +35744,14 @@ private void pollButtonSuggestionRequest()
     {
         return _introOverlay is null ? Rect.init
             : _introOverlay.extrasToggleBoundsForTesting();
+    }
+
+    /// Test-only: bounds of the intro's "New buttons from recent chats" action
+    /// (empty while the historical starters are folded).
+    public Rect introActionBoundsForTesting() const
+    {
+        return _introOverlay is null ? Rect.init
+            : _introOverlay.actionBoundsForTesting();
     }
 
     /// Test-only: click the intro's "More" toggle as a mouse press would.
