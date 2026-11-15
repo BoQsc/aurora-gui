@@ -132,8 +132,8 @@ import auroraopencode.completionhandoff : completionHandoffNeeded, completionHan
     completionHandoffMarker, completionHandoffInstruction, recordedCompletionHandoff;
 import auroraopencode.requestbuilder : projectRequestMessages;
 import auroraopencode.restorestore : RestoreBundle, readRestoreBundle, readThreadHistory, historyFilePath;
-import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker,
-    outputIssueDescription;
+import auroraopencode.outputguard : agentOutputIssue, outputFailurePrefix,
+    outputRecoveryMarker, outputIssueDescription;
 import auroraopencode.outputrecovery : answerReplayed, outputRecoveryCount,
     maxOutputRecoveries, goalAuditStalled, taskAuditStalled, auditStallIssue,
     outputRecoveryAllowed, unfinishedTaskRecoveryInstruction;
@@ -195,7 +195,7 @@ import core.time : MonoTime, msecs, minutes, seconds;
 import std.algorithm : canFind, endsWith, min, max, sort;
 import std.array : appender, join;
 import std.conv : to;
-import std.datetime : Clock, SysTime;
+import std.datetime : Clock, SysTime, days;
 import std.digest : toHexString;
 import std.digest.sha : sha256Of;
 // `remove` is aliased because this module's widget base class declares its own
@@ -602,6 +602,38 @@ private static string sessionActivityTimeLabel(long unixSeconds)
 {
     if (unixSeconds <= 0) return "";
     return clockTimeLabel(SysTime.fromUnixTime(unixSeconds).toLocalTime);
+}
+
+/// A conversation's local calendar day as `YYYY-MM-DD`, or "" when the session
+/// predates the persisted activity stamp (nothing to group it by).
+private static string sessionDayKey(long unixSeconds)
+{
+    if (unixSeconds <= 0) return "";
+    return SysTime.fromUnixTime(unixSeconds).toLocalTime.toISOExtString()[0 .. 10];
+}
+
+/// The sidebar heading for a day group: "Today"/"Yesterday" near the present,
+/// otherwise a short date ("Nov 12"), with the year when it is not this one.
+private static string sessionDayHeading(string dayKey, string todayKey,
+    string yesterdayKey)
+{
+    if (dayKey.length != 10) return "";
+    if (dayKey == todayKey) return "Today";
+    if (dayKey == yesterdayKey) return "Yesterday";
+    static immutable string[] months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    const month = (cast(int) dayKey[5] - '0') * 10 +
+        (cast(int) dayKey[6] - '0');
+    const day = (cast(int) dayKey[8] - '0') * 10 +
+        (cast(int) dayKey[9] - '0');
+    if (month < 1 || month > cast(int) months.length || day < 1)
+        return dayKey;
+    auto label = months[month - 1] ~ " " ~ to!string(day);
+    if (todayKey.length == 10 && dayKey[0 .. 4] != todayKey[0 .. 4])
+        label ~= ", " ~ dayKey[0 .. 4];
+    return label;
 }
 
 /// Creation tick encoded in a session id (`t-m<ticks>-<counter>`). Used only
@@ -11419,6 +11451,15 @@ public final class SessionListView : ListView
     // Top padding above the pinned group so it does not sit flush against the
     // search field / header.
     private enum int pinnedTopPad = 12;
+    // Day groups: `_dayStartRows` holds the item index of each group's first
+    // row (ascending) and `_dayLabels` its heading text. The list opens one
+    // heading slot above each of those rows, so the rows are grouped by local
+    // calendar day instead of running together.
+    private int[] _dayStartRows;
+    private string[] _dayLabels;
+    private enum int daySeparatorPadAbove = 10;
+    private enum int daySeparatorLabelHeight = 18;
+    private enum int daySeparatorPadBelow = 4;
 
     // What a drop would do to the dragged row. There is no reordering: a drop
     // only ever toggles the pin state, and leaves it alone when the pointer is
@@ -11512,6 +11553,66 @@ public final class SessionListView : ListView
         invalidate();
     }
 
+    /// Set the day groups shown in the list. `firstRows` names the item index
+    /// of each group's first row and `labels` its heading, in the same order.
+    /// The list repaints only when either array actually changes.
+    void setDaySeparators(int[] firstRows, string[] labels)
+    {
+        if (_dayStartRows == firstRows && _dayLabels == labels) return;
+        _dayStartRows = firstRows;
+        _dayLabels = labels;
+        // Drop a start or label left over from a mismatched pair.
+        const pairs = minInt(cast(int) _dayStartRows.length,
+            cast(int) _dayLabels.length);
+        _dayStartRows.length = pairs;
+        _dayLabels.length = pairs;
+        invalidate();
+    }
+
+    // Vertical room a day heading occupies between its group and the one above.
+    private static int daySeparatorSpan() @safe pure nothrow @nogc
+    {
+        return daySeparatorPadAbove + daySeparatorLabelHeight +
+            daySeparatorPadBelow;
+    }
+
+    // Heading slots that still have a row in the current item list. The items
+    // are replaced separately, so a stale start can briefly outlive its row.
+    private int dayHeadingsTotal() const @safe pure nothrow @nogc
+    {
+        const count = cast(int) items().length;
+        int total;
+        foreach (start; _dayStartRows)
+        {
+            if (start >= count) break;
+            if (start >= 0) ++total;
+        }
+        return total;
+    }
+
+    // Headings drawn above `index`, including the one directly above it. The
+    // starts are kept ascending, so the first one past the row ends the scan.
+    private int dayHeadingsBefore(int index) const @safe pure nothrow @nogc
+    {
+        int total;
+        foreach (start; _dayStartRows)
+        {
+            if (start > index) break;
+            if (start >= 0) ++total;
+        }
+        return total;
+    }
+
+    // Content-space y of a row's top: the row grid plus the pinned-divider gap
+    // and the heading slots above it.
+    private int rowTop(int index) const @safe pure nothrow @nogc
+    {
+        return listTopPad() + index * rowHeight() +
+            (pinnedDividerVisible() && index >= _pinnedRows
+                ? pinnedDividerSpan() : 0) +
+            dayHeadingsBefore(index) * daySeparatorSpan();
+    }
+
     // True when the pinned/unpinned divider is showing: something pinned and
     // something unpinned. When false the list lays out as plain rows.
     private bool pinnedDividerVisible() const @safe pure nothrow @nogc
@@ -11540,7 +11641,8 @@ public final class SessionListView : ListView
     {
         const base = super.contentHeight();
         return base + listTopPad() +
-            (pinnedDividerVisible() ? pinnedDividerSpan() : 0);
+            (pinnedDividerVisible() ? pinnedDividerSpan() : 0) +
+            dayHeadingsTotal() * daySeparatorSpan();
     }
 
     override int indexAt(Point position) const @safe pure nothrow @nogc
@@ -11549,20 +11651,51 @@ public final class SessionListView : ListView
         // let a captured pointer over the chat pane keep resolving to the last
         // conversation row, which pinned the delayed title tooltip open.
         if (position.x < 1 || position.x >= rowHitWidth()) return -1;
-        const scrolled = position.y + scrollOffset() - listTopPad();
-        if (scrolled < 0) return -1;
         const count = cast(int) items().length;
-        const rh = rowHeight();
-        if (!pinnedDividerVisible())
+        if (count == 0) return -1;
+        const scrolled = position.y + scrollOffset();
+        // Day headings and the pinned gap make the row layout non-uniform, so
+        // find the last row starting at or above the point.
+        int low = 0;
+        int high = count - 1;
+        int found = -1;
+        while (low <= high)
         {
-            const row = scrolled / rh;
-            return row < count ? row : -1;
+            const mid = low + (high - low) / 2;
+            if (rowTop(mid) <= scrolled)
+            {
+                found = mid;
+                low = mid + 1;
+            }
+            else high = mid - 1;
         }
-        const boundary = _pinnedRows * rh;
-        if (scrolled < boundary) return scrolled / rh;
-        if (scrolled < boundary + pinnedDividerSpan()) return -1;
-        const row = (scrolled - pinnedDividerSpan()) / rh;
-        return row < count ? row : -1;
+        if (found < 0) return -1;
+        // The point sits in a heading slot or the pinned gap, not on a row.
+        if (scrolled >= rowTop(found) + rowHeight()) return -1;
+        return found;
+    }
+
+    // The base reveal math assumes a uniform row grid. Heading slots and the
+    // pinned gap make rows taller than that, so a selected row below the
+    // viewport would stay partly hidden; reveal against the real row position.
+    override void setSelectedIndex(int value, bool notify = true,
+        bool ensureVisible = true)
+    {
+        super.setSelectedIndex(value, notify, false);
+        if (ensureVisible) revealRow(selectedIndex());
+    }
+
+    private void revealRow(int row)
+    {
+        if (row < 0 || row >= cast(int) items().length) return;
+        if (bounds().height <= 0) return;
+        const top = rowTop(row);
+        const bottom = top + rowHeight();
+        int next = scrollOffset();
+        if (top < next) next = top;
+        else if (bottom > next + bounds().height)
+            next = bottom - bounds().height;
+        if (next != scrollOffset()) verticalScrollbar().setValue(next);
     }
 
     /// The row index the pinned/unpinned divider is drawn above, or -1 when no
@@ -11574,12 +11707,39 @@ public final class SessionListView : ListView
             ? _pinnedRows : -1;
     }
 
+    /// `row=label` pairs for the day headings in list order, exposed so a smoke
+    /// test can prove the sidebar separates conversations by day.
+    string daySeparatorsForTesting() const
+    {
+        auto out_ = appender!string();
+        foreach (i, start; _dayStartRows)
+        {
+            if (i >= cast(int) _dayLabels.length) break;
+            if (i > 0) out_.put(",");
+            out_.put(to!string(start));
+            out_.put("=");
+            out_.put(_dayLabels[i]);
+        }
+        return out_.data;
+    }
+
+    /// Vertical room a day heading occupies between two rows.
+    int daySeparatorSpanForTesting() const @safe pure nothrow @nogc
+    {
+        return daySeparatorSpan();
+    }
+
     // Content-space y of the bottom of the pin drop zone. With something pinned
     // the whole pinned group is the target; with nothing pinned the first row's
     // slot stands in so a drag still has a place to land.
     private int pinDropZoneBottom() const @safe pure nothrow @nogc
     {
-        return _pinnedRows > 0 ? _pinnedRows * rowHeight() : rowHeight();
+        const count = cast(int) items().length;
+        if (_pinnedRows > 0)
+            return rowTop(_pinnedRows) - listTopPad();
+        if (count > 0)
+            return rowTop(0) - listTopPad() + rowHeight();
+        return rowHeight();
     }
 
     // Decide what a drop at `position` would do, given the row being dragged.
@@ -11640,10 +11800,7 @@ public final class SessionListView : ListView
     private Rect archiveButtonRect(int index)
     {
         const rh = rowHeight();
-        const topPad = listTopPad();
-        const gap = pinnedDividerVisible() ? pinnedDividerSpan() : 0;
-        const y = topPad + index * rh - scrollOffset() +
-            (index >= _pinnedRows ? gap : 0);
+        const y = rowTop(index) - scrollOffset();
         const size = archiveButtonSize;
         return Rect(bounds().width - rowRightPad - size, y + (rh - size) / 2,
             size, size);
@@ -11715,14 +11872,17 @@ public final class SessionListView : ListView
         // between it and the rest, so rows shift down by those amounts.
         const topPad = listTopPad();
         const gap = pinnedDividerVisible() ? pinnedDividerSpan() : 0;
-        const first = maxInt(0, offset / rowHeight - 2);
+        // Heading slots push rows down, so the visible range starts earlier
+        // than the plain row grid would suggest.
+        const extra = topPad + gap +
+            dayHeadingsTotal() * daySeparatorSpan();
+        const first = maxInt(0, (offset - extra) / rowHeight - 2);
         const last = clampInt((offset + height) / rowHeight + 3, 0, count);
 
         foreach (index; first .. last)
         {
             const item = items()[cast(size_t) index];
-            const y = topPad + index * rowHeight - offset +
-                (index >= _pinnedRows ? gap : 0);
+            const y = rowTop(index) - offset;
             const row = Rect(2, y + 1, maxInt(0, width - 4), rowHeight - 2);
 
             if (index == selected)
@@ -11824,6 +11984,31 @@ public final class SessionListView : ListView
                         textWidth;
         }
 
+        // Day headings: a muted label with a hairline running to the right
+        // edge, drawn in the extra slot opened above each day's first row.
+        foreach (i, start; _dayStartRows)
+        {
+            if (start < 0 || start >= count) continue;
+            if (i >= cast(int) _dayLabels.length) break;
+            immutable label = _dayLabels[i];
+            if (label.length == 0) continue;
+            const headingTop = rowTop(start) - daySeparatorSpan() - offset;
+            if (headingTop + daySeparatorSpan() < 0 || headingTop > height)
+                continue;
+            const labelRect = Rect(14, headingTop + daySeparatorPadAbove,
+                maxInt(0, width - 28), daySeparatorLabelHeight);
+            const text = toUTF32(label);
+            content.drawTextInRect(labelRect, text, opencodeMuted, 1,
+                HorizontalAlign.left, VerticalAlign.middle, true);
+            const textWidth = content.measureText(text, 1).width;
+            const lineY = labelRect.y + labelRect.height / 2;
+            const lineLeft = labelRect.x + textWidth + 10;
+            const lineRight = width - 14;
+            if (lineRight > lineLeft)
+                content.fillRect(Rect(lineLeft, lineY, lineRight - lineLeft, 1),
+                    opencodeMuted.withAlpha(70));
+        }
+
         // An accent-tinted divider under the pinned group separates it from the
         // rest of the conversations. It has padding above and below and is
         // inset from the edges so it reads as a section break, not a row rule.
@@ -11838,13 +12023,13 @@ public final class SessionListView : ListView
         }
 
         if (_dragging && _dragIntent != DragIntent.none)
-            paintDropIndicator(content, width, offset, rowHeight, gap);
+            paintDropIndicator(content, width, offset, rowHeight);
     }
 
     // While a drag is in flight, tint the zone the drop would apply to so the
     // pin/unpin outcome is visible before the release.
     private void paintDropIndicator(Canvas canvas, int width, int offset,
-        int rowHeight, int gap)
+        int rowHeight)
     {
         const accent = opencodeAccent;
         immutable(dchar)[] label;
@@ -11852,14 +12037,14 @@ public final class SessionListView : ListView
         if (_dragIntent == DragIntent.pin)
         {
             const top = listTopPad() - offset;
-            const bottom = pinDropZoneBottom() - offset;
+            const bottom = pinDropZoneBottom() + listTopPad() - offset;
             band = Rect(2, top, maxInt(0, width - 4),
                 maxInt(rowHeight, bottom - top));
             label = "Pin conversation"d;
         }
         else
         {
-            const top = pinDropZoneBottom() + gap - offset;
+            const top = rowTop(_pinnedRows) - offset;
             band = Rect(2, top, maxInt(0, width - 4), rowHeight);
             label = "Unpin conversation"d;
         }
@@ -12014,10 +12199,7 @@ public final class SessionListView : ListView
         if (_titleTip is null) return;
         const rh = rowHeight();
         if (rh <= 0) return;
-        const topPad = listTopPad();
-        const gap = pinnedDividerVisible() ? pinnedDividerSpan() : 0;
-        const y = topPad + row * rh - scrollOffset() +
-            (row >= _pinnedRows ? gap : 0);
+        const y = rowTop(row) - scrollOffset();
         const origin = localToGlobal(Point(0, y));
         const measured = _titleTip.measure(Size(int.max, int.max));
         auto root = popupRoot(this);
@@ -12133,10 +12315,7 @@ public final class SessionListView : ListView
     public Point rowCenterForTesting(int index)
     {
         const rh = rowHeight();
-        const topPad = listTopPad();
-        const gap = pinnedDividerVisible() ? pinnedDividerSpan() : 0;
-        const y = topPad + index * rh - scrollOffset() +
-            (index >= _pinnedRows ? gap : 0);
+        const y = rowTop(index) - scrollOffset();
         return localToGlobal(Point(bounds().width / 2, y + rh / 2));
     }
 
@@ -22297,6 +22476,31 @@ private void pollButtonSuggestionRequest()
         return true;
     }
 
+    /// A reply whose visible text is a printed XML tool call is not an answer.
+    /// The provider stream guard validates names from the request's tool list,
+    /// so a tool-free round (the final-answer handoff or a summary) never
+    /// reaches it. Check the settled reply here before it is accepted, and let
+    /// the ordinary output recovery keep the transcript free of raw protocol
+    /// text. Fenced or quoted examples stay plain text.
+    private bool leakedTextToolCalls(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return false;
+        auto session = &_sessions[sessionIndex];
+        if (!toolsEnabledForSession(*session)) return false;
+        const path = activeMessagePath(*session);
+        if (path.length == 0) return false;
+        const reply = session.messages[path[$ - 1]];
+        if (reply.role != "assistant" || reply.toolCalls.length ||
+            reply.content.length == 0) return false;
+        if (!reply.content.canFind("invoke name=")) return false;
+        string[] names;
+        foreach (tool; _settings.legacyTools ? builtinToolDefinitions() :
+            nativeOnlyToolDefinitions()) names ~= tool.name;
+        return agentOutputIssue(reply.content, names, true, false) ==
+            "text_tool_calls";
+    }
+
     /// Recover unusable output without requiring the user to restart the task.
     /// Never execute printed calls.
     private void handleOutputFailure(const ref OpenCodeEvent event)
@@ -30157,6 +30361,16 @@ private void pollButtonSuggestionRequest()
         int[] indices;
         int pinnedCount = 0;
         const projectId = activeProjectId();
+        // Day headings group the rows by the local calendar day of their last
+        // activity, so conversations restored from older days do not run
+        // together with today's. The headings follow the order actually shown
+        // (pinned first, then the current list order).
+        const localNow = Clock.currTime.toLocalTime;
+        const todayKey = localNow.toISOExtString()[0 .. 10];
+        const yesterdayKey = (localNow - days(1)).toISOExtString()[0 .. 10];
+        int[] dayStarts;
+        string[] dayLabels;
+        string previousDayKey;
         // Within a group the order is by most recent activity (a message or a
         // turn) when that listing is on, otherwise newest-created first.
         // Sessions with no recorded activity - an upgrade, or a snapshot that
@@ -30270,6 +30484,14 @@ private void pollButtonSuggestionRequest()
                 const rowLabel = isSessionArchived(session.id)
                     ? "(archived) " ~ title
                     : (pinnedPass ? "★ " ~ title : title);
+                const dayKey = sessionDayKey(session.updatedAt);
+                if (dayKey.length > 0 && dayKey != previousDayKey)
+                {
+                    dayStarts ~= cast(int) items.length;
+                    dayLabels ~= sessionDayHeading(dayKey, todayKey,
+                        yesterdayKey);
+                    previousDayKey = dayKey;
+                }
                 items ~= ListItem(rowLabel, IconKind.none, secondary);
                 if (pinnedPass) ++pinnedCount;
             }
@@ -30278,6 +30500,7 @@ private void pollButtonSuggestionRequest()
         // Set the pinned count before the item sync so the layout (and the
         // scrollbar range) already accounts for the divider gap.
         _sessionList.setPinnedCount(pinnedCount);
+        _sessionList.setDaySeparators(dayStarts, dayLabels);
         _sessionList.setItems(items);
         _sessionList.setActivityRows(activeSessionRows());
         refreshSessionRowStatus();
@@ -32913,6 +33136,21 @@ private void pollButtonSuggestionRequest()
                         _autoResendCount = 0;
                         _execution.outageStartedAt = MonoTime.init;
                     }
+                    if (!event.cancelled &&
+                        leakedTextToolCalls(turnOwnerSessionIndex()))
+                    {
+                        OpenCodeEvent failure;
+                        failure.kind = OpenCodeEventKind.error;
+                        failure.text = outputFailurePrefix ~
+                            outputIssueDescription("text_tool_calls");
+                        failure.outputIssue = "text_tool_calls";
+                        failure.requestId = event.requestId;
+                        failure.promptTokens = event.promptTokens;
+                        failure.completionTokens = event.completionTokens;
+                        failure.totalTokens = event.totalTokens;
+                        handleOutputFailure(failure);
+                        break;
+                    }
                     const completedRequestId = event.requestId;
                     const taskContinues = taskContinuesAfterDone(event.cancelled, event.finishReason);
                     finishAssistantMessage(event.cancelled, event.promptTokens,
@@ -33788,6 +34026,14 @@ private void pollButtonSuggestionRequest()
     {
         return _sessionList is null
             ? -1 : _sessionList.pinnedSeparatorRowForTesting();
+    }
+
+    /// Test-only: `row=label` pairs for the day headings drawn in the sidebar,
+    /// e.g. "0=Today,4=Yesterday".
+    public string sessionDaySeparatorsForTesting() const
+    {
+        return _sessionList is null ? ""
+            : _sessionList.daySeparatorsForTesting();
     }
 
     /// Test-only: whether a conversation is currently pinned to the top of the

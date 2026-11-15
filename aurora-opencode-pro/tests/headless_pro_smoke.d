@@ -3425,7 +3425,7 @@ int main(string[] args)
         root.tickTree(0.02);
         // Nothing is pinned yet, so rows start flush at the top with no divider.
         driver.drag(
-            sessions.localToGlobal(Point(20, srcRow * rowH + rowH / 2)),
+            sessions.rowCenterForTesting(srcRow),
             sessions.localToGlobal(Point(20, rowH / 2)));
         root.tickTree(0.02);
         assert(root.sessionPinnedForTesting(pinSource),
@@ -3439,8 +3439,8 @@ int main(string[] args)
 
         // Drag the pinned row down past the divider to unpin it again.
         driver.drag(
-            sessions.localToGlobal(Point(20, rowH / 2)),
-            sessions.localToGlobal(Point(20, 2 * rowH)));
+            sessions.rowCenterForTesting(0),
+            sessions.rowCenterForTesting(rowCount - 1));
         root.tickTree(0.02);
         assert(!root.sessionPinnedForTesting(pinSource),
             "Dropping a pinned conversation below the divider should unpin it");
@@ -3460,8 +3460,7 @@ int main(string[] args)
         if (srcRow > rowCount - 1) srcRow = rowCount - 1;
         assert(srcRow >= 0, "Need a visible conversation row to drag");
         const title = sessions.items()[cast(size_t) srcRow].text;
-        const from = sessions.localToGlobal(
-            Point(20, srcRow * rowH + rowH / 2));
+        const from = sessions.rowCenterForTesting(srcRow);
         dismissTransientPopups(root);
         root.tickTree(0.02);
         // Press and move past the drag threshold so the drag is in flight.
