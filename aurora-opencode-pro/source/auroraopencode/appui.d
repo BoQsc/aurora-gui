@@ -15349,6 +15349,19 @@ private string _suggestExcludeId;
             ? _sessions[index].id : "";
     }
 
+    /// Test-only: archive or unarchive a conversation by its stored index.
+    public void setSessionArchivedForTesting(int sessionIndex, bool archived)
+    {
+        setSessionArchived(sessionIndex, archived);
+    }
+
+    /// Test-only: whether the conversation at `index` is archived.
+    public bool sessionArchivedForTesting(int index) const
+    {
+        return index >= 0 && index < cast(int) _sessions.length &&
+            isSessionArchived(_sessions[index].id);
+    }
+
     /// Rebuild the package with DUB and reopen the app.
     ///
     /// This process closes immediately: a detached copy of the binary (the
@@ -17617,12 +17630,11 @@ private string _suggestExcludeId;
     private void syncCurrentToActiveProject()
     {
         const projectId = activeProjectId();
-        if (_current >= 0 && _current < cast(int) _sessions.length &&
-            sessionProjectId(_sessions[_current]) == projectId)
+        if (sessionListedInSidebar(_current, projectId))
             return;
         int candidate = -1;
         foreach (index, session; _sessions)
-            if (sessionProjectId(session) == projectId)
+            if (sessionListedInSidebar(cast(int) index, projectId))
                 candidate = cast(int) index;
         if (candidate >= 0)
         {
@@ -17630,6 +17642,31 @@ private string _suggestExcludeId;
             return;
         }
 
+        clearOpenConversation();
+    }
+
+    /// Whether a conversation belongs in the sidebar right now: its project
+    /// matches, it is not a subagent's nested chat, and it is not archived
+    /// while the archived view is off. The title filter is deliberately not
+    /// part of this test - it narrows what is shown, not what exists.
+    private bool sessionListedInSidebar(int sessionIndex, string projectId) const
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return false;
+        const ref ChatSession session = _sessions[sessionIndex];
+        if (sessionProjectId(session) != projectId) return false;
+        // Archived conversations are hidden unless the archived view is on,
+        // but they are never removed from _sessions.
+        if (!_showArchived && isSessionArchived(session.id)) return false;
+        // experimental: orchestrator - subagent nested chats live under their
+        // parent's plan UI, never in the top-level sidebar.
+        return session.parentSessionId.length == 0;
+    }
+
+    /// Show the no-conversation view. The conversation itself is untouched -
+    /// a project switch or an archived chat only drops the view.
+    private void clearOpenConversation()
+    {
         _loadedRuntimeId = "";
         _current = -1;
         _streamBubble = null;
@@ -17643,6 +17680,8 @@ private string _suggestExcludeId;
         _turnCancelled = false;
         clearActivity();
         rebuildMessageColumn();
+        updateGoalBar();
+        updatePlanControls();
         if (_status !is null) updateStatus("");
     }
 
@@ -30576,14 +30615,11 @@ private void pollButtonSuggestionRequest()
             foreach_reverse (index, session; _sessions)
             {
                 // Sessions restored from an older build have no project; they
-                // belong to the sandbox.
-                if (sessionProjectId(session) != projectId) continue;
-                // Archived conversations are hidden unless the archived view
-                // is on, but they are never removed from _sessions.
-                if (!_showArchived && isSessionArchived(session.id)) continue;
-                // experimental: orchestrator - subagent nested chats live under
-                // their parent's plan UI, never in the top-level sidebar.
-                if (session.parentSessionId.length > 0) continue;
+                // belong to the sandbox. Archived conversations are hidden
+                // unless the archived view is on, and a subagent's nested chat
+                // never appears at the top level.
+                if (!sessionListedInSidebar(cast(int) index, projectId))
+                    continue;
                 const pinned = isSessionPinned(session.id);
                 if (pinned != pinnedPass) continue;
                 const title = session.title.length > 0 ? session.title
@@ -31516,7 +31552,7 @@ private void pollButtonSuggestionRequest()
 
     // -- Archived conversations ------------------------------------------
 
-    private bool isSessionArchived(const string id)
+    private bool isSessionArchived(const string id) const
     {
         return id.length > 0 && _archivedSessionIds.canFind(id);
     }
@@ -31546,10 +31582,38 @@ private void pollButtonSuggestionRequest()
             _archivedSessionIds = kept;
         }
         saveArchivedSessions();
+        // Archiving the conversation on screen removes its row, so the view has
+        // to leave it: remember where the row was, relist, then open whatever
+        // now occupies that spot. Unarchiving never changes the open chat.
+        const leavingOpen = archived && !_showArchived && _current >= 0 &&
+            _current < cast(int) _sessions.length && _sessions[_current].id == id;
+        int openRow = -1;
+        if (leavingOpen)
+            foreach (i, sessionIndex; _sessionIndices)
+                if (sessionIndex == _current) { openRow = cast(int) i; break; }
         updateSessionList(false);
+        if (leavingOpen) leaveArchivedConversation(openRow);
         updateStatus(archived
             ? "Conversation archived. Use the archive button to view it."
             : "Unarchived conversation.");
+    }
+
+    /// Open the conversation that took over the archived chat's `row` (or the
+    /// last visible one when it was the bottom row). With nothing left to show,
+    /// the empty no-conversation view stands in: an archived conversation is
+    /// never left open behind a row the user can no longer see.
+    private void leaveArchivedConversation(int row)
+    {
+        if (_sessionIndices.length > 0)
+        {
+            selectSession(_sessionIndices[row < 0 ? 0 :
+                minInt(row, cast(int) _sessionIndices.length - 1)]);
+            // The relist that ran while the archived row was still the
+            // selection cleared it; put the list back on the chat now open.
+            updateSessionList(false);
+            return;
+        }
+        clearOpenConversation();
     }
 
     private void loadArchivedSessions()

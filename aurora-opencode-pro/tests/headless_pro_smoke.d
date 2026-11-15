@@ -1228,6 +1228,82 @@ private void verifyConversationReferenceDrag(OpenCodeRoot root,
         "without switching chats");
 }
 
+/// Archiving the conversation on screen must also leave it: its row leaves the
+/// sidebar, so the transcript must not stay open behind a hidden selection. The
+/// chat that takes over the row is opened instead, and with no visible
+/// conversation left the empty view stands in.
+private void verifyArchivingLeavesOpenConversation(OpenCodeRoot root,
+    UiTestDriver driver, SessionListView sessions)
+{
+    // Both cases need the open conversation plus another row.
+    while (root.currentSessionForTesting() < 0 ||
+        root.visibleSessionCountForTesting() < 2)
+        root.newChatForTesting();
+    root.tickTree(0.02);
+
+    {
+        const openIndex = root.currentSessionForTesting();
+        const openId = root.sessionIdForTesting(openIndex);
+        int openRow = -1;
+        foreach (row; 0 .. root.visibleSessionCountForTesting())
+            if (root.visibleSessionIndexAtRowForTesting(row) == openIndex)
+            {
+                openRow = row;
+                break;
+            }
+        assert(openRow >= 0, "The open conversation is missing from the sidebar");
+        driver.moveTo(sessions.archiveButtonCenterForTesting(openRow));
+        root.tickTree(0.02);
+        driver.click(sessions.archiveButtonCenterForTesting(openRow));
+        root.tickTree(0.02);
+        assert(paintProjection(root, driver),
+            "Archiving the open conversation did not repaint");
+        assert(root.sessionArchivedForTesting(openIndex),
+            "Archiving the open conversation did not archive it");
+        assert(root.currentSessionForTesting() != openIndex,
+            "Archiving kept the archived conversation open");
+        assert(root.currentSessionForTesting() < 0 ||
+            root.sessionIdForTesting(root.currentSessionForTesting()) != openId,
+            "Archiving left the archived conversation selected");
+        assert(sessions.selectedIndex() >= 0,
+            "No visible conversation took over after archiving the open one");
+        writeln("Archiving the open conversation opened the row that replaced it");
+    }
+
+    {
+        int[] visible;
+        foreach (row; 0 .. root.visibleSessionCountForTesting())
+            visible ~= root.visibleSessionIndexAtRowForTesting(row);
+        const openIndex = root.currentSessionForTesting();
+        bool openListed;
+        foreach (index; visible)
+            if (index == openIndex) openListed = true;
+        assert(visible.length >= 2 && openListed,
+            "Archive fallback fixture needs the open conversation plus another row");
+        foreach (index; visible)
+            if (index != openIndex)
+                root.setSessionArchivedForTesting(index, true);
+        root.tickTree(0.02);
+        assert(root.currentSessionForTesting() == openIndex,
+            "Archiving another conversation closed the open one");
+        root.setSessionArchivedForTesting(openIndex, true);
+        root.tickTree(0.02);
+        assert(paintProjection(root, driver),
+            "Archiving the last open conversation did not repaint");
+        assert(root.currentSessionForTesting() == -1,
+            "Archiving the last visible conversation left it open");
+        assert(root.visibleSessionCountForTesting() == 0,
+            "Archived conversations are still listed while the archived view is off");
+        foreach (index; visible)
+            root.setSessionArchivedForTesting(index, false);
+        root.selectSessionForTesting(openIndex);
+        root.tickTree(0.02);
+        assert(root.currentSessionForTesting() == openIndex,
+            "Unarchiving did not leave the conversation selectable");
+        writeln("Archiving the last visible conversation showed the empty view");
+    }
+}
+
 int main(string[] args)
 {
     import auroraopencode.tools : runFilesystemHelperMode;
@@ -1278,6 +1354,14 @@ int main(string[] args)
     if (args.length > 1 && args[$ - 1] == "--audit-stall-only")
     {
         verifyAuditStallOnly(root);
+        return 0;
+    }
+    if (args.length > 1 && args[$ - 1] == "--archive-only")
+    {
+        // Focused run for the archive action: closing the conversation it
+        // archives, and falling back to the empty view when none remain.
+        verifyArchivingLeavesOpenConversation(root, driver,
+            requireWidget!SessionListView(root, "oc-sessions"));
         return 0;
     }
     if (args.length > 1 && args[$ - 1] == "--group-only")
@@ -1545,6 +1629,8 @@ int main(string[] args)
     requireWidget!Button(root, "oc-archived-toggle").onClick();
     root.tickTree(0.02);
     writeln("Hover archive button archives and unarchives with a naming tooltip");
+
+    verifyArchivingLeavesOpenConversation(root, driver, sessions);
 
     verifyTitleTooltipLeavesWindow(root, driver, sessions);
 
