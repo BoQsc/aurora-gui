@@ -94,6 +94,11 @@ public string developerToolSourceDirectory()
 private __gshared WorkerBudget _filesystemHosts;
 shared static this() { _filesystemHosts = new WorkerBudget(4); }
 public enum filesystemHelperFlag = "--aurora-filesystem-tool";
+/// Set in the environment of a process spawned as a filesystem tool host. An
+/// image that implements `filesystemHelperFlag` handles it in main and never
+/// reads this marker; an image that does not re-runs its own program, so the
+/// marker is what stops that repeat from spawning another copy.
+public enum filesystemHostMarker = "AURORA_FILESYSTEM_HOST_SPAWN";
 
 /// The same native tools are available to local Aurora maintenance scripts,
 /// before loading settings, credentials, history or any desktop UI.
@@ -205,6 +210,18 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
     if (!_filesystemHosts.acquire())
         return ToolExecution(call.name, "Error: filesystem tool hosts are at capacity; retry after running calls settle.", true);
     scope (exit) _filesystemHosts.release();
+    // A filesystem tool host is spawned as this image, or as the fixture named
+    // by AURORA_FILESYSTEM_HOST. Production handles the helper flag in main
+    // before any tool runs. An image that does not handle it re-runs its own
+    // program instead, and every generation would spawn the next one without
+    // limit. The spawn marker stops that at the first repeat: one clear error
+    // on the image that cannot host, instead of an unbounded process chain.
+    const configuredHost = environment.get("AURORA_FILESYSTEM_HOST");
+    if (!configuredHost.length && environment.get(filesystemHostMarker) == "1")
+        return ToolExecution(call.name,
+            "Error: this program cannot host filesystem tools. Set AURORA_FILESYSTEM_HOST " ~
+            "to an executable that implements " ~ filesystemHelperFlag ~
+            " instead of re-spawning this image.", true);
     long timeoutMs = call.name == "glob" || call.name == "grep" ? 10_000 : 30_000;
     try
     {
@@ -318,9 +335,11 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
         input = openNullStdin();
         output = File(outputPath, "wb");
         // Test fixtures have a dedicated host; production uses this same image.
-        const executable = environment.get("AURORA_FILESYSTEM_HOST", thisExePath());
+        const executable = configuredHost.length ? configuredHost : thisExePath();
+        auto childEnvironment = environment.toAA;
+        childEnvironment[filesystemHostMarker] = "1";
         pid = spawnProcess([executable, filesystemHelperFlag, requestPath],
-            input, output, output, null, Config.suppressConsole);
+            input, output, output, childEnvironment, Config.suppressConsole);
         running = true;
         const deadline = started + timeoutMs.msecs;
         auto nextProgress = MonoTime.currTime;
