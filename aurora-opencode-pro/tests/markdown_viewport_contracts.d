@@ -74,12 +74,24 @@ int main()
     verifyClippedText();
     const prose = "A paragraph with **bold**, *italic*, `code`, and a [link](https://example.com).\n\n".replicate(600);
     const code = "```text\n" ~ "0123456789abcdef".replicate(750) ~ "\n```\n\n";
-    foreach (name, text; ["paragraphs": prose, "long_code_line": code])
+    // A minified file is one enormous line. Composition splits it into one
+    // paint item per visual width, so this also exercises clipped-glyph culling
+    // rather than the happy path of many short lines.
+    const hugeLine = "```text\n" ~ "0123456789abcdef".replicate(18_750) ~ "\n```\n\n";
+    foreach (name, text; ["paragraphs": prose, "long_code_line": code,
+        "very_long_code_line": hugeLine])
     {
         const started = MonoTime.currTime;
         auto composition = composeMarkdown(parseMarkdown(toUTF32(text)), 740, false);
         writeln(name, " compose_us=", (MonoTime.currTime - started).total!"usecs",
             " items=", composition.items.length, " height=", composition.height);
+        const cachedStarted = MonoTime.currTime;
+        auto cached = composeMarkdown(parseMarkdown(toUTF32(text)), 740, false);
+        const cachedUs = (MonoTime.currTime - cachedStarted).total!"usecs";
+        writeln(name, " cached_compose_us=", cachedUs);
+        assert(cachedUs < 500_000,
+            "A settled long reply re-shaped its cached code lines");
+        assert(cached.items.length == composition.items.length);
         foreach (offset; [0, cast(int) composition.height / 2, cast(int) composition.height - 550])
         {
             const elapsed = paintSamples(composition, offset);

@@ -256,6 +256,22 @@ int main()
     }
     assert(root.lastAssistantContentForTesting() == answer);
     writeln("real_chat_60_stream_project_paint_us=", (MonoTime.currTime - stream).total!"usecs");
+    // Expanded reasoning is shaped as one wrapped layout. A long live burst
+    // must not turn each repaint into a multi-hundred-millisecond stall.
+    root.streamReasoningForTesting(
+        "A long chain of thought with enough words to wrap across several visual lines. ".replicate(400));
+    root.toggleLastThinkingForTesting();
+    root.projectTranscriptForTesting();
+    assert(chatDriver.paint());
+    // A newly streamed fragment must shape only its own tail, not replay the
+    // whole expanded block.
+    root.streamReasoningForTesting(" A newly streamed reasoning fragment.");
+    const thinkingStart = MonoTime.currTime;
+    root.projectTranscriptForTesting();
+    assert(chatDriver.paint());
+    const thinkingUs = (MonoTime.currTime - thinkingStart).total!"usecs";
+    writeln("expanded_thinking_paint_us=", thinkingUs);
+    assert(thinkingUs < 250_000, "Expanded reasoning replay blocked a live frame");
     root.stopActiveTurnForTesting();
     root.newChatForTesting();
     const longReply = "## Long reply\n\n" ~

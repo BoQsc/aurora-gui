@@ -72,6 +72,9 @@ int main()
     root.beginStreamForTesting();
     root.streamReasoningForTesting("Considering the request.");
     until(delegate() { return root.liveThinkingHeaderForTesting().indexOf("Thinking") >= 0; });
+    assert(root.liveThinkingHeaderForTesting().indexOf("Considering the request.") >= 0,
+        "live Thinking header hid the reasoning it was producing: [" ~
+        root.liveThinkingHeaderForTesting() ~ "]");
     assert(root.liveThinkingHeaderForTesting().indexOf("no new output") < 0,
         "quiet note appeared before the reply actually went quiet");
     until(delegate() { return root.liveThinkingHeaderForTesting().indexOf("no new output for") >= 0; });

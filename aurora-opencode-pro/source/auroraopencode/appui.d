@@ -210,6 +210,7 @@ import std.path : baseName, buildNormalizedPath, buildPath, dirName, extension, 
 import std.process : Config, environment, execute, thisProcessID;
 import std.string : indexOf, replace, split, startsWith, strip, toLower;
 import std.utf : toUTF16z, toUTF32, toUTF8;
+import aurora.text.unicode.grapheme : previousGraphemeBoundary;
 import auroraopencode.archives : extractArchive;
 version (Windows)
 {
@@ -761,12 +762,14 @@ private final class SharedTextLayoutCache
     {
         dstring text;
         int width;
+        size_t hash;
         MdComposition value;
     }
     private static struct LayoutEntry
     {
         dstring text;
         int width;
+        size_t hash;
         TextLayout value;
     }
 
@@ -782,10 +785,28 @@ private final class SharedTextLayoutCache
         return true;
     }
 
+    /// FNV-1a over the characters. A settled transcript can hold ~160 texts of
+    /// hundreds of kilobytes; comparing every one in full on every measure and
+    /// paint was itself a multi-second scan. The hash rejects almost all
+    /// entries before the exact comparison.
+    private static size_t textHash(const(dchar)[] text)
+        @safe pure nothrow @nogc
+    {
+        ulong hash = 14695981039346656037UL;
+        foreach (c; text)
+        {
+            hash ^= cast(ulong) c;
+            hash *= 1099511628211UL;
+        }
+        return cast(size_t) hash;
+    }
+
     bool lookupMarkdown(const(dchar)[] text, int width, out MdComposition value)
     {
+        const wanted = textHash(text);
         foreach (entry; _markdown)
-            if (entry.width == width && sameText(entry.text, text))
+            if (entry.width == width && entry.hash == wanted &&
+                sameText(entry.text, text))
             {
                 value = entry.value;
                 return true;
@@ -796,14 +817,16 @@ private final class SharedTextLayoutCache
     void storeMarkdown(const(dchar)[] text, int width, MdComposition value)
     {
         if (text.length > maxTextLength) return;
-        _markdown ~= MarkdownEntry(text.idup, width, value);
+        _markdown ~= MarkdownEntry(text.idup, width, textHash(text), value);
         evictOldest(_markdown);
     }
 
     bool lookupLayout(const(dchar)[] text, int width, out TextLayout value)
     {
+        const wanted = textHash(text);
         foreach (entry; _layouts)
-            if (entry.width == width && sameText(entry.text, text))
+            if (entry.width == width && entry.hash == wanted &&
+                sameText(entry.text, text))
             {
                 value = entry.value;
                 return true;
@@ -814,7 +837,7 @@ private final class SharedTextLayoutCache
     void storeLayout(const(dchar)[] text, int width, TextLayout value)
     {
         if (text.length > maxTextLength) return;
-        _layouts ~= LayoutEntry(text.idup, width, value);
+        _layouts ~= LayoutEntry(text.idup, width, textHash(text), value);
         evictOldest(_layouts);
     }
 
@@ -1097,17 +1120,25 @@ private final class MessageBubble : Widget
     // the ring is full the new entry evicts the oldest slot instead of shifting
     // the whole array down on every insert.
     private size_t _contentCacheNext;
-    // The thinking block is wrapped, so its layout depends on width. The
-    // ScrollView measures its content twice per layout (once without and once
-    // with the scrollbar), which oscillates the width; a single-slot cache
-    // thrashed and re-shaped the whole reasoning text on every toggle. Use the
-    // same small width-keyed ring as the message content.
-    private int[shapeCacheSize] _thinkingWidths;
-    private TextLayout[shapeCacheSize] _thinkingLayouts;
-    private size_t[shapeCacheSize] _thinkingShapedGens;
-    private size_t _thinkingCacheCount;
     private size_t _thinkingGen = 1;
-    private size_t _thinkingCacheNext;
+    // Expanded reasoning is composed from cached line/chunk layouts. A growing
+    // reasoning burst then re-shapes only the line currently being written
+    // instead of the whole block on every fragment.
+    private TextLayout[] _thinkingParts;
+    private size_t _thinkingPartsGen;
+    private int _thinkingPartsWidth = -1;
+    private int _thinkingPartsHeight;
+    private static immutable size_t thinkingPartChunkChars = 4 * 1024;
+    private static immutable size_t thinkingPartCacheChars = 1024 * 1024;
+    private static struct ThinkingPartEntry
+    {
+        dstring text;
+        int width;
+        size_t hash;
+        TextLayout layout;
+    }
+    private static ThinkingPartEntry[] _thinkingPartCache;
+    private static size_t _thinkingPartCacheUsed;
     // `_thinking ~= chunk` reallocates the whole dstring for every streamed
     // fragment. `_thinkingBuffered` holds the fragments and is spilled into
     // `_thinking` in one power-of-two chunk once the cached prefix is full, so
@@ -1243,6 +1274,9 @@ private final class MessageBubble : Widget
     private bool _thinkingHover;
     private double _thinkingElapsed = 0;
     private bool _thinkingLive;
+    // Latest line of live reasoning. Shown in the collapsed header so the
+    // Thinking phase is visibly producing content instead of only a pulse.
+    private string _thinkingPreview;
     // Seconds since the last streamed reasoning or answer fragment, used by the
     // live Thinking header to explain a quiet gap (`no new output for Ns`).
     private double _quietSeconds = 0.0;
@@ -1607,6 +1641,11 @@ private final class MessageBubble : Widget
     void setThinking(string value)
     {
         _thinking = toUTF32(value);
+        _thinkingBuffered.length = 0;
+        _thinkingSpill = "";
+        _thinkingDirty = false;
+        _thinkingPreview = "";
+        updateThinkingPreview(value);
         ++_thinkingGen;
         invalidate();
     }
@@ -1732,9 +1771,41 @@ private final class MessageBubble : Widget
         }
         _thinkingBuffered ~= toUTF32(chunk);
         _thinkingDirty = true;
+        updateThinkingPreview(chunk);
         ++_thinkingGen;
         _quietSeconds = 0.0;
         invalidate();
+    }
+
+    /// Keep the newest reasoning line bounded for the collapsed live header.
+    /// Reasoning usually has line breaks, so this tracks the current line; a
+    /// long unbroken burst is truncated to its newest characters rather than
+    /// turning the header into another growing layout.
+    private void updateThinkingPreview(string chunk)
+    {
+        if (chunk.length == 0) return;
+        if (chunk.length > 512)
+        {
+            size_t cut = chunk.length - 512;
+            while (cut < chunk.length && (cast(ubyte) chunk[cut] & 0xc0) == 0x80)
+                ++cut;
+            chunk = chunk[cut .. $];
+        }
+        size_t afterBreak;
+        bool foundBreak;
+        foreach (index, char c; chunk)
+            if (c == '\n' || c == '\r')
+            {
+                afterBreak = index + 1;
+                foundBreak = true;
+            }
+        const tail = foundBreak ? chunk[afterBreak .. $] : _thinkingPreview ~ chunk;
+        auto chars = toUTF32(tail);
+        size_t start;
+        while (start < chars.length && (chars[start] == ' ' || chars[start] == '\t' ||
+            chars[start] == '\r' || chars[start] == '\n')) ++start;
+        if (chars.length - start > 64) start = chars.length - 64;
+        _thinkingPreview = to!string(chars[start .. $]);
     }
 
     void appendContent(string chunk)
@@ -2160,57 +2231,91 @@ private final class MessageBubble : Widget
         return _statusLabel;
     }
 
-    private TextLayout shapedThinking(int width, size_t budgetDchars = 0)
+    /// One wrapped line/chunk of expanded reasoning, cached across fragments.
+    private TextLayout shapedThinkingPart(dstring text, int width)
     {
-        foreach (index; 0 .. _thinkingCacheCount)
+        const wanted = thinkingPartHash(text);
+        foreach (ref entry; _thinkingPartCache)
+            if (entry.width == width && entry.hash == wanted &&
+                entry.text == text)
+                return entry.layout;
+        auto layout = shape(text, width);
+        if (text.length <= thinkingPartCacheChars)
         {
-            if (_thinkingShapedGens[index] == _thinkingGen &&
-                _thinkingWidths[index] == width &&
-                _thinkingLayouts[index] !is null)
-                return _thinkingLayouts[index];
-        }
-
-        auto layout = shape(thinkingText(budgetDchars), width);
-
-        if (_thinkingCacheCount == shapeCacheSize)
-        {
-            // A pending tail means the text just measured is only a prefix.
-            // Remember a placeholder so the next frame folds the new fragments
-            // in, but return the layout we did measure: every caller dereferences
-            // the result, and returning the null placeholder was the
-            // access violation while painting a reasoning-only bubble.
-            if (budgetDchars > 0 && _thinkingBuffered.length > 0)
+            _thinkingPartCache ~= ThinkingPartEntry(text.idup, width, wanted,
+                layout);
+            _thinkingPartCacheUsed += text.length;
+            while (_thinkingPartCache.length > 1 &&
+                _thinkingPartCacheUsed > thinkingPartCacheChars)
             {
-                rememberThinking(width, null);
-                return layout;
+                _thinkingPartCacheUsed -= _thinkingPartCache[0].text.length;
+                _thinkingPartCache = _thinkingPartCache[1 .. $].dup;
             }
-            return rememberThinking(width, layout);
         }
-        return rememberThinking(width, layout);
+        return layout;
     }
 
-    /// Cache `layout` for the current generation and width. A null layout means
-    /// "measured from text with a pending tail": the remainder is folded into
-    /// the text before the next measure, so remembering the truncated result
-    /// would hide the new fragments.
-    private TextLayout rememberThinking(int width, TextLayout layout)
+    private static size_t thinkingPartHash(const(dchar)[] text)
+        @safe pure nothrow @nogc
     {
-        size_t slot;
-        if (_thinkingCacheCount == shapeCacheSize)
+        ulong hash = 14695981039346656037UL;
+        foreach (c; text)
         {
-            slot = _thinkingCacheNext % shapeCacheSize;
-            _thinkingCacheNext = slot + 1;
+            hash ^= cast(ulong) c;
+            hash *= 1099511628211UL;
         }
-        else
+        return cast(size_t) hash;
+    }
+
+    /// Rebuild the expanded-reasoning parts only when its text or width
+    /// changes. Unchanged lines hit `shapedThinkingPart`'s cache, so a live
+    /// burst pays for its newest line, not the accumulated block.
+    private void ensureThinkingParts(int width)
+    {
+        if (_thinkingPartsWidth == width && _thinkingPartsGen == _thinkingGen &&
+            !_thinkingDirty) return;
+        _thinkingPartsWidth = width;
+        _thinkingPartsGen = _thinkingGen;
+        _thinkingParts.length = 0;
+        _thinkingPartsHeight = 0;
+        const text = thinkingText();
+        size_t lineStart;
+        for (size_t i = 0; i <= text.length; ++i)
         {
-            slot = _thinkingCacheCount;
-            ++_thinkingCacheCount;
-            _thinkingCacheNext = _thinkingCacheCount % shapeCacheSize;
+            if (i < text.length && text[i] != '\n') continue;
+            auto line = text[lineStart .. i];
+            if (line.length && line[$ - 1] == '\r') line = line[0 .. $ - 1];
+            if (line.length == 0)
+            {
+                auto blank = shapedThinkingPart(" "d, width);
+                if (blank !is null)
+                {
+                    _thinkingParts ~= blank;
+                    _thinkingPartsHeight += blank.measuredSize().height;
+                }
+            }
+            else
+            {
+                size_t offset;
+                while (offset < line.length)
+                {
+                    size_t end = min(offset + thinkingPartChunkChars, line.length);
+                    if (end < line.length)
+                    {
+                        const boundary = previousGraphemeBoundary(line, end);
+                        if (boundary > offset) end = boundary;
+                    }
+                    auto part = shapedThinkingPart(line[offset .. end], width);
+                    if (part !is null)
+                    {
+                        _thinkingParts ~= part;
+                        _thinkingPartsHeight += part.measuredSize().height;
+                    }
+                    offset = end;
+                }
+            }
+            lineStart = i + 1;
         }
-        _thinkingWidths[slot] = width;
-        _thinkingLayouts[slot] = layout;
-        _thinkingShapedGens[slot] = _thinkingGen;
-        return layout;
     }
 
     /// The reasoning text as a dstring. New fragments land in the small buffer
@@ -2242,18 +2347,13 @@ private final class MessageBubble : Widget
                 _thinkingBuffered = _thinkingBuffered[take .. $].dup;
         }
         _thinkingShown = _thinking;
-        _thinkingDirty = false;
+        // A paint can fold only as much of a burst as its visible budget
+        // allows. Keep the buffer dirty so the tail is not stranded until the
+        // next fragment (or the final rebuild) replaces the live text.
+        _thinkingDirty = _thinkingBuffered.length > 0;
         return _thinking;
     }
 
-    /// A rough upper bound on the characters a width/height budget can show.
-    /// The layout truncates to the drawn block anyway, so this only decides how
-    /// much of a burst of buffered fragments is folded in per frame.
-    private static size_t thinkingBudgetDchars(int width, int height)
-    {
-        if (width <= 0 || height <= 0) return 0;
-        return cast(size_t) width * cast(size_t) height;
-    }
 
     /// The reasoning text the layout cache was last built from ("" when none).
     /// A test uses this to prove a truncated render picks up later fragments.
@@ -2463,18 +2563,12 @@ private final class MessageBubble : Widget
             height += thinkingHeaderHeight();
             if (!_thinkingCollapsed)
             {
-                // `shapedThinking` reports "nothing measured yet" as a null
-                // layout (a ring placeholder or a failed shape), so the result
-                // must not be dereferenced unguarded.
-                auto layout = shapedThinking(maxInt(1, innerWidth - thinkingIndent));
-                if (layout !is null)
-                {
-                    noteActivity("measureThinking index=" ~
-                        to!string(_messageIndex) ~ " width=" ~
-                        to!string(innerWidth) ~ " lines=" ~
-                        to!string(layout.lines.length));
-                    height += layout.measuredSize().height + gap;
-                }
+                ensureThinkingParts(maxInt(1, innerWidth - thinkingIndent));
+                noteActivity("measureThinking index=" ~
+                    to!string(_messageIndex) ~ " width=" ~
+                    to!string(innerWidth) ~ " parts=" ~
+                    to!string(_thinkingParts.length));
+                height += _thinkingPartsHeight + gap;
             }
         }
 
@@ -2621,14 +2715,17 @@ private final class MessageBubble : Widget
             if (!_thinkingCollapsed)
             {
                 const thinkingWidth = maxInt(1, innerWidth - thinkingIndent);
-                auto layout = shapedThinking(thinkingWidth,
-                    thinkingBudgetDchars(thinkingWidth, height - y));
+                ensureThinkingParts(thinkingWidth);
                 noteActivity("paintThinking index=" ~ to!string(_messageIndex) ~
-                    " width=" ~ to!string(innerWidth) ~ " layout=" ~
-                    (layout is null ? "null" : "ok"));
-                canvas.drawLayout(Point(padH + thinkingIndent, y), layout, opencodeThinkingText);
-                if (layout !is null)
-                    y += layout.measuredSize().height + gap;
+                    " width=" ~ to!string(innerWidth) ~ " parts=" ~
+                    to!string(_thinkingParts.length));
+                foreach (part; _thinkingParts)
+                {
+                    canvas.drawLayout(Point(padH + thinkingIndent, y), part,
+                        opencodeThinkingText);
+                    y += part.measuredSize().height;
+                }
+                if (_thinkingParts.length > 0) y += gap;
             }
         }
 
@@ -3354,6 +3451,13 @@ private final class MessageBubble : Widget
     {
         const toggle = _thinkingCollapsed ? "▸" : "▾";
         string text = toggle ~ " Thinking";
+        if (_thinkingLive || _tokensLive)
+        {
+            // Pulsing indicator right after the label, so the long reasoning
+            // preview at the end can never push the live signal off-screen.
+            const phase = cast(int) (_thinkingElapsed * 2) & 1;
+            text ~= phase == 0 ? " ▌" : " ▐";
+        }
         if (_liveTokens > 0)
         {
             // The paced value trails the measured one only by a few frames, but
@@ -3372,10 +3476,13 @@ private final class MessageBubble : Widget
             const quiet = quietOutputSeconds();
             if (quiet > 0)
                 text ~= "  · no new output for " ~ to!string(quiet) ~ "s";
-            // Pulsing indicator: cycle between ▌ and ▐ every half second.
-            const phase = cast(int) (_thinkingElapsed * 2) & 1;
-            text ~= phase == 0 ? " ▌" : " ▐";
         }
+        // Last, so a narrow window clips the preview rather than the live
+        // status. This is what makes the Thinking phase visibly produce
+        // content instead of only pulsing.
+        if (_thinkingCollapsed && _content.length == 0 &&
+            (_thinkingLive || _tokensLive) && _thinkingPreview.length > 0)
+            text ~= "  · " ~ _thinkingPreview;
         return text;
     }
 
@@ -3407,15 +3514,18 @@ private final class MessageBubble : Widget
     private void drawThinkingHeader(ref Canvas canvas, int innerWidth, int top)
     {
         const live = _thinkingLive || _tokensLive;
+        // Keep the header a single row: the live reasoning preview can be wide,
+        // and wrapping it here would change the reserved height on every
+        // fragment while the transcript is streaming.
         auto layout = canvas.layoutText(toUTF32(thinkingHeaderText()), 1,
-            FontRole.ui, cast(FontFace) theme().uiFont, maxInt(1, innerWidth),
-            true);
+            FontRole.ui, cast(FontFace) theme().uiFont, 0, false);
         const h = layout.measuredSize().height;
         _thinkingRect = Rect(padH, top, maxInt(1, innerWidth), h);
         // No chip background: reasoning is a single muted line ("▸ Thinking")
         // that expands in place, like ReasoningHeader in the original opencode
         // (session/index.tsx) rather than a filled button.
-        canvas.drawLayout(Point(padH, top), layout,
+        auto clipped = canvas.clipped(Rect(padH, top, maxInt(1, innerWidth), h));
+        clipped.drawLayout(Point(padH, top), layout,
             live ? opencodeAccent :
             (_thinkingHover ? opencodeText : opencodeMuted));
     }
@@ -3591,10 +3701,15 @@ private final class MessageBubble : Widget
             const endIndex = logicalEnd == lastSeg
                 ? (lastChar < len ? lastChar : len) : len;
             const y = _selSegments[seg].y;
+            const continuesLine = _selSegments[seg].continuation;
             const emptyCodeLine = len == 0 && _selSegments[seg].code;
             seg = logicalEnd;
             if (endIndex == from && !emptyCodeLine) continue;
-            if (haveLine && y != lastY) result ~= '\n';
+            // A long code line is composed from several independently shaped
+            // chunks. They sit on different visual rows, but they are still one
+            // logical source line, so joining them must not invent a newline.
+            if (haveLine && y != lastY && !continuesLine)
+                result ~= '\n';
             result ~= to!string(layout.text()[min(from, endIndex) .. max(from, endIndex)]);
             lastY = y;
             haveLine = true;

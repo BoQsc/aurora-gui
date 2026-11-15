@@ -8,6 +8,7 @@ import std.conv : to;
 import std.math : ceil;
 import std.string : indexOf, lastIndexOf;
 import std.typecons : Tuple, tuple;
+import aurora.text.unicode.grapheme : previousGraphemeBoundary;
 
 enum InlineStyle : ubyte
 {
@@ -1133,6 +1134,44 @@ private TextLayout shapeOne(dstring text, int pixelSize, bool mono, bool bold)
     return fonts.textEngine.layoutCached(text, options);
 }
 
+// A streaming code block is re-parsed on every delta, while its earlier lines
+// are unchanged. The text engine only caches unwrapped runs up to 256 chars,
+// so a long line was re-shaped from scratch on every frame. Cache the shaped
+// lines with a character budget so only the line currently being written is
+// shaped again.
+private static immutable size_t codeLineCacheChars = 2 * 1024 * 1024;
+// A single minified line can be hundreds of kilobytes. Shape and cache it in
+// grapheme-safe chunks: streaming then re-shapes only the chunk currently being
+// written instead of the whole growing line on every fragment.
+private static immutable size_t codeLineChunkChars = 4 * 1024;
+private struct CodeLineEntry
+{
+    dstring text;
+    int pixelSize;
+    TextLayout layout;
+}
+private CodeLineEntry[] codeLineCache;
+private size_t codeLineCacheUsed;
+
+private TextLayout shapeCodeLine(dstring text, int pixelSize)
+{
+    foreach (ref entry; codeLineCache)
+        if (entry.pixelSize == pixelSize && entry.text == text)
+            return entry.layout;
+    auto layout = shapeOne(text, pixelSize, true, false);
+    if (text.length <= codeLineCacheChars)
+    {
+        codeLineCache ~= CodeLineEntry(text.idup, pixelSize, layout);
+        codeLineCacheUsed += text.length;
+        while (codeLineCache.length > 1 && codeLineCacheUsed > codeLineCacheChars)
+        {
+            codeLineCacheUsed -= codeLineCache[0].text.length;
+            codeLineCache = codeLineCache[1 .. $].dup;
+        }
+    }
+    return layout;
+}
+
 // Natural (unwrapped) width of a run sequence, used to size table columns.
 private double runsWidth(InlineRun[] runs, int pixelSize)
 {
@@ -1471,18 +1510,24 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                 if (block.codeLineLayouts.length != block.codeLines.length ||
                     block.codeLayoutPixelSize != bodyPx)
                 {
+                    if (block.codeLayoutPixelSize != bodyPx)
+                    {
+                        block.codeLineLayouts.length = 0;
+                        block.codeLayoutPixelSize = bodyPx;
+                    }
+                    const previous = block.codeLineLayouts.length;
                     block.codeLineLayouts.length = block.codeLines.length;
-                    foreach (index, codeLine; block.codeLines)
-                        block.codeLineLayouts[index] = shapeOne(codeLine,
-                            bodyPx, true, false);
-                    block.codeLayoutPixelSize = bodyPx;
+                    foreach (index; previous .. block.codeLines.length)
+                        block.codeLineLayouts[index] =
+                            block.codeLines[index].length <= codeLineChunkChars
+                            ? shapeCodeLine(block.codeLines[index], bodyPx) : null;
                 }
 
                 const panelIndex = c.items.length;
                 c.items ~= MdItem.init;
                 double codeHeight = 0.0;
                 void appendCodeItem(TextLayout layout, double sourceX,
-                    double visibleWidth)
+                    double visibleWidth, bool continued)
                 {
                     if (layout is null || layout.lines.length == 0) return;
                     MdItem text;
@@ -1496,19 +1541,18 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                     text.clipText = true;
                     text.clipX = pad;
                     text.clipW = inner;
-                    text.textContinuation = sourceX > 0;
+                    text.textContinuation = continued || sourceX > 0;
                     c.items ~= text;
                     codeHeight += text.h;
                 }
 
-                foreach (index, codeLine; block.codeLines)
+                void appendCodeLayout(TextLayout layout, bool continued)
                 {
-                    auto layout = block.codeLineLayouts[index];
-                    if (layout is null || layout.lines.length == 0) continue;
-                    if (codeLine.length == 0 || layout.width <= inner)
+                    if (layout is null || layout.lines.length == 0) return;
+                    if (layout.width <= inner)
                     {
-                        appendCodeItem(layout, 0, layout.width);
-                        continue;
+                        appendCodeItem(layout, 0, layout.width, continued);
+                        return;
                     }
 
                     double sourceX = 0.0;
@@ -1539,8 +1583,32 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                         if (endX <= sourceX + 0.01)
                             endX = min(layout.width, sourceX + inner);
                         appendCodeItem(layout, sourceX,
-                            min(cast(double) inner, endX - sourceX));
+                            min(cast(double) inner, endX - sourceX), continued);
                         sourceX = endX;
+                    }
+                }
+
+                foreach (index, codeLine; block.codeLines)
+                {
+                    auto layout = block.codeLineLayouts[index];
+                    if (layout !is null)
+                    {
+                        appendCodeLayout(layout, false);
+                        continue;
+                    }
+                    size_t offset;
+                    while (offset < codeLine.length)
+                    {
+                        size_t end = offset + codeLineChunkChars;
+                        if (end >= codeLine.length) end = codeLine.length;
+                        else
+                        {
+                            const boundary = previousGraphemeBoundary(codeLine, end);
+                            if (boundary > offset) end = boundary;
+                        }
+                        appendCodeLayout(shapeCodeLine(codeLine[offset .. end], bodyPx),
+                            offset > 0);
+                        offset = end;
                     }
                 }
                 if (codeHeight <= 0) codeHeight = bodyPx + 4;
@@ -2103,7 +2171,8 @@ void paintMarkdownGlyphs(ref Canvas canvas, ref MdComposition c, int dx,
             // (italic bearings and antialiasing). Give only the first code-line
             // segment a two-pixel ink margin; continuation segments stay
             // strictly clipped so text from the previous segment cannot leak.
-            const firstSegment = item.x >= item.clipX - 0.01;
+            const firstSegment = !item.textContinuation &&
+                item.x >= item.clipX - 0.01;
             const bleed = firstSegment ? 2 : 0;
             auto clipped = canvas.clipped(Rect(
                 cast(int)(dx + item.clipX) - bleed, cast(int)(dy + item.y),

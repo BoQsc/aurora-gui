@@ -17,6 +17,10 @@ private final class LayoutVisibility
 {
     enum size_t chunkSize = 64;
     Rect[] bounds;
+    // True when the per-chunk left edges advance with the glyph index. Long
+    // wrapped code lines are painted as many narrow slices of one huge layout;
+    // without this hint every slice scanned all chunks from the start.
+    bool xOrdered = true;
     FontSystem fonts;
     int pixelSize;
     int renderMode;
@@ -374,12 +378,52 @@ struct Canvas
         if (_fonts is null) _fonts = FontSystem.sharedInstance();
         auto visibility = useVisibilityIndex ? layoutVisibility(layout) : null;
         const surfaceOrigin = toSurface(position);
-        for (size_t start; start < layout.glyphs.length; start += LayoutVisibility.chunkSize)
+        size_t firstChunk, chunkLimit = layout.glyphs.length /
+            LayoutVisibility.chunkSize + (layout.glyphs.length %
+            LayoutVisibility.chunkSize != 0);
+        if (visibility !is null && visibility.xOrdered)
         {
+            // Binary-search the chunks that can overlap the clip. A single
+            // 600 KB code line becomes thousands of clipped paint items; each
+            // one used to walk all ~9,400 visibility chunks, which is seconds
+            // of frame time on an ordinary transcript.
+            size_t lower, upper;
+            lower = 0; upper = visibility.bounds.length;
+            while (lower < upper)
+            {
+                const middle = lower + (upper - lower) / 2;
+                if (visibility.bounds[middle].x + surfaceOrigin.x < _clip.x)
+                    lower = middle + 1;
+                else upper = middle;
+            }
+            firstChunk = lower;
+            // A chunk starting at/after the clip's left edge is visible, but a
+            // preceding chunk may still end inside the clip.
+            while (firstChunk > 0)
+            {
+                const previous = visibility.bounds[firstChunk - 1]
+                    .translated(surfaceOrigin.x, surfaceOrigin.y);
+                if (previous.right() <= _clip.x) break;
+                --firstChunk;
+            }
+            lower = firstChunk; upper = visibility.bounds.length;
+            while (lower < upper)
+            {
+                const middle = lower + (upper - lower) / 2;
+                if (visibility.bounds[middle].x + surfaceOrigin.x < _clip.right())
+                    lower = middle + 1;
+                else upper = middle;
+            }
+            chunkLimit = lower < firstChunk ? firstChunk : lower;
+        }
+        for (size_t chunk = firstChunk; chunk < chunkLimit; ++chunk)
+        {
+            const start = chunk * LayoutVisibility.chunkSize;
+            if (start >= layout.glyphs.length) break;
             const end = start + LayoutVisibility.chunkSize < layout.glyphs.length
                 ? start + LayoutVisibility.chunkSize : layout.glyphs.length;
             if (visibility !is null &&
-                visibility.bounds[start / LayoutVisibility.chunkSize].translated(surfaceOrigin.x, surfaceOrigin.y)
+                visibility.bounds[chunk].translated(surfaceOrigin.x, surfaceOrigin.y)
                     .intersection(_clip).empty()) continue;
             foreach (positioned; layout.glyphs[start .. end])
             {
@@ -519,6 +563,24 @@ struct Canvas
                 *chunk = Rect(x, y, maxInt(chunk.right(), bounds.right()) - x,
                     maxInt(chunk.bottom(), bounds.bottom()) - y);
             }
+        }
+        int previousRight = int.min;
+        foreach (index, rect; result.bounds)
+        {
+            if (rect.empty())
+            {
+                // A whitespace-only chunk has no ink. Collapse it to the
+                // previous chunk's right edge instead of giving up the sorted
+                // search for the whole layout.
+                result.bounds[index] = Rect(index ? previousRight : 0, 0, 0, 0);
+                continue;
+            }
+            if (index && rect.x < previousRight)
+            {
+                result.xOrdered = false;
+                break;
+            }
+            previousRight = rect.right();
         }
         layout.paintVisibility = result;
         return result;

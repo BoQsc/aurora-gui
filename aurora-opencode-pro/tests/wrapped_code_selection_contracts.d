@@ -32,7 +32,8 @@ int main()
     { window.onNativeTick(0.01); Thread.sleep(2.msecs); }
     assert(!root.startupPendingForTesting());
     const line = "0123456789abcdef".replicate(90);
-    foreach (text; [line, "\n\n" ~ line ~ "\n\n\nlast", "identical\nidentical\nidentical",
+    const chunkedLine = "0123456789abcdef".replicate(900);
+    foreach (text; [line, chunkedLine, "\n\n" ~ line ~ "\n\n\nlast", "identical\nidentical\nidentical",
         "Á Привіт العربية שָׁלוֹם 世界 🌍 ".replicate(80)])
     {
         root.newChatForTesting();
