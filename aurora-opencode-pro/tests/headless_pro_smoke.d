@@ -1271,6 +1271,12 @@ private void verifyArchivingLeavesOpenConversation(OpenCodeRoot root,
     }
 
     {
+        // Archiving the open conversation above may have left a single row, so
+        // rebuild the "open conversation plus another row" fixture here rather
+        // than relying on what the rest of the suite happens to hold.
+        while (root.visibleSessionCountForTesting() < 2)
+            root.newChatForTesting();
+        root.tickTree(0.02);
         int[] visible;
         foreach (row; 0 .. root.visibleSessionCountForTesting())
             visible ~= root.visibleSessionIndexAtRowForTesting(row);
