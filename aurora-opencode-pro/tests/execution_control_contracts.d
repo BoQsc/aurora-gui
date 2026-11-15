@@ -8,7 +8,7 @@ import auroraopencode.requestintent;
 import auroraopencode.contextpolicy : latestActualUserRequest;
 import auroraopencode.requestpolicy;
 import auroraopencode.taskmutation : applyTaskPlan;
-import auroraopencode.tools : executeTool, ChangeContext;
+import auroraopencode.tools : executeTool, filesystemToolTimeout, ChangeContext;
 import std.conv : to;
 import std.file : mkdirRecurse, tempDir;
 import std.path : buildPath, absolutePath;
@@ -54,6 +54,59 @@ int main()
     assert(exhausted.action == TurnAction.failed && exhausted.taskStatus == "active",
         "Unresolved completion prose must not loop or advertise completed work");
     writeln("PASS reworded completion, new reads and edits cannot reset unresolved-outcome recovery");
+
+    // A wait consumes its own duration, so the host deadline must include a
+    // startup/shutdown margin. The old flat 3 s margin reported an elapsed
+    // 100 s pause as a 103 s timeout.
+    assert(filesystemToolTimeout("dshell", `{"command":"sleep","seconds":100}`) == 130_000);
+    assert(filesystemToolTimeout("dshell", `{"command":"wait","seconds":300}`) == 330_000);
+    assert(filesystemToolTimeout("dshell", `{"command":"sleep","seconds":600}`) == 330_000);
+    assert(filesystemToolTimeout("dshell", `{"command":"list","timeout":100000}`) == 100_000);
+    assert(filesystemToolTimeout("read", `{"timeout":100000}`) == 30_000);
+    assert(filesystemToolTimeout("grep", `{"pattern":"x"}`) == 15_000);
+    assert(filesystemToolTimeout("glob", `{"pattern":"**/*.d"}`) == 10_000);
+    writeln("PASS wait deadlines add a host margin while explicit read/list/search deadlines stay bounded");
+
+    // A transient host fault must not turn a delivered answer into a failed
+    // turn: the environment interrupted the turn, and the recorded work stays.
+    s = pending();
+    foreach (attempt; 0 .. 2)
+    {
+        append(s, "assistant", "Delivered the requested correction " ~ to!string(attempt));
+        auto d = decideTurn(s, p);
+        assert(d.action == TurnAction.request, "Transient recovery did not ask for another round");
+        append(s, "user", d.guidance, true);
+        append(s, "tool", "Error: filesystem tool timed out after 130000 ms; its host was terminated.",
+            false, "dshell", true);
+    }
+    append(s, "assistant", "The delivered answer and its evidence are preserved.");
+    auto hostInterrupted = decideTurn(s, p);
+    assert(hostInterrupted.action == TurnAction.interrupted &&
+        hostInterrupted.turnStatus == "interrupted" &&
+        hostInterrupted.taskStatus == "verifying", hostInterrupted.status);
+    assert(!s.messages[$ - 1].failed, "A transient host fault marked the delivered answer as failed");
+    writeln("PASS a persistent host fault interrupts the turn and preserves the delivered answer");
+
+    // A new accepted check is real progress: attempts from an earlier streak
+    // must not make the next answer terminal when the fingerprint recurs.
+    s = pending();
+    append(s, "assistant", "First delivery");
+    auto first = decideTurn(s, p);
+    assert(first.action == TurnAction.request);
+    append(s, "user", first.guidance, true);
+    append(s, "tool", "Error: filesystem tool host failed: response missing", false, "dshell", true);
+    append(s, "assistant", "Second delivery after inspecting the host");
+    auto second = decideTurn(s, p);
+    assert(second.action == TurnAction.request);
+    append(s, "user", second.guidance, true);
+    append(s, "tool", "Current tests passed", false, "run");
+    s.messages[$ - 1].verificationCheck = "verify:tests"; s.messages[$ - 1].verificationScope = "current";
+    append(s, "assistant", "Third delivery with a fresh check");
+    auto reset = decideTurn(s, p);
+    assert(reset.action == TurnAction.request &&
+        reset.guidance.indexOf("previous completion attempt") < 0,
+        "An accepted check did not reset the recovery streak");
+    writeln("PASS a newly accepted check resets the recovery streak instead of ending the turn");
 
     s = pending();
     foreach (i; 0 .. 12)

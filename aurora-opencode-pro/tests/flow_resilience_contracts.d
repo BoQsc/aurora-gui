@@ -15,7 +15,7 @@ import core.time : MonoTime, msecs, seconds;
 import core.atomic : atomicOp, atomicLoad;
 import std.base64 : Base64;
 import std.conv : to;
-import std.file : mkdirRecurse, write, readText, dirEntries, SpanMode, rename, rmdir;
+import std.file : mkdirRecurse, write, readText, dirEntries, SpanMode, rename, rmdir, exists;
 import std.json : parseJSON;
 import std.path : buildNormalizedPath, buildPath;
 import std.stdio : writeln;
@@ -121,6 +121,15 @@ int main()
     assert(!image.failed && image.images.length == 1 && image.images[0].name == "image.png" &&
         image.images[0].mimeType == "image/png" && Base64.decode(image.images[0].base64Data) == pixels, image.output);
     writeln("PASS image evidence retains name, MIME type and exact pixels across host IPC");
+
+    write(buildPath(directory, "host-retry.txt"), "host retry succeeds");
+    const retried = executeTool(OpenCodeToolCall("host-retry", "dshell",
+        `{"command":"info","path":"host-retry.txt","_fixtureDropOnce":true}`), directory);
+    assert(!retried.failed, "A host that exited without a result was not retried: " ~ retried.output);
+    assert(retried.output.indexOf("host-retry.txt") >= 0, retried.output);
+    assert(exists(buildPath(directory, ".fixture-host-drop-once")),
+        "The fixture did not simulate a dropped host response");
+    writeln("PASS a host that exited without a result is retried once and the call succeeds");
 
     auto repository = new ConversationRepository();
     scope(exit) repository.close();

@@ -176,6 +176,20 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         const state = execution;
         if (state.attempts >= 2)
         {
+            // A host fault is not a substantive failure. The answer already
+            // delivered stays intact and the recorded work stays active; the
+            // turn ends as interrupted by the environment, not failed.
+            if (state.transientFailure)
+            {
+                result.action = TurnAction.interrupted;
+                result.turnStatus = "interrupted";
+                result.taskStatus = state.verificationRequired ? "verifying" : "active";
+                result.status = "Tool host unavailable; the delivered answer and remaining work are preserved. Retry when the host responds.";
+                result.clearDiagnostic = true;
+                if (goalActive(session) && !session.queuedFollowUps.length)
+                    result.settleGoal = "paused";
+                return result;
+            }
             result.action = TurnAction.failed;
             result.turnStatus = "failed";
             result.taskStatus = "active";

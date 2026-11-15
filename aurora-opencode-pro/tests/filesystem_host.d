@@ -14,6 +14,19 @@ int main(string[] args)
     {
         auto request = parseJSON(readText(args[2]));
         auto fields = parseJSON(request["arguments"].str);
+        // Simulate a host that exits before delivering a result. The first
+        // attempt leaves a marker; the retried attempt runs normally.
+        if (auto drop = "_fixtureDropOnce" in fields.object)
+            if (drop.boolean)
+            {
+                import std.file : exists;
+                const marker = buildPath(request["workspace"].str, ".fixture-host-drop-once");
+                if (!exists(marker))
+                {
+                    write(marker, "dropped");
+                    return 0;
+                }
+            }
         if (auto blocked = "_fixtureBlocked" in fields.object)
             if (blocked.boolean)
             {

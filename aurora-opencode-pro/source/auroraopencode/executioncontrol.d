@@ -13,6 +13,21 @@ import std.digest : toHexString;
 
 enum executionRecoveryMarker = "Execution recovery: ";
 
+/// A filesystem host fault is infrastructure, not evidence that the requested
+/// outcome is wrong. The tool already replays a host that never delivered a
+/// result, so a remaining timeout must not spend the completion-recovery budget
+/// or turn a delivered answer into a substantive failure.
+public bool transientToolFailure(const ref ChatMessage message)
+{
+    if (message.role != "tool" || !message.failed) return false;
+    foreach (prefix; ["Error: filesystem tool timed out after ",
+            "Error: filesystem tool host failed:",
+            "Error: filesystem tool host exited with code ",
+            "Error: filesystem tool hosts are at capacity"])
+        if (message.content.startsWith(prefix)) return true;
+    return false;
+}
+
 /// The read-only gate's refusal is the gate working, not an execution failure.
 private bool diagnosticBlockedTool(const ref ChatMessage message)
 {
@@ -26,7 +41,7 @@ struct ExecutionState
 {
     string fingerprint, remaining, failure;
     int completed, attempts, tools, effects;
-    bool verificationRequired, verified, actionMissing;
+    bool verificationRequired, verified, actionMissing, transientFailure;
 
     string guidance() const
     {
@@ -100,10 +115,24 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
             // attempt to recover; do not feed it back as an observed obstacle.
             if (message.failed && !planModeBlockedTool(message) &&
                 !diagnosticBlockedTool(message))
+            {
                 state.failure = taskExcerpt(message.content, 800);
+                state.transientFailure = transientToolFailure(message);
+            }
             // Successful checks resolve prior checker failures. Reads and plan
             // edits cannot clear an actual failed execution.
             else if (message.verificationCheck.length) state.failure = "";
+            // An accepted check is real progress. A fingerprint can recur after
+            // verification flips back (a later check fails, then passes), so
+            // attempts from an earlier streak must not make the next answer
+            // terminal. Only substantive evidence resets the budget; reads and
+            // plan edits still cannot erase an unresolved outcome.
+            if (!message.failed && message.verificationCheck.length)
+            {
+                state.failure = "";
+                state.transientFailure = false;
+                state.attempts = 0;
+            }
             if (message.verificationScope.length && (message.verificationCheck.indexOf("test") >= 0 || message.verificationCheck.indexOf("interaction") >= 0 || message.verificationCheck.indexOf("render") >= 0))
             {
                 string key = message.verificationCheck;

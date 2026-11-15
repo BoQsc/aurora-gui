@@ -201,12 +201,68 @@ public int runFilesystemHelperMode(string[] args)
     return 0;
 }
 
+/// Host deadline for one filesystem call. A `dshell sleep`/`wait` consumes its
+/// own duration, so its deadline adds a full startup/shutdown margin instead of
+/// the old flat 3 s allowance: a 100 s pause became a 103 s deadline whose host
+/// could not always start, sleep and report inside the remaining margin, so a
+/// pause that had actually elapsed was reported as a timeout.
+public long filesystemToolTimeout(string name, string arguments, string workspace = "")
+{
+    long timeoutMs = name == "glob" || name == "grep" ? 10_000 : 30_000;
+    try
+    {
+        const args = parseJSON(arguments);
+        if (args.type == JSONType.object)
+        {
+            if (auto timeout = "timeout" in args.object)
+                if (timeout.type == JSONType.integer)
+                    timeoutMs = timeout.integer < 100 ? 100 :
+                        timeout.integer > 600_000 ? 600_000 : timeout.integer;
+            if (name == "grep" && jsonString(args, "scope") != "contents" &&
+                !narrowsSearchInclude(jsonString(args, "include")))
+            {
+                const requestedPath = jsonString(args, "path");
+                const root = requestedPath.length ? resolveToolPath(requestedPath, workspace) : workspace;
+                if (workspace.length && comparableSearchPath(root) == comparableSearchPath(workspace) &&
+                    timeoutMs > 10_000)
+                    timeoutMs = 10_000;
+            }
+            if (name == "dshell")
+                if (auto secondsArg = "seconds" in args.object)
+                    if (secondsArg.type == JSONType.integer || secondsArg.type == JSONType.float_ ||
+                        secondsArg.type == JSONType.string)
+                    {
+                        const pause = secondsArg.type == JSONType.integer ?
+                            cast(double) secondsArg.integer : secondsArg.type == JSONType.float_ ?
+                            secondsArg.floating : to!double(secondsArg.str);
+                        if (pause > 0)
+                        {
+                            const capped = pause > 300 ? 300 : pause;
+                            timeoutMs = cast(long) (capped * 1000.0) + 30_000;
+                        }
+                    }
+        }
+    }
+    catch (Exception) {}
+    if (name == "grep") timeoutMs += 5000;
+    if (name == "read" && timeoutMs > 30_000) timeoutMs = 30_000;
+    return timeoutMs;
+}
+
+/// One host process attempt. `hostFault` means the host never delivered a
+/// result (spawn failure, crash or missing response), so replaying the same
+/// filesystem call cannot repeat a completed effect.
+private struct FilesystemHostOutcome
+{
+    ToolExecution result;
+    bool hostFault;
+}
+
 private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
     string workspace, ToolCancellation cancellation, ToolOutputObserver observer)
 {
     import std.file : thisExePath;
     import std.process : environment;
-    const started = MonoTime.currTime;
     if (!_filesystemHosts.acquire())
         return ToolExecution(call.name, "Error: filesystem tool hosts are at capacity; retry after running calls settle.", true);
     scope (exit) _filesystemHosts.release();
@@ -222,68 +278,15 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
             "Error: this program cannot host filesystem tools. Set AURORA_FILESYSTEM_HOST " ~
             "to an executable that implements " ~ filesystemHelperFlag ~
             " instead of re-spawning this image.", true);
-    long timeoutMs = call.name == "glob" || call.name == "grep" ? 10_000 : 30_000;
-    try
-    {
-        const args = parseJSON(call.arguments);
-        if (args.type == JSONType.object)
-        {
-            if (auto timeout = "timeout" in args.object)
-                if (timeout.type == JSONType.integer)
-                    timeoutMs = timeout.integer < 100 ? 100 :
-                        timeout.integer > 600_000 ? 600_000 : timeout.integer;
-            if (call.name == "grep" && jsonString(args, "scope") != "contents" &&
-                !narrowsSearchInclude(jsonString(args, "include")))
-            {
-                const requestedPath = jsonString(args, "path");
-                const root = requestedPath.length ? resolveToolPath(requestedPath, workspace) : workspace;
-                if (comparableSearchPath(root) == comparableSearchPath(workspace) && timeoutMs > 10_000)
-                    timeoutMs = 10_000;
-            }
-            if (call.name == "dshell")
-                if (auto secondsArg = "seconds" in args.object)
-                    if (secondsArg.type == JSONType.integer || secondsArg.type == JSONType.float_ ||
-                        secondsArg.type == JSONType.string)
-                    {
-                        const pause = secondsArg.type == JSONType.integer ?
-                            cast(double) secondsArg.integer : secondsArg.type == JSONType.float_ ?
-                            secondsArg.floating : to!double(secondsArg.str);
-                        if (pause > 0) timeoutMs = cast(long) ((pause > 300 ? 300 : pause) * 1000) + 3000;
-                    }
-        }
-    }
-    catch (Exception) {}
-    if (call.name == "grep") timeoutMs += 5000;
-    if (call.name == "read" && timeoutMs > 30_000) timeoutMs = 30_000;
+    const timeoutMs = filesystemToolTimeout(call.name, call.arguments, workspace);
     if (cancellation !is null && cancellation.cancelled())
         return ToolExecution(call.name, "Stopped: filesystem tool cancelled before it started.", true);
-    // Short filenames avoid a potentially blocking write to a child stdin pipe.
-    const requestPath = buildPath(tempDir(), "aurora-filesystem-" ~ to!string(started.ticks) ~ ".json");
-    const outputPath = requestPath ~ ".out";
-    const progressPath = requestPath ~ ".progress";
-    File input, output;
-    Pid pid;
-    bool running;
+    // Prepare the request once. A resumed directory scan must keep the same
+    // cursor across a host retry; re-creating it would restart the scan.
+    string arguments = call.arguments;
     string scanCursor;
-    SearchProgress searchProgress;
-    ReadProgress readProgress;
-    bool searchCall;
-    scope (exit)
-    {
-        if (running) killProcessTree(pid);
-        if (input.isOpen) collectException(input.close());
-        if (output.isOpen) collectException(output.close());
-        collectException(remove(requestPath));
-        collectException(remove(outputPath));
-        collectException(remove(progressPath));
-        collectException(remove(progressPath ~ ".tmp"));
-    }
     try
     {
-        JSONValue request;
-        request["name"] = call.name;
-        request["progressPath"] = progressPath;
-        string arguments = call.arguments;
         if (call.name == "dshell")
         {
             auto fields = parseJSON(arguments);
@@ -302,8 +305,61 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
                         arguments = fields.toString();
                     }
         }
+    }
+    catch (Exception error)
+        return ToolExecution(call.name, "Error: filesystem tool arguments are invalid: " ~ error.msg, true);
+    FilesystemHostOutcome outcome;
+    foreach (attempt; 0 .. 2)
+    {
+        outcome = runFilesystemHost(call, workspace, cancellation, observer,
+            configuredHost, timeoutMs, arguments, scanCursor, attempt);
+        if (!outcome.hostFault) return outcome.result;
+        if (cancellation !is null && cancellation.cancelled()) break;
+        if (!attempt) Thread.sleep(120.msecs);
+    }
+    return outcome.result;
+}
+
+private FilesystemHostOutcome runFilesystemHost(const ref OpenCodeToolCall call,
+    string workspace, ToolCancellation cancellation, ToolOutputObserver observer,
+    string configuredHost, long timeoutMs, string arguments, string scanCursor, int attempt)
+{
+    import std.file : thisExePath;
+    import std.process : environment;
+    FilesystemHostOutcome outcome;
+    const started = MonoTime.currTime;
+    // Short filenames avoid a potentially blocking write to a child stdin pipe.
+    const requestPath = buildPath(tempDir(),
+        "aurora-filesystem-" ~ to!string(started.ticks) ~ "-" ~ to!string(attempt) ~ ".json");
+    const outputPath = requestPath ~ ".out";
+    const progressPath = requestPath ~ ".progress";
+    File input, output;
+    Pid pid;
+    bool running;
+    SearchProgress searchProgress;
+    ReadProgress readProgress;
+    bool searchCall;
+    scope (exit)
+    {
+        if (running) killProcessTree(pid);
+        if (input.isOpen) collectException(input.close());
+        if (output.isOpen) collectException(output.close());
+        collectException(remove(requestPath));
+        collectException(remove(outputPath));
+        collectException(remove(progressPath));
+        collectException(remove(progressPath ~ ".tmp"));
+    }
+    try
+    {
+        JSONValue request;
+        request["name"] = call.name;
+        request["progressPath"] = progressPath;
         request["arguments"] = arguments;
-        const searchArgs = parseJSON(arguments);
+        JSONValue searchArgs;
+        try searchArgs = parseJSON(arguments);
+        catch (Exception error)
+            return FilesystemHostOutcome(ToolExecution(call.name,
+                "Error: filesystem tool arguments are invalid: " ~ error.msg, true), false);
         if (call.name == "read")
         {
             readProgress.phase = "Starting read host";
@@ -330,7 +386,7 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
         request["stateDirectory"] = opencodeStateDirectory();
         const encoded = request.toString();
         if (encoded.length > 256 * 1024)
-            return ToolExecution(call.name, "Error: filesystem tool arguments exceed 256 KiB.", true);
+            return FilesystemHostOutcome(ToolExecution(call.name, "Error: filesystem tool arguments exceed 256 KiB.", true), false);
         write(requestPath, encoded);
         input = openNullStdin();
         output = File(outputPath, "wb");
@@ -390,7 +446,12 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
             {
                 running = false;
                 if (status.status != 0)
-                    return ToolExecution(call.name, "Error: filesystem tool host exited with code " ~ to!string(status.status) ~ ".", true);
+                {
+                    outcome.result = ToolExecution(call.name,
+                        "Error: filesystem tool host exited with code " ~ to!string(status.status) ~ ".", true);
+                    outcome.hostFault = true;
+                    return outcome;
+                }
                 if (observer !is null)
                     try
                     {
@@ -426,19 +487,27 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
                 return "\nLast reported search activity (partial results):\n" ~ searchProgressText(searchProgress);
             }
             if (cancellation !is null && cancellation.cancelled())
-                return ToolExecution(call.name, "Stopped: filesystem tool cancelled; its host was terminated." ~
-                    searchInterruption(call.name == "read" ? "Read stopped — incomplete" : "Search stopped — incomplete") ~ directoryScanResumeHint(scanCursor), true);
+                return FilesystemHostOutcome(ToolExecution(call.name,
+                    "Stopped: filesystem tool cancelled; its host was terminated." ~
+                    searchInterruption(call.name == "read" ? "Read stopped — incomplete" : "Search stopped — incomplete") ~
+                    directoryScanResumeHint(scanCursor), true), false);
             if (MonoTime.currTime >= deadline)
-                return ToolExecution(call.name, "Error: filesystem tool timed out after " ~ to!string(timeoutMs) ~ " ms; its host was terminated." ~
+            {
+                const hint = scanCursor.length > 0 ? directoryScanResumeHint(scanCursor)
+                    : call.name == "read" ? " Retry a smaller line window after the file or storage responds."
+                    : call.name == "grep" ? " Narrow path/include or inspect partial results before retrying. Increasing the deadline alone repeats the same work."
+                    : call.name == "dshell" && call.arguments.indexOf("\"sleep\"") >= 0
+                        ? " The pause host exceeded its safety margin; continue without repeating the same wait."
+                    : " Narrow the path or increase timeout.";
+                return FilesystemHostOutcome(ToolExecution(call.name,
+                    "Error: filesystem tool timed out after " ~ to!string(timeoutMs) ~ " ms; its host was terminated." ~
                     searchInterruption(call.name == "read" ? "Read timed out — incomplete" : "Search timed out — incomplete") ~
-                    (scanCursor.length > 0 ? directoryScanResumeHint(scanCursor)
-                        : call.name == "read" ? " Retry a smaller line window after the file or storage responds."
-                        : call.name == "grep" ? " Narrow path/include or inspect partial results before retrying. Increasing the deadline alone repeats the same work."
-                        : " Narrow the path or increase timeout."), true);
+                    hint, true), false);
+            }
         }
         output.close();
         if (getSize(outputPath) > attachmentImageMaxBytes * 2 + 256 * 1024)
-            return ToolExecution(call.name, "Error: filesystem tool host returned excessive output.", true);
+            return FilesystemHostOutcome(ToolExecution(call.name, "Error: filesystem tool host returned excessive output.", true), false);
         const response = parseJSON(readText(outputPath));
         ToolExecution result;
         result.name = call.name;
@@ -448,10 +517,15 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
         {
             result.images ~= imageAttachmentFromJson(imageJson);
         }
-        return result;
+        outcome.result = result;
+        return outcome;
     }
     catch (Exception error)
-        return ToolExecution(call.name, "Error: filesystem tool host failed: " ~ error.msg, true);
+    {
+        outcome.result = ToolExecution(call.name, "Error: filesystem tool host failed: " ~ error.msg, true);
+        outcome.hostFault = true;
+        return outcome;
+    }
 }
 
 // ---------------------------------------------------------------------------
