@@ -3897,7 +3897,12 @@ int main(string[] args)
             "Button tooltip stayed open after the pointer left");
 
         // The composer's Send button opens its tooltip above itself, since the
-        // panel below would fall off the window edge.
+        // panel below would fall off the window edge. It only explains itself
+        // while enabled, and the scenarios above left the composer empty, so
+        // give it a prompt to send.
+        auto sendInput = requireWidget!TextArea(root, "oc-input");
+        sendInput.setText("tooltip probe");
+        root.tickTree(0.02);
         auto tipSend = requireWidget!Widget(root, "oc-send");
         driver.moveTo(globalCenter(tipSend));
         foreach (_; 0 .. 20) root.tickTree(0.05);
@@ -3911,6 +3916,9 @@ int main(string[] args)
             sendTipBounds.bottom() <= tipSendOrigin.y,
             "Send button tooltip should open above the button");
         driver.moveTo(Point(4, 700));
+        root.tickTree(0.02);
+        // Leave the composer as the rest of the suite expects it.
+        sendInput.setText("");
         root.tickTree(0.02);
 
         // Every common button is wired, not just the two probed above.
@@ -4337,11 +4345,13 @@ int main(string[] args)
     const systemPrompt = root.systemPromptViewerTextForTesting();
     assert(systemPrompt.indexOf("Aurora OpenCode") >= 0,
         "system prompt is missing the identity line");
-    assert(systemPrompt.indexOf("# Execution loop") >= 0 &&
-        systemPrompt.indexOf("# Operating contract") >= 0,
+    // The prompt modules are named for what they cover: planning, then the
+    // scope and safety rules around editing.
+    assert(systemPrompt.indexOf("# Work and planning") >= 0 &&
+        systemPrompt.indexOf("# Scope and safety") >= 0,
         "system prompt is missing the execution contract: " ~ systemPrompt);
-    assert(systemPrompt.indexOf("name the remaining unknown") >= 0 &&
-        systemPrompt.indexOf("evidence phase, not a quota") >= 0,
+    assert(systemPrompt.indexOf("identify the missing fact") >= 0 &&
+        systemPrompt.indexOf("Do not invent extra deliverables") >= 0,
         "system prompt does not guide progress from evidence");
     assert(systemPrompt.indexOf("within six") < 0 &&
         systemPrompt.indexOf("at most three") < 0,
@@ -4363,8 +4373,8 @@ int main(string[] args)
     const concisePrompt = root.systemPromptViewerTextForTesting();
     assert(concisePrompt.indexOf("# Response style") >= 0,
         "The Concise verbosity must reach the system prompt");
-    assert(concisePrompt.indexOf("# Communication") >= 0 &&
-        concisePrompt.indexOf("# Execution loop") >= 0,
+    assert(concisePrompt.indexOf("# Conversation") >= 0 &&
+        concisePrompt.indexOf("# Work and planning") >= 0,
         "Concise must leave the rest of the prompt intact");
     root.dismissPopupForTesting();
     root.flushSettingsForTesting();

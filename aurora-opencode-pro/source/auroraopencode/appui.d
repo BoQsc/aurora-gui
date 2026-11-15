@@ -11736,7 +11736,7 @@ public final class SessionListView : ListView
     {
         const count = cast(int) items().length;
         if (_pinnedRows > 0)
-            return rowTop(_pinnedRows) - listTopPad();
+            return _pinnedRows * rowHeight();
         if (count > 0)
             return rowTop(0) - listTopPad() + rowHeight();
         return rowHeight();
@@ -12023,13 +12023,13 @@ public final class SessionListView : ListView
         }
 
         if (_dragging && _dragIntent != DragIntent.none)
-            paintDropIndicator(content, width, offset, rowHeight);
+            paintDropIndicator(content, width, offset, rowHeight, gap);
     }
 
     // While a drag is in flight, tint the zone the drop would apply to so the
     // pin/unpin outcome is visible before the release.
     private void paintDropIndicator(Canvas canvas, int width, int offset,
-        int rowHeight)
+        int rowHeight, int gap)
     {
         const accent = opencodeAccent;
         immutable(dchar)[] label;
@@ -12037,14 +12037,14 @@ public final class SessionListView : ListView
         if (_dragIntent == DragIntent.pin)
         {
             const top = listTopPad() - offset;
-            const bottom = pinDropZoneBottom() + listTopPad() - offset;
+            const bottom = pinDropZoneBottom() - offset;
             band = Rect(2, top, maxInt(0, width - 4),
                 maxInt(rowHeight, bottom - top));
             label = "Pin conversation"d;
         }
         else
         {
-            const top = rowTop(_pinnedRows) - offset;
+            const top = pinDropZoneBottom() + gap - offset;
             band = Rect(2, top, maxInt(0, width - 4), rowHeight);
             label = "Unpin conversation"d;
         }
@@ -30484,13 +30484,19 @@ private void pollButtonSuggestionRequest()
                 const rowLabel = isSessionArchived(session.id)
                     ? "(archived) " ~ title
                     : (pinnedPass ? "★ " ~ title : title);
-                const dayKey = sessionDayKey(session.updatedAt);
-                if (dayKey.length > 0 && dayKey != previousDayKey)
+                // Day headings belong to the conversation list proper. The
+                // pinned group keeps its own section and divider exactly as it
+                // was, so it never opens or shifts a heading.
+                if (!pinnedPass)
                 {
-                    dayStarts ~= cast(int) items.length;
-                    dayLabels ~= sessionDayHeading(dayKey, todayKey,
-                        yesterdayKey);
-                    previousDayKey = dayKey;
+                    const dayKey = sessionDayKey(session.updatedAt);
+                    if (dayKey.length > 0 && dayKey != previousDayKey)
+                    {
+                        dayStarts ~= cast(int) items.length;
+                        dayLabels ~= sessionDayHeading(dayKey, todayKey,
+                            yesterdayKey);
+                        previousDayKey = dayKey;
+                    }
                 }
                 items ~= ListItem(rowLabel, IconKind.none, secondary);
                 if (pinnedPass) ++pinnedCount;

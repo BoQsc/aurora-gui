@@ -162,6 +162,19 @@ int main()
     assert(splitThird.y - splitSecond.y == rowHeight + span,
         "the yesterday heading should open room before its row");
 
+    // Pinning a conversation must leave the pinned section and its divider
+    // untouched: no day heading opens above the pinned group, and the day
+    // headings start at the first unpinned row.
+    assert(root.invokeSessionContextMenuItemForTesting(2, "Pin conversation"),
+        "the conversation menu did not offer Pin conversation");
+    root.tickTree(0.02);
+    assert(root.sessionPinnedForTesting(2), "the conversation was not pinned");
+    assert(root.sessionPinnedSeparatorRowForTesting() == 1,
+        "the pinned divider should sit under the one pinned row");
+    assert(root.sessionDaySeparatorsForTesting() == "1=Today",
+        "day headings must start at the first unpinned row, was " ~
+            root.sessionDaySeparatorsForTesting());
+
     writeln("PASS: the conversation list separates conversations by day");
     return 0;
 }
