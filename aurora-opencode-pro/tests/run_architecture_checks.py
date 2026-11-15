@@ -7,11 +7,24 @@ import time
 import hashlib
 import os
 import atexit
+import importlib.util
 from architecture_retention import FileLease, prune_runs
 from pathlib import Path
 
 package = Path(__file__).resolve().parents[1]
 repo = package.parent
+
+
+def resolve_git():
+    """Locate git even when the launching environment omits it from PATH."""
+    spec = importlib.util.spec_from_file_location(
+        'aurora_build_provenance', package / 'tools/build_provenance.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module._git_executable()
+
+
+git_executable = resolve_git()
 parser = argparse.ArgumentParser()
 parser.add_argument('--release', action='store_true', help='Measure optimized fixtures using release compiler flags')
 parser.add_argument('--keep-runs', type=int, default=3, help='Retain this many completed runs, plus every active run')
@@ -59,7 +72,8 @@ def source_fingerprint():
     return digest.hexdigest()
 
 fingerprint = source_fingerprint()
-head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+head = subprocess.check_output([git_executable, 'rev-parse', 'HEAD'],
+                               cwd=repo, text=True).strip()
 proof = {'sourceSha256': fingerprint, 'gitHead': head,
          'buildMode': 'optimized-with-assertions' if args.release else 'debug'}
 print('ARTIFACTS', directory, 'SOURCE', fingerprint, flush=True)
