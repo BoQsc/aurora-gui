@@ -14,9 +14,10 @@ when the conversation moves to another project.
 
 Right-click a reference to open its file/folder or copy its absolute path.
 Missing files retain their path metadata and can reveal an existing parent.
-Right-click a conversation for **Open main folder**, **Copy main folder path**,
-**Choose main folder…**, **Re-detect main folder**, and ranked candidates when
-more than one folder is used. The existing **Open folder** uses the same target.
+Right-click a conversation for **Open folder**, which opens the conversation's
+main folder, **Copy main folder path**, **Choose main folder…**,
+**Re-detect main folder**, and ranked candidates when more than one folder is
+used.
 
 Main-folder detection groups files at the nearest Git root, weights structured
 tool paths three times as strongly as prose, and counts a folder once per

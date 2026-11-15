@@ -31581,9 +31581,10 @@ private void pollButtonSuggestionRequest()
             {
                 selectSession(sessionIndex);
             }, "Enter"),
-            // Reveal this conversation's project folder in File Explorer,
-            // resolved from the conversation's own project so it works from any
-            // row without first opening the chat.
+            // Reveal this conversation's main folder in File Explorer: the
+            // folder it actually works in, falling back to its project
+            // workspace. Resolved from the conversation's own project so it
+            // works from any row without first opening the chat.
             ContextMenuItem.command("Open folder", IconKind.folder, delegate()
             {
                 auto folder = workspaceForSession(sessionIndex);
@@ -31642,11 +31643,6 @@ private void pollButtonSuggestionRequest()
         // >>> filecontext:begin
         if (_settings.smartFileContext)
         {
-            items ~= ContextMenuItem.command("Open main folder", IconKind.folder, delegate()
-            {
-                const folder = conversationMainFolder(sessionIndex);
-                version (Windows) if (exists(folder) && isDir(folder)) openFolderInExplorer(folder);
-            });
             items ~= ContextMenuItem.command("Copy main folder path", IconKind.save, delegate()
             {
                 copyTextToClipboard(conversationMainFolder(sessionIndex));

@@ -169,8 +169,18 @@ void main()
     root.appendToolMessageForTesting("read", "example", `{"filePath":"source/app.d"}`, 0, 0, "");
     root.projectTranscriptForTesting();
     assert(driver.paint());
-    assert(root.sessionContextMenuLabelsForTesting(0).canFind("Open main folder"));
-    assert(root.sessionContextMenuLabelsForTesting(0).canFind("Re-detect main folder"));
+    // One "Open folder" opens the conversation's main folder; the menu must not
+    // duplicate it as "Open main folder".
+    auto sessionLabels = root.sessionContextMenuLabelsForTesting(0);
+    size_t openFolderItems;
+    foreach (label; sessionLabels)
+        if (label == "Open folder") ++openFolderItems;
+    assert(openFolderItems == 1,
+        "the conversation menu should offer exactly one Open folder: " ~
+        to!string(sessionLabels));
+    assert(!sessionLabels.canFind("Open main folder"),
+        "the conversation menu duplicated Open folder as Open main folder");
+    assert(sessionLabels.canFind("Re-detect main folder"));
     assert(root.invokeSessionContextMenuItemForTesting(0, "Copy main folder path"));
     root.openMessageContextMenuForTesting(0);
     assert(driver.paint());
@@ -208,8 +218,11 @@ void main()
     toggle.setChecked(false, true);
     root.flushRepositoryForTesting();
     assert(!loadSettings().smartFileContext);
-    assert(!root.sessionContextMenuLabelsForTesting(0).canFind("Open main folder"));
-    assert(!root.sessionContextMenuLabelsForTesting(0).canFind("Re-detect main folder"));
+    sessionLabels = root.sessionContextMenuLabelsForTesting(0);
+    assert(sessionLabels.canFind("Open folder"),
+        "Open folder should stay available without Smart File Context");
+    assert(!sessionLabels.canFind("Copy main folder path"));
+    assert(!sessionLabels.canFind("Re-detect main folder"));
     assert(root.systemPromptViewerTextForTesting().indexOf("## File references") < 0);
     root.dismissPopupForTesting();
     assert(root.toggleSettingsSectionForTesting("oc-settings-options"));
@@ -218,7 +231,7 @@ void main()
     toggle.setChecked(true, true);
     root.flushRepositoryForTesting();
     assert(loadSettings().smartFileContext);
-    assert(root.sessionContextMenuLabelsForTesting(0).canFind("Open main folder"));
+    assert(root.sessionContextMenuLabelsForTesting(0).canFind("Re-detect main folder"));
     assert(root.systemPromptViewerTextForTesting().indexOf("## File references") >= 0);
     root.dismissPopupForTesting();
     root.newChatForTesting();
