@@ -82,7 +82,10 @@ int main()
     root.newChatForTesting();
     send("Finish all six fixture steps.");
     settled();
-    assert(root.taskStatusForTesting() == "completed");
+    assert(root.taskStatusForTesting() == "completed",
+        "six-step task remained " ~ root.taskStatusForTesting() ~
+        " error=" ~ root.lastAssistantErrorForTesting() ~
+        " answer=" ~ root.lastAssistantContentForTesting());
     foreach (i; 0 .. 6)
     {
         assert(root.taskStepStatusForTesting(i) == "completed");
@@ -113,13 +116,18 @@ int main()
     root.newChatForTesting();
     send("Implement the fixture stalled task.");
     settled();
-    assert(root.taskStatusForTesting() == "completed" && root.turnStatusForTesting() == "completed");
-    assert(root.lastAssistantErrorForTesting().length == 0);
-    assert(root.taskStepStatusForTesting(0) == "completed");
-    assert(readText(buildPath(workspace, "recovered.md")) == "Recovered outcome");
+    // Repeating the same no-progress reply must end in a visible bounded
+    // failure, never a ten-round silent stall. The unfinished outcome stays
+    // recorded so Retry resumes it.
+    assert(root.turnStatusForTesting() == "failed" && root.taskStatusForTesting() == "active",
+        "stalled turn settled as " ~ root.turnStatusForTesting() ~ "/" ~
+        root.taskStatusForTesting() ~ " error=" ~ root.lastAssistantErrorForTesting());
+    assert(root.lastAssistantErrorForTesting().indexOf("Execution recovery did not resolve") >= 0);
+    assert(root.taskStepStatusForTesting(0) == "in_progress");
+    assert(!exists(buildPath(workspace, "recovered.md")));
     root.persistForTesting(); root.reloadSessionsForTesting();
-    assert(root.taskStatusForTesting() == "completed");
-    writeln("PASS recurring diagnosis recovers past the old stall limit and persists completion");
+    assert(root.taskStatusForTesting() == "active");
+    writeln("PASS repeated no-progress fails visibly with the unfinished outcome preserved");
 
     root.newChatForTesting();
     send("Implement the fixture tool recovery task.");

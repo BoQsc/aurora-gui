@@ -83,8 +83,13 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 if identity not in owners or identity in results:
                     failures.append("Unpaired/duplicate result: " + identity)
                 results[identity] = message["content"]
-        continuations = sum(m["content"].count("Continuation: unfinished authorized work\n")
-                            for m in messages if isinstance(m.get("content"), str))
+        # The shared executor continues unfinished work through its execution
+        # recovery record; older actor transcripts use the task-continuation
+        # marker. Count both so the fixture follows either real control path.
+        continuations = sum(
+            m["content"].count("Continuation: unfinished authorized work\n") +
+            m["content"].count("Execution recovery: ")
+            for m in messages if isinstance(m.get("content"), str))
         tools, content, delay = [], "", 0
         if scenario == "work":
             stage = continuations

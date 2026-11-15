@@ -6,12 +6,77 @@ import auroraopencode.taskflow : executionDiagnosisMarker, taskEvidenceIndex, su
 import auroraopencode.taskcontext : taskExcerpt;
 import auroraopencode.planmode : planModeBlockedTool, planModeProposalPending;
 import auroraopencode.tools : diagnosticRefusalPrefix;
+import std.conv : to;
 import std.json : JSONValue, JSONType, parseJSON;
 import std.string : startsWith, indexOf, strip;
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 
 enum executionRecoveryMarker = "Execution recovery: ";
+
+/// Operations that legitimately keep a turn running. A busy turn with none of
+/// these is a nonserious stall, not a slow provider: it must fail visibly
+/// instead of waiting forever for an operation that no longer exists.
+enum TurnOperation : uint
+{
+    none = 0,
+    stopping = 1 << 0,
+    provider = 1 << 1,
+    compaction = 1 << 2,
+    toolResult = 1 << 3,
+    toolCall = 1 << 4,
+    continuation = 1 << 5,
+    storageEffect = 1 << 6,
+    queuedEvent = 1 << 7,
+    childAgent = 1 << 8,
+    pausedContinuation = 1 << 9,
+}
+
+uint turnOwnedOperations(bool stopping, bool providerBusy, bool compacting,
+    int pendingToolResults, size_t pendingToolCalls, bool continuationPending,
+    bool storageEffectPending, bool queuedEvents, bool childPending,
+    bool continuationPaused)
+{
+    uint result;
+    if (stopping) result |= cast(uint) TurnOperation.stopping;
+    if (providerBusy) result |= cast(uint) TurnOperation.provider;
+    if (compacting) result |= cast(uint) TurnOperation.compaction;
+    if (pendingToolResults > 0) result |= cast(uint) TurnOperation.toolResult;
+    if (pendingToolCalls > 0) result |= cast(uint) TurnOperation.toolCall;
+    if (continuationPending) result |= cast(uint) TurnOperation.continuation;
+    if (storageEffectPending) result |= cast(uint) TurnOperation.storageEffect;
+    if (queuedEvents) result |= cast(uint) TurnOperation.queuedEvent;
+    if (childPending) result |= cast(uint) TurnOperation.childAgent;
+    if (continuationPaused) result |= cast(uint) TurnOperation.pausedContinuation;
+    return result;
+}
+
+bool turnOwnsOperation(uint operations) { return operations != 0; }
+
+string turnOperationLabel(uint operations)
+{
+    if (operations == 0) return "none";
+    string[] names;
+    static immutable uint[] bits = [
+        cast(uint) TurnOperation.stopping,
+        cast(uint) TurnOperation.provider,
+        cast(uint) TurnOperation.compaction,
+        cast(uint) TurnOperation.toolResult,
+        cast(uint) TurnOperation.toolCall,
+        cast(uint) TurnOperation.continuation,
+        cast(uint) TurnOperation.storageEffect,
+        cast(uint) TurnOperation.queuedEvent,
+        cast(uint) TurnOperation.childAgent,
+        cast(uint) TurnOperation.pausedContinuation];
+    static immutable string[] labels = [
+        "stopping", "provider", "compaction", "tool-result", "tool-call",
+        "continuation", "storage-effect", "queued-event", "child-agent",
+        "paused-continuation"];
+    foreach (i, operation; bits)
+        if (operations & operation) names ~= labels[i];
+    import std.array : join;
+    return names.join(",");
+}
 
 /// A filesystem host fault is infrastructure, not evidence that the requested
 /// outcome is wrong. The tool already replays a host that never delivered a
@@ -96,6 +161,12 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
     auto completedKeys = completedProofs.keys;
     completedKeys.sort();
     foreach (key; completedKeys) facts ~= key ~ "\n";
+    // Plan progress is substantive even when the completed outcome carries no
+    // tool-call evidence. Without this, a six-step plan that completes two
+    // outcomes still produced the same fingerprint, so the recovery budget
+    // expired and failed work that was actually advancing.
+    facts ~= "completed:" ~ to!string(state.completed) ~ "\n";
+    facts ~= "remaining:" ~ state.remaining ~ "\n";
     facts ~= state.verified ? "verified\n" : "unchecked\n";
     facts ~= state.actionMissing ? "no-action\n" : "action\n";
     state.fingerprint = sha256Of(facts).toHexString().idup;

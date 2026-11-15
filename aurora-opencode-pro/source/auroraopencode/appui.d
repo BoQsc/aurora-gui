@@ -33112,12 +33112,15 @@ private void pollButtonSuggestionRequest()
 
     private void refreshExecutionActivity()
     {
-        const ownedWork = _stopPending || _client.busy() ||
-            _execution.compactionClient !is null || _pendingToolResults > 0 ||
-            _pendingToolCalls.length > 0 || _execution.toolContinuationPending ||
-            _execution.effectPending() || _eventScratch.length > 0 ||
-            _client.hasPendingEvents() || hasPendingSubagents(_loadedRuntimeId) ||
-            _toolContinuationPaused;
+        import auroraopencode.executioncontrol : turnOwnedOperations,
+            turnOperationLabel;
+        const operations = turnOwnedOperations(_stopPending, _client.busy(),
+            _execution.compactionClient !is null, _pendingToolResults,
+            _pendingToolCalls.length, _execution.toolContinuationPending,
+            _execution.effectPending(), _eventScratch.length > 0 ||
+            _client.hasPendingEvents(), hasPendingSubagents(_loadedRuntimeId),
+            _toolContinuationPaused);
+        const ownedWork = operations != 0;
         // This detects a missing operation, not a slow operation. Never expire
         // a provider, tool, queued commit or child agent because of its age.
         if (turnIsBusy() && !ownedWork)
@@ -33128,6 +33131,7 @@ private void pollButtonSuggestionRequest()
             {
                 JSONValue details;
                 details["phase"] = to!string(_execution.phase);
+                details["operations"] = turnOperationLabel(operations);
                 details["turnInFlight"] = _turnInFlight;
                 details["turnTiming"] = _turnTiming;
                 logAgentLifecycle(_loadedRuntimeId, _activeRequestId,
