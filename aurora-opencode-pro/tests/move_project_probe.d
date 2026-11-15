@@ -124,6 +124,9 @@ int main()
     const to = projects.localToGlobal(Point(20, 1 * railRowH + railRowH / 2));
     driver.moveTo(from);
     driver.mouseDown();
+    // Cross the drag threshold inside the list first, as a real pointer does;
+    // jumping straight out in one event is a lost press, not a drag.
+    driver.moveTo(Point(from.x + 10, from.y));
     driver.moveTo(to);
     root.tickTree(0.02);
     assert(root.sessionDragGhostForTesting().length > 0,

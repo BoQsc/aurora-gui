@@ -16,6 +16,8 @@ import std.json : JSONValue;
 import std.path : buildPath;
 import std.stdio : writeln;
 import std.string : endsWith;
+import core.time : MonoTime, msecs, seconds;
+import core.thread : Thread;
 
 private string big(string seed)
 {
@@ -90,6 +92,18 @@ int main()
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
     window.setRoot(root);
+    auto driver = new UiTestDriver(window);
+    // The conversation rows exist only after startup has restored the sessions
+    // and the sidebar has been projected; the menu reads that projection.
+    const deadline = MonoTime.currTime + seconds(10);
+    while (root.startupPendingForTesting() && MonoTime.currTime < deadline)
+    {
+        window.onNativeTick(0.02);
+        Thread.sleep(msecs(5));
+    }
+    assert(!root.startupPendingForTesting(), "startup did not finish");
+    root.projectTranscriptForTesting();
+    assert(driver.paint(), "initial paint failed");
     root.tickTree(0.02);
 
     writeln("budget seen: ",
