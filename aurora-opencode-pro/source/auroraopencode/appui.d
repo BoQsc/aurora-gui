@@ -9026,6 +9026,39 @@ private final class ChatInput : TextArea
         return true;
     }
 
+    /// Insert a reference to another conversation at the caret. The reference
+    /// stays ordinary composer text, so it can be edited or removed like any
+    /// other part of the prompt.
+    public void insertConversationReference(string title)
+    {
+        if (_suggestion.length > 0) setSuggestion("");
+        auto safeTitle = title.strip;
+        if (safeTitle.length == 0) safeTitle = "New chat";
+        const quote = safeTitle.indexOf('"') >= 0 ? "'" : "\"";
+        auto reference = "@conversation " ~ quote ~ safeTitle ~ quote;
+
+        const text = textUtf32();
+        size_t begin = cursorIndex();
+        size_t finish = begin;
+        const anchor = selectionAnchor();
+        if (anchor < begin) begin = anchor;
+        else if (anchor > finish) finish = anchor;
+        const tightBefore = begin > 0 &&
+            !composerWhitespace(text[begin - 1]);
+        const tightAfter = finish < text.length &&
+            !composerWhitespace(text[finish]);
+        if (tightBefore) reference = " " ~ reference;
+        if (!tightAfter) reference ~= " ";
+        insertTextAtCursor(toUTF32(reference));
+        requestFocus();
+    }
+
+    private static bool composerWhitespace(dchar ch)
+        @safe pure nothrow @nogc
+    {
+        return ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t';
+    }
+
     override bool onTextInput(ref Event event)
     {
         // Typing supersedes a guess made for the previous reply.
@@ -11407,6 +11440,9 @@ public final class SessionListView : ListView
     // Wording for the hover archive button's tooltip, reflecting whether the
     // row is already archived ("Unarchive conversation") or not.
     string delegate(int index) archiveTooltipProvider;
+    // Fired when a row is dropped on the composer: insert a reference to that
+    // conversation into the current message.
+    void delegate(int row) onReferenceDropRequested;
     // Fired when a row is dropped onto the pinned group (pinned=true) or a
     // pinned row is dropped below it (pinned=false).
     void delegate(int row, bool pinned) onPinDropRequested;
@@ -11415,10 +11451,12 @@ public final class SessionListView : ListView
     void delegate(bool active, string title, string action, Point globalPosition)
         onDragGhost;
     // Cross-project drag support: the project row under a global point (or -1),
-    // the display name of a project index, and the drop callback.
+    // the display name of a project index, the composer hit test, and the drop
+    // callbacks.
     int delegate(Point globalPosition) projectIndexAtGlobal;
     string delegate(int projectIndex) projectNameAt;
     void delegate(int row, int projectIndex) onMoveToProjectRequested;
+    bool delegate(Point globalPosition) referenceDropTargetAtGlobal;
 
     private int _hoverRow = -1;
     // True while the pointer sits over the hovered row's archive button.
@@ -11485,6 +11523,10 @@ public final class SessionListView : ListView
     // releasing moves the dragged conversation into that project instead of
     // changing its pin state.
     private int _dragProjectIndex = -1;
+    // True while the pointer is over the composer. Releasing there inserts a
+    // reference to the dragged conversation into the message instead of
+    // changing its pin state or project.
+    private bool _dragReference;
 
     // Delayed hover tooltip revealing a conversation's full title when the row
     // is too narrow to show all of it. Whether the hovered row's title is
@@ -12095,8 +12137,10 @@ public final class SessionListView : ListView
             }
             if (_dragging)
             {
-                // A drop over the project rail moves the conversation into that
-                // project; otherwise the pin/unpin zones inside the list apply.
+                // A drop over the composer references the conversation in the
+                // current message; a drop over the project rail moves it into
+                // that project; otherwise the pin/unpin zones inside the list
+                // apply.
                 const projectIndex = projectIndexAtGlobal !is null
                     ? projectIndexAtGlobal(event.globalPosition) : -1;
                 if (projectIndex != _dragProjectIndex)
@@ -12104,7 +12148,16 @@ public final class SessionListView : ListView
                     _dragProjectIndex = projectIndex;
                     invalidate();
                 }
-                const intent = projectIndex >= 0 ? DragIntent.none
+                const overReference = projectIndex < 0 &&
+                    referenceDropTargetAtGlobal !is null &&
+                    referenceDropTargetAtGlobal(event.globalPosition);
+                if (overReference != _dragReference)
+                {
+                    _dragReference = overReference;
+                    invalidate();
+                }
+                const intent = projectIndex >= 0 || _dragReference
+                    ? DragIntent.none
                     : dropIntentAt(event.position);
                 if (intent != _dragIntent)
                 {
@@ -12126,10 +12179,11 @@ public final class SessionListView : ListView
         const title = _pressRow >= 0 &&
             _pressRow < cast(int) items().length
             ? items()[cast(size_t) _pressRow].text : cast(dstring) "";
-        immutable string action = _dragProjectIndex >= 0 && projectNameAt !is null
-            ? "Move to " ~ projectNameAt(_dragProjectIndex)
-            : (_dragIntent == DragIntent.pin ? "Pin"
-                : (_dragIntent == DragIntent.unpin ? "Unpin" : ""));
+        immutable string action = _dragReference ? "Reference in message"
+            : (_dragProjectIndex >= 0 && projectNameAt !is null
+                ? "Move to " ~ projectNameAt(_dragProjectIndex)
+                : (_dragIntent == DragIntent.pin ? "Pin"
+                    : (_dragIntent == DragIntent.unpin ? "Unpin" : "")));
         onDragGhost(true, toUTF8(title), action, globalPosition);
     }
 
@@ -12360,22 +12414,17 @@ public final class SessionListView : ListView
             if (onArchiveRequested !is null) onArchiveRequested(row);
             return true;
         }
-        // Select through `indexAt` instead of the base handler: the pinned
-        // divider shifts every row below it, so the base class's uniform row
-        // math would mis-map clicks around the gap.
+        // Focus now, but select on release. A drag is a reference gesture and
+        // must leave the conversation being edited open; selecting on press
+        // would switch the composer (and its draft) before the drop.
         requestFocus();
-        if (row >= 0 && !items()[cast(size_t) row].disabled)
-        {
-            setSelectedIndex(row);
-            if (event.clickCount >= 2 && onActivated !is null)
-                onActivated(row);
-        }
         // Arm a drag-to-pin. Capture is taken once the pointer actually moves
         // past the drag threshold, not on every plain click.
         _pressing = true;
         _dragging = false;
         _dragIntent = DragIntent.none;
         _dragProjectIndex = -1;
+        _dragReference = false;
         _pressRow = row;
         _pressRowPinned = row >= 0 && row < _pinnedRows;
         _pressPosition = event.position;
@@ -12389,14 +12438,30 @@ public final class SessionListView : ListView
         const wasDragging = _dragging;
         const intent = _dragIntent;
         const projectIndex = _dragProjectIndex;
+        const reference = _dragReference;
         _pressing = false;
         _dragging = false;
         _dragIntent = DragIntent.none;
         _dragProjectIndex = -1;
+        _dragReference = false;
         _pressRow = -1;
         releaseMouse();
         if (wasDragging) hideDragGhost();
-        if (wasDragging && row >= 0 && projectIndex >= 0 &&
+        if (!wasDragging && row >= 0 &&
+            row < cast(int) items().length &&
+            !items()[cast(size_t) row].disabled)
+        {
+            // Select through `indexAt` on release instead of the base handler:
+            // the pinned divider shifts every row below it, so the base
+            // class's uniform row math would mis-map clicks around the gap.
+            setSelectedIndex(row);
+            if (event.clickCount >= 2 && onActivated !is null)
+                onActivated(row);
+        }
+        else if (wasDragging && row >= 0 && reference &&
+            onReferenceDropRequested !is null)
+            onReferenceDropRequested(row);
+        else if (wasDragging && row >= 0 && projectIndex >= 0 &&
             onMoveToProjectRequested !is null)
             onMoveToProjectRequested(row, projectIndex);
         else if (wasDragging && intent != DragIntent.none && row >= 0 &&
@@ -17316,6 +17381,18 @@ private string _suggestExcludeId;
         {
             if (active) _dragGhost.showAt(title, action, position);
             else _dragGhost.hide();
+        };
+        // A conversation dropped on the prompt field becomes a visible
+        // reference in the next message. The field's own hit test keeps a point
+        // just outside it from counting as a drop.
+        _sessionList.referenceDropTargetAtGlobal = delegate(Point globalPosition)
+        {
+            if (_input is null || !_input.visible()) return false;
+            return _input.containsLocal(_input.globalToLocal(globalPosition));
+        };
+        _sessionList.onReferenceDropRequested = delegate(int row)
+        {
+            referenceConversationAtRow(row);
         };
         // Dragging a conversation over the project rail retargets it; the drop
         // callback maps the visible row to its session and moves it.
@@ -31244,6 +31321,23 @@ private void pollButtonSuggestionRequest()
         updateSessionList();
         updateSessionsHeader();
         updateStatus("Moved conversation to \"" ~ name ~ "\".");
+    }
+
+    // -- Conversation drag references ------------------------------------
+
+    /// Insert a reference to the conversation shown at `row` into the composer.
+    /// The reference is plain message text, so it survives draft persistence
+    /// and can be edited before sending.
+    private void referenceConversationAtRow(int row)
+    {
+        if (row < 0 || row >= cast(int) _sessionIndices.length) return;
+        const sessionIndex = _sessionIndices[row];
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        auto title = _sessions[sessionIndex].title.strip;
+        if (title.length == 0) title = "New chat";
+        _input.insertConversationReference(title);
+        updateStatus("Referenced conversation \"" ~ title ~ "\" in the message.");
     }
 
     // -- Pinned conversations --------------------------------------------

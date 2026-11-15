@@ -1147,6 +1147,66 @@ private void verifyImagePreviews(OpenCodeRoot root, UiTestDriver driver,
     writeln("Image previews: archived attachments and viewed image evidence render");
 }
 
+/// Focused UI regression for dragging a conversation into the prompt field.
+/// It also proves the drag leaves the open conversation alone while a plain
+/// click still selects a row.
+private void verifyConversationReferenceDrag(OpenCodeRoot root,
+    UiTestDriver driver)
+{
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Reference drag fixture did not paint");
+    auto sessions = requireWidget!SessionListView(root, "oc-sessions");
+    auto input = requireWidget!TextArea(root, "oc-input");
+    assert(sessions.items().length >= 2,
+        "The reference drag fixture needs at least two conversations");
+
+    const row = 0;
+    const sessionIndex = root.visibleSessionIndexAtRowForTesting(row);
+    assert(sessionIndex >= 0, "No conversation row to reference");
+    const title = root.sessionTitleForTesting(sessionIndex);
+    assert(title.length > 0, "The referenced conversation needs a title");
+    const activeBefore = root.currentSessionForTesting();
+    const pinnedBefore = root.sessionPinnedForTesting(sessionIndex);
+
+    root.setInputForTesting("Drag: ");
+    root.tickTree(0.02);
+    dismissTransientPopups(root);
+    const from = sessions.rowCenterForTesting(row);
+    driver.moveTo(from);
+    driver.mouseDown();
+    // Cross the drag threshold inside the list first, like a real pointer.
+    driver.moveTo(Point(from.x + 10, from.y));
+    driver.moveTo(globalCenter(input));
+    root.tickTree(0.02);
+    assert(root.sessionDragGhostActionForTesting() == "Reference in message",
+        "The drag ghost should announce the reference drop, got '" ~
+        root.sessionDragGhostActionForTesting() ~ "'");
+    driver.mouseUp();
+    root.tickTree(0.02);
+
+    const expected = "Drag: @conversation \"" ~ title ~ "\" ";
+    assert(root.inputTextForTesting() == expected,
+        "Dropping on the prompt should insert a reference at the caret, got '" ~
+        root.inputTextForTesting() ~ "'");
+    assert(root.currentSessionForTesting() == activeBefore,
+        "Dragging a conversation reference must not switch the open conversation");
+    assert(root.sessionPinnedForTesting(sessionIndex) == pinnedBefore,
+        "Dropping on the prompt must not change the conversation's pin state");
+    assert(input.focused(),
+        "Dropping a reference should put the caret in the prompt field");
+
+    // A plain click still selects. Selection moved to release so a drag can
+    // leave the current conversation intact.
+    const clickRow = row == 0 ? 1 : 0;
+    const clickSession = root.visibleSessionIndexAtRowForTesting(clickRow);
+    driver.click(sessions.rowCenterForTesting(clickRow));
+    root.tickTree(0.02);
+    assert(root.currentSessionForTesting() == clickSession,
+        "A plain click on a conversation row should still select it");
+    writeln("PASS dragging a conversation into the prompt inserts a reference " ~
+        "without switching chats");
+}
+
 int main(string[] args)
 {
     import auroraopencode.tools : runFilesystemHelperMode;
@@ -1184,6 +1244,11 @@ int main(string[] args)
     assert(paintProjection(root, driver), "Second pro paint failed");
     writeln("[marker] smoke main entered");
     writeln("[marker] args: ", args);
+    if (args.length > 1 && args[$ - 1] == "--conversation-reference-only")
+    {
+        verifyConversationReferenceDrag(root, driver);
+        return 0;
+    }
     if (args.length > 1 && args[$ - 1] == "--image-preview-only")
     {
         verifyImagePreviews(root, driver, stateDir, window);
@@ -3480,6 +3545,45 @@ int main(string[] args)
         writeln("Dragging a conversation shows a cursor-following ghost");
     }
 
+    // Dropping a conversation on the prompt field inserts a visible reference
+    // at the caret instead of pinning or moving the conversation.
+    {
+        auto input = requireWidget!TextArea(root, "oc-input");
+        const srcRow = 0;
+        const sessionIndex = root.visibleSessionIndexAtRowForTesting(srcRow);
+        assert(sessionIndex >= 0, "Need a conversation row to reference");
+        const title = root.sessionTitleForTesting(sessionIndex);
+        assert(title.length > 0, "The referenced conversation needs a title");
+        const pinnedBefore = root.sessionPinnedForTesting(sessionIndex);
+        root.setInputForTesting("Use this: ");
+        root.tickTree(0.02);
+        dismissTransientPopups(root);
+        const from = sessions.rowCenterForTesting(srcRow);
+        driver.moveTo(from);
+        driver.mouseDown();
+        // Cross the drag threshold inside the list first, as a real pointer
+        // does; jumping straight out in one event is a lost press, not a drag.
+        driver.moveTo(Point(from.x + 10, from.y));
+        driver.moveTo(globalCenter(input));
+        root.tickTree(0.02);
+        assert(root.sessionDragGhostActionForTesting() ==
+            "Reference in message",
+            "The drag ghost should announce the reference drop, got '" ~
+            root.sessionDragGhostActionForTesting() ~ "'");
+        driver.mouseUp();
+        root.tickTree(0.02);
+        const expected = "Use this: @conversation \"" ~ title ~ "\" ";
+        assert(root.inputTextForTesting() == expected,
+            "Dropping on the prompt should insert a reference at the caret, got '" ~
+            root.inputTextForTesting() ~ "'");
+        assert(root.sessionPinnedForTesting(sessionIndex) == pinnedBefore,
+            "Dropping on the prompt must not change the conversation's pin state");
+        assert(input.focused(),
+            "Dropping a reference should put the caret in the prompt field");
+        root.setInputForTesting("");
+        writeln("Dropping a conversation on the prompt inserts a reference");
+    }
+
     // The merged custom titlebar owns the top band and the project rail starts
     // collapsed to icon width; the toggle expands it and the state persists.
     assert(root.hasCustomTitleBarForTesting(),
@@ -3534,6 +3638,12 @@ int main(string[] args)
         const pathFile = buildPath(stateDir, "pro_path_probe.d");
         if (!exists(stateDir)) mkdirRecurse(stateDir);
         write(pathFile, "// probe\n");
+        // The drag tests before this point no longer switch conversations, so
+        // run this focused link test on a small restored chat and put the
+        // previous conversation back afterwards.
+        const previousSession = root.currentSessionForTesting();
+        root.selectSessionForTesting(1);
+        root.tickTree(0.02);
         root.addConversationForTesting(["user", "assistant"],
             ["where is it?", "It lives in " ~ pathFile ~ " right now."]);
         root.tickTree(0.02);
@@ -3574,6 +3684,8 @@ int main(string[] args)
             `/select,"` ~ pathFile ~ `"`,
             "Open folder must pass Explorer the file to highlight");
         dismissContextMenus(root);
+        root.tickTree(0.02);
+        root.selectSessionForTesting(previousSession);
         root.tickTree(0.02);
         writeln("Path links select normally; the menu offers Open file / " ~
             "Open folder");
