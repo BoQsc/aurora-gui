@@ -1305,6 +1305,11 @@ public struct ChatSession
     uint titleAttempts;
     string model;
     bool thinking;
+    // This conversation's own Thinking mode: "off", "low", "medium" or
+    // "high". Empty marks a conversation saved before the mode was stored per
+    // chat; it resolves from `thinking` plus the route record once and is then
+    // pinned, so switching chats cannot change an already-set mode.
+    string thinkingMode;
     // The provider endpoint this conversation is configured for. Empty
     // inherits the saved Settings endpoint, so conversations written before
     // providers were per-conversation keep their route.

@@ -1,14 +1,12 @@
 module thinking_mode_switch_contracts;
 
-// Regression: the composer Thinking selector must show the mode that is
-// actually in effect for the open conversation, and switching conversations
-// must not rewrite the saved app-wide mode.
+// Regression: Thinking mode belongs to the conversation it was set in. Each
+// chat keeps its own Off/Low/Medium/High, the composer shows that chat's mode
+// after a switch, and the outgoing request carries the same mode.
 //
-// A per-route Off has to win over a conversation's older `true` flag. Otherwise
-// the selector printed "Thinking: Low" (thinkingEffortLabel's fallback for the
-// route's "off" record) while the request sent the model's default effort, and
-// the label changed on every switch between that chat and one whose flag was
-// already false.
+// The old model stored only a per-chat boolean and resolved the level from a
+// global endpoint/model record, so choosing Off or High in one chat changed
+// what every other chat on that model displayed.
 //
 // This drives the real widgets: a right click on the composer selector, the
 // dropdown rows, the New chat button and the sidebar rows, then reads the text
@@ -25,10 +23,13 @@ module thinking_mode_switch_contracts;
 
 import aurora;
 import auroraopencode.appui : OpenCodeRoot, SessionListView;
-import auroraopencode.core : Settings, saveSettings, loadSettings,
+import auroraopencode.conversationcodec : decodeSessionMetadata;
+import auroraopencode.conversationencode : sessionMetaToJson;
+import auroraopencode.core : ChatSession, Settings, saveSettings, loadSettings,
     setOpencodeStateDirectoryForTesting, opencodeTheme;
 import core.time : MonoTime, seconds;
 import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir;
+import std.json : parseJSON;
 import std.path : buildPath;
 import std.stdio : writeln;
 
@@ -107,7 +108,8 @@ int main()
 
     settle();
 
-    // Click New chat, then choose High through the real dropdown.
+    // Click New chat, then choose High through the real dropdown. This mode
+    // belongs to chat A only.
     driver.click(globalCenter(requireWidget!Widget(root, "oc-new")));
     settle();
     const chatA = root.currentSessionForTesting();
@@ -124,10 +126,11 @@ int main()
         root.thinkingMenuModeForTesting());
     assert(root.requestReasoningForTesting() == "on:high",
         "request did not carry High: " ~ root.requestReasoningForTesting());
+    assert(root.sessionThinkingModeForTesting(chatA) == "high",
+        "chat A did not store its own High mode");
 
     // New chat again, then click Off. The new chat inherits the mode in effect,
-    // and the label must follow the click at once instead of waiting for the
-    // next conversation switch.
+    // and its Off must not touch chat A.
     driver.click(globalCenter(requireWidget!Widget(root, "oc-new")));
     settle();
     const chatB = root.currentSessionForTesting();
@@ -145,11 +148,14 @@ int main()
     assert(root.requestReasoningForTesting() == "off",
         "request still carried reasoning after clicking Off: " ~
         root.requestReasoningForTesting());
+    assert(root.sessionThinkingModeForTesting(chatB) == "off",
+        "chat B did not store its own Off mode");
+    assert(root.sessionThinkingModeForTesting(chatA) == "high",
+        "choosing Off in chat B changed chat A's mode");
 
-    // Click back to chat A through the sidebar. Its own flag is still `true`,
-    // but the explicit per-route Off is what is actually sent. The label used
-    // to fall back to "Thinking: Low" here (and the dropdown marked no row at
-    // all), which is the change seen when switching conversations.
+    // Click back to chat A through the sidebar. Each chat shows the mode that
+    // was set for it: A stayed High while B is Off. This is the case that
+    // changed on every switch before the mode was stored per conversation.
     auto sessions = requireWidget!SessionListView(root, "oc-sessions");
     int rowForSession(int sessionIndex)
     {
@@ -167,19 +173,19 @@ int main()
     {
         sawA = true;
         assert(root.activeSessionThinkingForTesting(),
-            "fixture lost chat A's own Thinking flag");
-        assert(root.thinkingControlTextForTesting() == "Thinking: Off",
-            "route Off did not win over the chat's stale flag: " ~
+            "fixture lost chat A's own Thinking state");
+        assert(root.thinkingControlTextForTesting() == "Thinking: High",
+            "chat A lost the mode set for it: " ~
             root.thinkingControlTextForTesting());
-        assert(root.thinkingMenuModeForTesting() == "off",
-            "dropdown did not mark Off for the route: " ~
+        assert(root.thinkingMenuModeForTesting() == "high",
+            "dropdown did not mark chat A's High mode: " ~
             root.thinkingMenuModeForTesting());
-        assert(root.requestReasoningForTesting() == "off",
-            "request did not follow the route Off: " ~
+        assert(root.requestReasoningForTesting() == "on:high",
+            "request did not carry chat A's High mode: " ~
             root.requestReasoningForTesting());
         menu = openThinkingMenu();
-        assert(menu.items()[1].checked && !menu.items()[4].checked,
-            "the dropdown did not check Off for the stale-flag chat");
+        assert(menu.items()[4].checked && !menu.items()[1].checked,
+            "the dropdown did not check High for chat A");
         dismissContextMenus(root);
         settle();
     }
@@ -198,8 +204,16 @@ int main()
         saved.reasoningControls[0].effort == "off",
         "opening a conversation changed the saved route record");
 
-    // Click through to chat B: the two conversations now show the same mode,
-    // so switching does not change the selector.
+    // Change chat A to Medium, then visit chat B and come back. B must remain
+    // Off and A must show the Medium that was set for it.
+    menu = openThinkingMenu();
+    menu.items()[3].action(); // Medium
+    settle();
+    assert(root.sessionThinkingModeForTesting(chatA) == "medium",
+        "chat A did not store the newly chosen Medium mode");
+    assert(root.sessionThinkingModeForTesting(chatB) == "off",
+        "changing chat A changed chat B's mode");
+
     sessions = requireWidget!SessionListView(root, "oc-sessions");
     const rowB = rowForSession(chatB);
     assert(rowB >= 0, "the sidebar did not list chat B");
@@ -218,9 +232,33 @@ int main()
     }
     assert(sawB, "clicking the sidebar did not open chat B");
 
-    writeln("PASS thinking mode stays Off across a conversation switch and " ~
-        "matches the saved choice");
-    writeln("PASS a per-route Off wins over a chat's stale Thinking flag");
+    const rowA2 = rowForSession(chatA);
+    assert(rowA2 >= 0, "the sidebar did not list chat A after the switch");
+    driver.click(sessions.rowCenterForTesting(rowA2));
+    settle();
+    assert(root.currentSessionForTesting() == chatA,
+        "clicking the sidebar did not reopen chat A");
+    assert(root.thinkingControlTextForTesting() == "Thinking: Medium",
+        "chat A did not show the Medium mode set for it: " ~
+        root.thinkingControlTextForTesting());
+    assert(root.requestReasoningForTesting() == "on:medium",
+        "request did not carry chat A's Medium mode: " ~
+        root.requestReasoningForTesting());
+
+    // Persistence boundary: each chat's stored metadata carries its own mode,
+    // and decoding that metadata restores it.
+    ChatSession storedA;
+    decodeSessionMetadata(parseJSON(root.sessionMetadataJsonForTesting(chatA)),
+        storedA);
+    assert(storedA.thinkingMode == "medium",
+        "chat A's stored metadata lost Medium: " ~ storedA.thinkingMode);
+    ChatSession storedB;
+    decodeSessionMetadata(parseJSON(root.sessionMetadataJsonForTesting(chatB)),
+        storedB);
+    assert(storedB.thinkingMode == "off",
+        "chat B's stored metadata lost Off: " ~ storedB.thinkingMode);
+
+    writeln("PASS each conversation keeps its own Thinking mode across switches");
     writeln("thinking_mode_switch_contracts: PASS");
     return 0;
 }

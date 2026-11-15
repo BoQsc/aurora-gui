@@ -118,6 +118,8 @@ public JSONValue sessionMetaToJson(const ref ChatSession session, bool includePl
     if (session.titleAttempts) root["titleAttempts"] = cast(long) session.titleAttempts;
     root["model"] = session.model;
     root["thinking"] = session.thinking;
+    if (session.thinkingMode.length > 0)
+        root["thinkingMode"] = session.thinkingMode;
     // Persist the conversation's own provider so reopening it later sends
     // through the endpoint it was configured for instead of whichever provider
     // the global settings currently point at.
@@ -247,6 +249,8 @@ public JSONValue runtimeThreadJson(const ref ChatSession session, bool complete 
     payload["draft"] = session.draft;
     payload["model"] = session.model;
     payload["thinking"] = session.thinking;
+    if (session.thinkingMode.length > 0)
+        payload["thinkingMode"] = session.thinkingMode;
     payload["projectId"] = session.projectId;
     payload["activeLeafId"] = session.activeLeafId;
     payload["objective"] = session.objective;

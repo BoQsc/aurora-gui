@@ -21,6 +21,11 @@ public void decodeSessionMetadata(JSONValue sessionValue,
         session.model = field.str;
     if (auto field = "thinking" in sessionValue.object)
         session.thinking = field.type == JSONType.true_;
+    if (auto field = "thinkingMode" in sessionValue.object)
+        if (field.type == JSONType.string &&
+            (field.str == "off" || field.str == "low" ||
+             field.str == "medium" || field.str == "high"))
+            session.thinkingMode = field.str;
     if (auto field = "providerBaseUrl" in sessionValue.object)
         if (field.type == JSONType.string)
             session.providerBaseUrl = field.str;

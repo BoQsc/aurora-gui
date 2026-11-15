@@ -13995,6 +13995,7 @@ private string _suggestExcludeId;
             agentId);
         if (child.model.length == 0) child.model = _sessions[hubIndex].model;
         child.thinking = _sessions[hubIndex].thinking;
+        child.thinkingMode = _sessions[hubIndex].thinkingMode;
         child.projectId = _sessions[hubIndex].projectId;
         child.updatedAt = Clock.currTime.toUnixTime();
         foreach (agent; _sessions[hubIndex].agents)
@@ -18727,6 +18728,10 @@ private string _suggestExcludeId;
         const consoleModel = _consoleDefaultModel.length > 0;
         session.model = consoleModel ? _consoleDefaultModel : _settings.model;
         session.thinking = consoleModel ? _consoleDefaultThinking : _settings.thinking;
+        // Pin the mode this chat starts with. Later changes in other chats (or
+        // to the app default) leave this conversation alone.
+        session.thinkingMode = fallbackThinkingMode(session.thinking,
+            session.model);
         session.providerBaseUrl = _settings.baseUrl;
         session.projectId = activeProjectId();
         session.updatedAt = Clock.currTime.toUnixTime();
@@ -18818,6 +18823,7 @@ private string _suggestExcludeId;
         adoptSessionProvider(index);
         _settings.model = resolveAvailableModel(_sessions[index].model);
         _sessions[index].model = _settings.model;
+        pinSessionThinkingMode(index);
         // Opening a conversation must not rewrite the saved app-wide mode: the
         // composer resolves this chat's own Thinking state, and Settings keeps
         // the mode the user chose. Browsing chats used to leak a chat's flag
@@ -22041,7 +22047,7 @@ private void pollButtonSuggestionRequest()
         // without the "Writing…" wording, which read like a file write and
         // vanished at completion (the Thinking header's token count now carries
         // that progress signal).
-        setActivity(effectiveThinkingForRoute(session.thinking, session.model)
+        setActivity(sessionThinkingMode(*session) != "off"
             ? "Thinking…" : "Waiting for the model…");
         // Rebuild rather than appending the bubble directly: a row already
         // pinned for a previous phase (e.g. "Waiting for the model…") would
@@ -26058,6 +26064,7 @@ private void pollButtonSuggestionRequest()
         // under another provider carries its own model, which may be missing
         // from the current catalog (upstream "Model is unavailable").
         session.model = resolveAvailableModel(session.model);
+        pinSessionThinkingMode(sessionIndex);
         // A console session keeps its own low-latency route. Mirroring it into
         // the saved settings would persist the console default into the GUI's
         // config, so the settings file is only updated for normal sessions.
@@ -26238,17 +26245,17 @@ private void pollButtonSuggestionRequest()
         requestDetails["fallbackCompacted"] = fallbackCompacted;
         logAgentLifecycle(session.id, requestId, "request.prepared", requestDetails);
         auto receiver = _client;
-        // An explicit per-conversation choice wins, an unconfigured DeepSeek 4.1
-        // Flash route sends its high reasoning default instead of
-        // reasoning_effort none/off, and a non-GUI (console) run keeps its own
-        // low-latency route. See effectiveThinkingForRoute.
-        const requestThinking = effectiveThinkingForRoute(session.thinking,
-            orchestratorModel);
+        // The conversation's own stored mode is both what the selector shows
+        // and what the request sends, so the two cannot disagree. A legacy
+        // session was pinned above, so this is always a concrete mode here.
+        const requestMode = sessionThinkingMode(*session);
+        const requestThinking = requestMode != "off";
+        const requestEffort = requestThinking ? requestMode : "";
         const requestBudget = llamaCpp ? reasoningControl.budgetTokens : 0;
         const queued = _execution.dispatchAfterCommit(cast(RepositoryRuntime) _runtime,
             requestId, delegate() {
                 const started = receiver.startChatMessages(messages, tools, orchestratorModel,
-                    requestThinking, requestId, reasoningControl.effort,
+                    requestThinking, requestId, requestEffort,
                     requestBudget, llamaCpp, preparationStartedTicks);
                 if (started != ChatStartResult.accepted)
                 {
@@ -27034,9 +27041,8 @@ private void pollButtonSuggestionRequest()
         showContextMenuBelow(_thinkingBox, items, true);
     }
 
-    /// One row of the Thinking dropdown. `off` clears the chat's thinking flag;
-    /// an effort both enables thinking and records the level for this endpoint
-    /// and model.
+    /// One row of the Thinking dropdown. `off` records Off for this chat; an
+    /// effort records the level for this chat and enables Thinking.
     private ContextMenuItem thinkingModeMenuItem(string mode, bool selected)
     {
         return ContextMenuItem.check(
@@ -27044,22 +27050,30 @@ private void pollButtonSuggestionRequest()
             delegate() { setThinkingMode(mode); });
     }
 
-    /// Apply a Thinking mode to the active chat and the endpoint/model record,
-    /// then update the composer selector's label.
+    /// Apply a Thinking mode to the active chat, then update the composer
+    /// selector's label. Other conversations keep their own stored mode.
     private void setThinkingMode(string mode)
     {
         const enabled = mode != "off";
         const model = activeThinkingModel();
         _settings.thinking = enabled;
-        if (_current >= 0) _sessions[_current].thinking = enabled;
-        // Record the choice for this route, `off` included. Without an explicit
-        // record a model that reasons by default (DeepSeek 4.1 Flash) would turn
-        // Thinking back on the next time its default is resolved.
+        if (_current >= 0)
+        {
+            _sessions[_current].thinking = enabled;
+            _sessions[_current].thinkingMode = mode;
+            // Per-chat metadata: write it to the journal (and the debounced
+            // snapshot) so reopening this chat restores exactly this mode.
+            publishThreadUpdated(_sessions[_current]);
+        }
+        // The route record is the default the next new chat starts from. It is
+        // deliberately not read back for conversations that already stored a
+        // mode, so choosing Off here cannot turn another chat off.
         auto control = reasoningControlForModel(_settings,
             _settings.baseUrl, model);
         setReasoningControlForModel(_settings, _settings.baseUrl,
             model, mode, control.budgetTokens);
         saveSettingsNow();
+        markDirty();
         refreshThinkingControl();
     }
 
@@ -27072,13 +27086,6 @@ private void pollButtonSuggestionRequest()
             case "high": return "High";
             default: return "Low";
         }
-    }
-
-    /// The active conversation's own Thinking switch.
-    private bool activeSessionThinking()
-    {
-        return _current >= 0 && _current < cast(int) _sessions.length
-            ? _sessions[_current].thinking : _settings.thinking;
     }
 
     /// Thinking state a conversation actually uses, shared by the composer
@@ -27105,6 +27112,39 @@ private void pollButtonSuggestionRequest()
             _settings.baseUrl, model);
     }
 
+    /// Resolve a conversation saved before per-chat modes were stored: its old
+    /// on/off flag plus the route record, model default and console route. The
+    /// result is pinned onto the chat the first time it is opened or sends.
+    private string fallbackThinkingMode(bool sessionChose, string model)
+    {
+        return effectiveThinkingForRoute(sessionChose, model)
+            ? effectiveReasoningEffort(_settings, _settings.baseUrl, model)
+            : "off";
+    }
+
+    /// This conversation's own Thinking mode. A stored mode always wins, so
+    /// switching conversations shows the mode that was set for each chat.
+    private string sessionThinkingMode(const ref ChatSession session)
+    {
+        return session.thinkingMode.length > 0
+            ? session.thinkingMode
+            : fallbackThinkingMode(session.thinking, session.model);
+    }
+
+    /// Pin a legacy conversation's resolved mode onto the chat, so a later
+    /// Settings or route change cannot move a mode the user already sees.
+    private void pinSessionThinkingMode(int index)
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return;
+        if (_sessions[index].thinkingMode.length > 0) return;
+        auto session = &_sessions[index];
+        session.thinkingMode = fallbackThinkingMode(session.thinking,
+            session.model);
+        session.thinking = session.thinkingMode != "off";
+        publishThreadUpdated(*session);
+        markDirty();
+    }
+
     /// The conversation model whose Thinking record the composer describes.
     /// `_settings.model` normally mirrors it, but the conversation's own id is
     /// what the request sends, so the label follows the chat when they drift
@@ -27127,15 +27167,21 @@ private void pollButtonSuggestionRequest()
             ? effort : defaultReasoningEffortForModel(model);
     }
 
+    /// The active conversation's own mode, or the default a new chat would get
+    /// while no conversation is open.
+    private string activeThinkingMode()
+    {
+        if (_current < 0 || _current >= cast(int) _sessions.length)
+            return fallbackThinkingMode(_settings.thinking, _settings.model);
+        return sessionThinkingMode(_sessions[_current]);
+    }
+
     /// The one mode the label and the dropdown describe for the active chat.
     /// Keeping the menu's checked row on this value means it cannot disagree
     /// with the label or with the request.
     private string thinkingMenuMode()
     {
-        const model = activeThinkingModel();
-        return effectiveThinkingForRoute(activeSessionThinking(), model)
-            ? effectiveReasoningEffort(_settings, _settings.baseUrl, model)
-            : "off";
+        return activeThinkingMode();
     }
 
     /// The composer selector's label for the chat's current mode.
@@ -31107,6 +31153,7 @@ private void pollButtonSuggestionRequest()
         copy.title = baseTitle ~ " (copy)";
         copy.model = source.model;
         copy.thinking = source.thinking;
+        copy.thinkingMode = source.thinkingMode;
         copy.projectId = source.projectId;
         copy.objective = source.objective;
         copy.goal = source.goal;
@@ -31203,6 +31250,7 @@ private void pollButtonSuggestionRequest()
         copy.title = baseTitle ~ " (compacted)";
         copy.model = source.model;
         copy.thinking = source.thinking;
+        copy.thinkingMode = source.thinkingMode;
         copy.projectId = source.projectId;
         copy.objective = source.objective;
         copy.goal = source.goal;
@@ -32807,6 +32855,7 @@ private void pollButtonSuggestionRequest()
                     _current = 0;
                 adoptSessionProvider(_current);
                 _settings.model = _sessions[_current].model;
+                pinSessionThinkingMode(_current);
                 _modelButton.setText(_settings.model);
                 refreshThinkingControl();
                 if (_input !is null && _sessions[_current].draft.length > 0)
@@ -32940,6 +32989,7 @@ private void pollButtonSuggestionRequest()
                 _current = 0;
             adoptSessionProvider(_current);
             _settings.model = _sessions[_current].model;
+            pinSessionThinkingMode(_current);
             _modelButton.setText(_settings.model);
             refreshThinkingControl();
             // Put back a prompt the user typed but never sent, so a restart or
@@ -35308,6 +35358,8 @@ private void pollButtonSuggestionRequest()
         if (model.length > 0) session.model = model;
         session.thinking = thinkingMode >= 0
             ? thinkingMode != 0 : _settings.thinking;
+        session.thinkingMode = fallbackThinkingMode(session.thinking,
+            session.model);
         session.toolsMode = toolsMode >= -1 && toolsMode <= 1 ? toolsMode : -1;
         session.instructions = instructions;
         session.updatedAt = Clock.currTime.toUnixTime();
@@ -36654,10 +36706,24 @@ private void pollButtonSuggestionRequest()
     /// label and request use.
     public string requestReasoningForTesting()
     {
-        const model = activeThinkingModel();
-        return effectiveThinkingForRoute(activeSessionThinking(), model)
-            ? "on:" ~ effectiveReasoningEffort(_settings, _settings.baseUrl, model)
-            : "off";
+        const mode = activeThinkingMode();
+        return mode == "off" ? "off" : "on:" ~ mode;
+    }
+
+    /// Test-only: the mode stored (or resolved for a legacy chat) on one
+    /// conversation.
+    public string sessionThinkingModeForTesting(int index)
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return "";
+        return sessionThinkingMode(_sessions[index]);
+    }
+
+    /// Test-only: the persisted metadata object for one conversation, so a test
+    /// can prove the per-chat Thinking mode survives the storage boundary.
+    public string sessionMetadataJsonForTesting(int index)
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return "{}";
+        return sessionMetaToJson(_sessions[index]).toString();
     }
 
     /// Test-only: choose a Thinking mode exactly as a dropdown row does.
