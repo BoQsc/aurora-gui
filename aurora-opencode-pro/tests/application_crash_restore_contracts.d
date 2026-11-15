@@ -8,10 +8,11 @@ import auroraopencode.tools : executeTool;
 import core.sync.semaphore : Semaphore;
 import core.thread : Thread;
 import core.time : MonoTime, seconds, msecs;
-import std.file : mkdirRecurse, write, readText, exists;
+import std.file : mkdirRecurse, write, readText, exists, tempDir;
 import std.path : absolutePath, buildPath;
 import std.process : spawnProcess, kill, wait, tryWait;
 import std.json : JSONValue, parseJSON;
+import std.conv : to;
 import std.stdio : writeln;
 
 private OpenCodeRoot open(string state, out GuiWindow window)
@@ -96,7 +97,11 @@ int main(string[] args)
     auto detached = snapshotChatSessions([live]);
     live.goalHistory[0].outcome = "completed";
     assert(detached[0].goalHistory[0].outcome == "active", "Writer snapshot shared mutable goal history");
-    const state = absolutePath("application-crash-state");
+    // Keep this fixture outside the live checkout. The running app can hold a
+    // checkout lease on its own repository, and an exclusive write lease in a
+    // workspace beneath that checkout would wait for the 45-second source lease
+    // instead of testing crash recovery.
+    const state = buildPath(tempDir(), "aurora-crash-" ~ to!string(MonoTime.currTime.ticks));
     mkdirRecurse(buildPath(state, "threads"));
     mkdirRecurse(buildPath(state, "workspace"));
     write(buildPath(state, "workspace", "input.txt"), "read before mutation");
