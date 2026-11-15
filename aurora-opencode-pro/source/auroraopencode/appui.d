@@ -11003,18 +11003,23 @@ private final class ChatSearchBar : Widget
 // Empty-conversation intro overlay
 // ---------------------------------------------------------------------------
 
-/// Prompt starters offered on the empty state. Kept short so each pill fits on
-/// one line and the whole set packs into a couple of centered rows.
-private immutable string[] defaultIntroSuggestions = [
+/// Prompt starters that stay visible on the empty state. Kept short so the
+/// pill fits on one line. The trailing space leaves a gap for the query: the
+/// composer reads "Search the web <query>", and the label is trimmed for
+/// display.
+private immutable string[] visibleIntroSuggestions = [
+    "Search the web ",
+];
+
+/// Historical prompt starters that no longer earn permanent space in the
+/// welcome block but stay available: they live behind the empty state's small
+/// "More" toggle, which reveals them on demand.
+private immutable string[] hiddenIntroSuggestions = [
     "Explain this codebase",
     "Find and fix a bug",
     "Write a test",
     "Refactor a file",
     "Summarize the project",
-    // Trailing space so a click leaves a gap for the query: the composer reads
-    // "Search the web <query>". The label is trimmed for display, so the pill
-    // still reads "Search the web".
-    "Search the web ",
 ];
 
 /// Empty-state pill that points the agent at Aurora OpenCode's own source: its
@@ -11047,7 +11052,9 @@ private immutable string buttonSuggestionActionLabel =
 /// viewport bounds, excluded from layout) so it never disturbs message layout,
 /// and it is hidden the moment the first bubble appears. The block fades in
 /// once, then stays put; that single motion marks the empty state without
-/// adding per-frame work to a live transcript.
+/// adding per-frame work to a live transcript. Historical starters are folded
+/// behind a small "More" toggle under the visible pills, so they stay available
+/// without crowding the first impression.
 private final class IntroOverlay : Widget
 {
     /// Fired when the pill's highlight toggles: `prompt` is the text the pill
@@ -11093,6 +11100,18 @@ private final class IntroOverlay : Widget
     private string _actionLabel;
     private Rect _actionRect;
     private bool _actionHover;
+    // Historical starter pills kept behind the small "More" toggle below the
+    // visible pills. They are painted (and hit-tested) only while expanded, so
+    // the welcome block stays compact but nothing is lost.
+    private string[] _extraSuggestions;
+    private string[] _extraPrompts;
+    private bool _extrasShown;
+    private bool _extrasHover;
+    private Rect _extrasRect;
+    private static immutable string moreLabel = "More";
+    private static immutable string lessLabel = "Less";
+    private static immutable int moreHeight = 26;
+    private static immutable int morePadH = 12;
 
     void setSubtitle(string value)
     {
@@ -11115,6 +11134,32 @@ private final class IntroOverlay : Widget
         invalidate();
     }
 
+    /// Set the historical pills folded behind the small toggle. `prompts` is
+    /// optionally parallel to `values`; on a mismatch the labels are inserted.
+    void setExtras(const(string)[] values, const(string)[] prompts = null)
+    {
+        if (sameStrings(_extraSuggestions, values) &&
+            sameStrings(_extraPrompts, prompts))
+            return;
+        _extraSuggestions = values.dup;
+        _extraPrompts = prompts.length == values.length ? prompts.dup : null;
+        if (_selected >= cast(int) _suggestions.length) _selected = -1;
+        _hover = -1;
+        _extrasHover = false;
+        invalidate();
+    }
+
+    /// Reveal or fold the historical pills. Collapsing clears a highlight that
+    /// belongs to a now-hidden pill but keeps the text it already inserted.
+    private void toggleExtras()
+    {
+        _extrasShown = !_extrasShown;
+        if (!_extrasShown && _selected >= cast(int) _suggestions.length)
+            _selected = -1;
+        _hover = -1;
+        invalidate();
+    }
+
     /// The text the pill at `index` inserts when clicked.
     private string promptFor(int index) const
     {
@@ -11130,6 +11175,8 @@ private final class IntroOverlay : Widget
         _fade = 0.0;
         _hover = -1;
         _selected = -1;
+        _extrasShown = false;
+        _extrasHover = false;
         invalidate();
     }
 
@@ -11183,7 +11230,7 @@ private final class IntroOverlay : Widget
     /// Test-only: click the pill at `index` exactly as a left click would.
     public bool clickSuggestionForTesting(int index)
     {
-        if (index < 0 || index >= cast(int) _pillPrompts.length) return false;
+        if (index < 0 || index >= cast(int) shownCount()) return false;
         if (onSuggestion is null) return false;
         activate(index);
         return true;
@@ -11204,16 +11251,54 @@ private final class IntroOverlay : Widget
         return true;
     }
 
+    /// Test-only: the historical pills folded behind the "More" toggle.
+    public string[] extraSuggestionsForTesting() const
+    {
+        return _extraSuggestions.dup;
+    }
+
+    /// Test-only: whether the "More" toggle is currently expanded.
+    public bool extrasShownForTesting() const { return _extrasShown; }
+
+    /// Test-only: bounds of the "More"/"Less" toggle (empty before paint).
+    public Rect extrasToggleBoundsForTesting() const { return _extrasRect; }
+
+    /// Test-only: click the "More" toggle exactly as a left click would.
+    public void clickExtrasToggleForTesting() { toggleExtras(); }
+
     /// Toggle the pill at `index` and report the new selection to the owner so
     /// it can add or remove the pill's text in the composer.
     private void activate(int index)
     {
-        if (index < 0 || index >= cast(int) _pillPrompts.length) return;
+        if (index < 0 || index >= cast(int) shownCount()) return;
         if (onSuggestion is null) return;
         const selected = _selected != index;
         _selected = selected ? index : -1;
         invalidate();
-        onSuggestion(_pillPrompts[index], selected);
+        onSuggestion(shownPromptAt(index), selected);
+    }
+
+    /// Number of pills currently painted: the always-visible set plus the
+    /// historical set when the toggle has revealed it.
+    private size_t shownCount() const
+    {
+        return _suggestions.length +
+            (_extrasShown ? _extraSuggestions.length : 0);
+    }
+
+    private string shownLabelAt(size_t index) const
+    {
+        return index < _suggestions.length
+            ? _suggestions[index]
+            : _extraSuggestions[index - _suggestions.length];
+    }
+
+    private string shownPromptAt(size_t index) const
+    {
+        if (index < _suggestions.length) return promptFor(cast(int) index);
+        const extra = index - _suggestions.length;
+        if (extra < _extraPrompts.length) return _extraPrompts[extra];
+        return _extraSuggestions[extra];
     }
 
     private static bool sameStrings(const(string)[] a, const(string)[] b)
@@ -11282,10 +11367,12 @@ private final class IntroOverlay : Widget
         const subtitleH = subtitleLayout is null ? 0 :
             cast(int) subtitleLayout.measuredSize().height;
 
+        const shown = shownCount();
         int[] pillWidths;
-        foreach (suggestion; _suggestions)
+        foreach (index; 0 .. shown)
         {
-            auto layout = layoutFor(toUTF32(suggestion), opencodeFontBase);
+            auto layout = layoutFor(toUTF32(shownLabelAt(index)),
+                opencodeFontBase);
             // A single suggestion wider than the column is capped so its pill
             // still fits; the label is then elided at paint time.
             pillWidths ~= minInt(contentWidth,
@@ -11296,11 +11383,11 @@ private final class IntroOverlay : Widget
         struct PillRow { size_t first; size_t count; int width; }
         PillRow[] rows;
         size_t cursor;
-        while (cursor < _suggestions.length)
+        while (cursor < shown)
         {
             int rowWidth;
             size_t count;
-            while (cursor + count < _suggestions.length)
+            while (cursor + count < shown)
             {
                 const extra = pillWidths[cursor + count] +
                     (count == 0 ? 0 : pillGap);
@@ -11328,9 +11415,18 @@ private final class IntroOverlay : Widget
                 cast(int) layoutFor(toUTF32(_actionLabel), opencodeFontBase)
                     .measuredSize().width + 2 * pillPadH)
             : 0;
+        const hasExtras = _extraSuggestions.length > 0;
+        const moreText = _extrasShown ? lessLabel : moreLabel;
+        const moreWidth = hasExtras
+            ? minInt(contentWidth,
+                cast(int) layoutFor(toUTF32(moreText), opencodeFontBase)
+                    .measuredSize().width + 2 * morePadH)
+            : 0;
         if (rows.length > 0) block += 26 + pillsH;
+        if (hasExtras)
+            block += (rows.length > 0 ? rowGap : 26) + moreHeight;
         if (_actionLabel.length > 0)
-            block += (rows.length > 0 ? rowGap : 26) + pillHeight;
+            block += (rows.length > 0 || hasExtras ? rowGap : 26) + pillHeight;
         int y = maxInt(24, (height - block) / 2 - 16);
         const centerX = width / 2;
 
@@ -11357,7 +11453,8 @@ private final class IntroOverlay : Widget
         _pillLabels.length = 0;
         _pillPrompts.length = 0;
         _actionRect = Rect.init;
-        if (rows.length == 0 && _actionLabel.length == 0) return;
+        _extrasRect = Rect.init;
+        if (rows.length == 0 && !hasExtras && _actionLabel.length == 0) return;
         if (rows.length > 0)
         {
         y += 26;
@@ -11380,21 +11477,39 @@ private final class IntroOverlay : Widget
                 canvas.drawTextInRect(
                     Rect(x + pillPadH, y, maxInt(1, pillWidths[index] - 2 * pillPadH),
                         pillHeight),
-                    toUTF32(_suggestions[index]),
+                    toUTF32(shownLabelAt(index)),
                     faded(active ? opencodeText : opencodeMuted), 1,
                     HorizontalAlign.center, VerticalAlign.middle, true,
                     FontRole.ui, cast(FontFace) theme().uiFont);
                 _pillRects ~= rect;
-                _pillLabels ~= _suggestions[index];
-                _pillPrompts ~= promptFor(cast(int) index);
+                _pillLabels ~= shownLabelAt(index);
+                _pillPrompts ~= shownPromptAt(index);
                 x += pillWidths[index] + pillGap;
             }
             y += pillHeight + rowGap;
         }
         }
-        if (_actionLabel.length > 0)
+        // The small toggle that reveals (and folds) the historical starters.
+        if (hasExtras)
         {
             if (rows.length == 0) y += 26;
+            const moreX = maxInt(0, (width - moreWidth) / 2);
+            _extrasRect = Rect(moreX, y, moreWidth, moreHeight);
+            canvas.drawRoundedRect(_extrasRect, moreHeight / 2,
+                faded(_extrasHover ? opencodeSelection : opencodeField),
+                faded(_extrasHover ? opencodeAccent : opencodeBorder), 1);
+            canvas.drawTextInRect(
+                Rect(moreX + morePadH, y,
+                    maxInt(1, moreWidth - 2 * morePadH), moreHeight),
+                toUTF32(moreText),
+                faded(_extrasHover ? opencodeText : opencodeMuted), 1,
+                HorizontalAlign.center, VerticalAlign.middle, true,
+                FontRole.ui, cast(FontFace) theme().uiFont);
+            y += moreHeight + rowGap;
+        }
+        if (_actionLabel.length > 0)
+        {
+            if (rows.length == 0 && !hasExtras) y += 26;
             const actionX = maxInt(0, (width - actionWidth) / 2);
             _actionRect = Rect(actionX, y, actionWidth, pillHeight);
             canvas.drawRoundedRect(_actionRect, pillHeight / 2,
@@ -11413,6 +11528,31 @@ private final class IntroOverlay : Widget
 
     override bool onMouseMove(ref Event event)
     {
+        if (_extrasRect.width > 0 && _extrasRect.contains(event.position))
+        {
+            if (!_extrasHover)
+            {
+                _extrasHover = true;
+                invalidate();
+            }
+            if (_actionHover)
+            {
+                _actionHover = false;
+                invalidate();
+            }
+            if (_hover != -1)
+            {
+                _hover = -1;
+                invalidate();
+            }
+            setCursor(CursorKind.hand);
+            return false;
+        }
+        if (_extrasHover)
+        {
+            _extrasHover = false;
+            invalidate();
+        }
         if (_actionRect.width > 0 && _actionRect.contains(event.position))
         {
             if (!_actionHover)
@@ -11445,15 +11585,21 @@ private final class IntroOverlay : Widget
 
     protected override void onMouseLeave()
     {
-        if (_hover == -1 && !_actionHover) return;
+        if (_hover == -1 && !_actionHover && !_extrasHover) return;
         _hover = -1;
         _actionHover = false;
+        _extrasHover = false;
         invalidate();
     }
 
     override bool onMouseDown(ref Event event)
     {
         if (event.button != MouseButton.left) return false;
+        if (_extrasRect.width > 0 && _extrasRect.contains(event.position))
+        {
+            toggleExtras();
+            return true;
+        }
         if (_actionRect.width > 0 && _actionRect.contains(event.position))
         {
             if (onGenerateSuggestions !is null) onGenerateSuggestions();
@@ -20021,17 +20167,19 @@ private string _suggestExcludeId;
             ? "Working in " ~ workspace : "");
     }
 
-    /// Build the empty-state prompt starters: the standard set, plus a
+    /// Build the empty-state prompt starters: the practical set, plus a
     /// self-repair pill whose click inserts a prompt naming the running
     /// program's own source path. Without a source package there is nothing
-    /// useful to point the agent at, so the pill is omitted.
+    /// useful to point the agent at, so the pill is omitted. The historical
+    /// generic starters are handed to the overlay separately so they stay
+    /// folded behind its small "More" toggle.
     private void configureIntroSuggestions()
     {
         if (_toolbarRebuildButton !is null)
             _toolbarRebuildButton.setVisible(_settings.developerMode || canSelfRebuild());
         auto labels = appender!(string[])();
         auto prompts = appender!(string[])();
-        foreach (suggestion; defaultIntroSuggestions)
+        foreach (suggestion; visibleIntroSuggestions)
         {
             labels.put(suggestion);
             prompts.put(suggestion);
@@ -20075,6 +20223,15 @@ private string _suggestExcludeId;
             prompts.put(custom.prompt);
         }
         _introOverlay.setSuggestions(labels.data, prompts.data);
+
+        auto extraLabels = appender!(string[])();
+        auto extraPrompts = appender!(string[])();
+        foreach (suggestion; hiddenIntroSuggestions)
+        {
+            extraLabels.put(suggestion);
+            extraPrompts.put(suggestion);
+        }
+        _introOverlay.setExtras(extraLabels.data, extraPrompts.data);
     }
 
     /// Apply a pill toggle to the composer: a newly selected pill prepends its
@@ -35554,6 +35711,34 @@ private void pollButtonSuggestionRequest()
     {
         return _introOverlay is null ? Rect.init
             : _introOverlay.suggestionBoundsForTesting(index);
+    }
+
+    /// Test-only: the historical starter pills folded behind the intro toggle.
+    public string[] introExtraSuggestionsForTesting() const
+    {
+        return _introOverlay is null ? null
+            : _introOverlay.extraSuggestionsForTesting();
+    }
+
+    /// Test-only: whether the intro's historical starters are expanded.
+    public bool introExtrasShownForTesting() const
+    {
+        return _introOverlay !is null && _introOverlay.extrasShownForTesting();
+    }
+
+    /// Test-only: bounds of the intro's "More"/"Less" toggle.
+    public Rect introExtrasToggleBoundsForTesting() const
+    {
+        return _introOverlay is null ? Rect.init
+            : _introOverlay.extrasToggleBoundsForTesting();
+    }
+
+    /// Test-only: click the intro's "More" toggle as a mouse press would.
+    public bool clickIntroExtrasToggleForTesting()
+    {
+        if (_introOverlay is null) return false;
+        _introOverlay.clickExtrasToggleForTesting();
+        return true;
     }
 
     /// Test-only: click an intro suggestion as a mouse press would.

@@ -1413,6 +1413,67 @@ int main(string[] args)
         writeln("group-only OK");
         return 0;
     }
+    if (args.length > 1 && args[$ - 1] == "--intro-starters-only")
+    {
+        // Focused run for the empty-state starters: the historical generic
+        // starters stay folded behind a small "More" toggle, and expanding it
+        // makes them clickable again.
+        root.newChatForTesting();
+        root.tickTree(0.02);
+        assert(paintProjection(root, driver), "Empty-state intro did not paint");
+        assert(root.introVisibleForTesting(),
+            "Intro overlay should be visible on an empty conversation");
+        const visible = root.introSuggestionsForTesting();
+        assert(visible.length > 0 && visible[0] == "Search the web ",
+            "The web starter should stay visible: " ~ to!string(visible));
+        const visibleText = visible.join("\n");
+        foreach (label; ["Explain this codebase", "Find and fix a bug",
+            "Write a test", "Refactor a file", "Summarize the project"])
+            assert(visibleText.indexOf(label) < 0,
+                "Historical starter should start folded: " ~ label);
+        const hidden = root.introExtraSuggestionsForTesting();
+        assert(hidden.length == 5, "Expected five historical starters");
+        assert(!root.introExtrasShownForTesting(),
+            "Historical starters should start collapsed");
+        auto intro = requireWidget!Widget(root, "oc-intro");
+        const more = root.introExtrasToggleBoundsForTesting();
+        assert(more.width > 0 && more.height > 0,
+            "The small More toggle was not laid out");
+        const moreOrigin = intro.localToGlobal(Point(more.x, more.y));
+        driver.click(Point(moreOrigin.x + more.width / 2,
+            moreOrigin.y + more.height / 2));
+        root.tickTree(0.02);
+        assert(root.introExtrasShownForTesting(),
+            "A real click on More should reveal the historical starters");
+        assert(paintProjection(root, driver), "Expanded intro did not paint");
+        const firstExtra = cast(int) visible.length;
+        assert(root.clickIntroSuggestionForTesting(firstExtra),
+            "An expanded historical starter should be clickable");
+        root.tickTree(0.02);
+        assert(root.inputTextForTesting() == "Explain this codebase",
+            "Expanded starter did not insert its prompt");
+        root.setInputForTesting("existing user prompt");
+        assert(root.clickIntroSuggestionForTesting(firstExtra),
+            "An expanded historical starter should toggle like a visible one");
+        root.tickTree(0.02);
+        assert(root.inputTextForTesting() ==
+            "Explain this codebase\nexisting user prompt",
+            "Expanded starter should insert before the user's own input");
+        assert(root.clickIntroSuggestionForTesting(firstExtra),
+            "Pressing the expanded starter again should toggle it off");
+        root.tickTree(0.02);
+        assert(root.inputTextForTesting() == "existing user prompt",
+            "Toggling an expanded starter off should remove only its text");
+        root.setInputForTesting("");
+        assert(root.clickIntroExtrasToggleForTesting(),
+            "The More toggle should collapse again");
+        root.tickTree(0.02);
+        assert(!root.introExtrasShownForTesting(),
+            "Collapsing should fold the historical starters again");
+        assert(paintProjection(root, driver), "Folded intro did not repaint");
+        writeln("intro-starters-only OK");
+        return 0;
+    }
     if (args.length > 1 && args[$ - 1] == "--tool-menu-only")
     {
         // Focused run for the tool-header context-menu fix: run alone so the
@@ -7035,13 +7096,27 @@ int main(string[] args)
             "Intro overlay fade did not complete");
         assert(paintProjection(root, driver), "Faded intro did not paint");
         window.saveScreenshot("build\\intro-empty.ppm");
-        const firstPill = root.introSuggestionBoundsForTesting(0);
+        // The visible starters now lead with "Search the web ", whose prompt
+        // intentionally ends in a space. Use a plain pill for the toggle
+        // assertions so their expected text stays independent of that spacer.
+        size_t plainIndex;
+        foreach (i, label; suggestions)
+            if (label.length > 0 && label[$ - 1] != ' ')
+            {
+                plainIndex = i;
+                break;
+            }
+        const plain = suggestions[plainIndex];
+        const separator =
+            plain.length > 0 && plain[$ - 1] == ' ' ? "" : "\n";
+        const firstPill =
+            root.introSuggestionBoundsForTesting(cast(int) plainIndex);
         assert(firstPill.width > 0 && firstPill.height > 0,
             "Intro suggestion pill was not laid out");
-        assert(root.clickIntroSuggestionForTesting(0),
+        assert(root.clickIntroSuggestionForTesting(cast(int) plainIndex),
             "Clicking an intro suggestion should prefill the composer");
         root.tickTree(0.02);
-        assert(root.inputTextForTesting() == suggestions[0],
+        assert(root.inputTextForTesting() == plain,
             "Intro suggestion did not populate the prompt input");
         assert(root.introVisibleForTesting(),
             "Prefilling the prompt should keep the intro (no message yet)");
@@ -7054,7 +7129,7 @@ int main(string[] args)
         driver.click(Point(pillOrigin.x + firstPill.width / 2,
             pillOrigin.y + firstPill.height / 2));
         root.tickTree(0.02);
-        assert(root.inputTextForTesting() == suggestions[0],
+        assert(root.inputTextForTesting() == plain,
             "A real click on an intro suggestion did not prefill the prompt");
         root.setInputForTesting("");
 
@@ -7063,14 +7138,15 @@ int main(string[] args)
         // that text while clearing the highlight.
         const userPrompt = "existing user prompt";
         root.setInputForTesting(userPrompt);
-        assert(root.clickIntroSuggestionForTesting(0),
+        assert(root.clickIntroSuggestionForTesting(cast(int) plainIndex),
             "Selecting an intro suggestion should prefill the composer");
         root.tickTree(0.02);
-        assert(root.inputTextForTesting() == suggestions[0] ~ "\n" ~ userPrompt,
+        assert(root.inputTextForTesting() == plain ~ separator ~ userPrompt,
             "Suggested text should be inserted before the user's own input");
-        assert(root.introSelectedSuggestionForTesting() == 0,
+        assert(root.introSelectedSuggestionForTesting() ==
+            cast(int) plainIndex,
             "The selected pill should stay highlighted after the click");
-        assert(root.clickIntroSuggestionForTesting(0),
+        assert(root.clickIntroSuggestionForTesting(cast(int) plainIndex),
             "Pressing the selected pill again should toggle it off");
         root.tickTree(0.02);
         assert(root.inputTextForTesting() == userPrompt,
