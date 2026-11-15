@@ -32,12 +32,51 @@ private string prose(string text)
     return result.data;
 }
 
+/// DeepSeek can leak its DSML special tokens into reply text as a tag prefix
+/// (`<` U+FF5C `DSML` U+FF5C ` invoke name=...>`). The marker hides an
+/// otherwise plain text-form call, so strip it before matching the shapes
+/// below. Only text right after `<` or `</` is inspected, so ordinary prose
+/// keeps its characters.
+private string withoutDsmlTags(string text)
+{
+    enum marker = "\uFF5CDSML\uFF5C";
+    auto result = appender!string();
+    size_t index;
+    while (index < text.length)
+    {
+        if (text[index] != '<')
+        {
+            result.put(text[index]);
+            ++index;
+            continue;
+        }
+        result.put('<');
+        ++index;
+        if (index < text.length && text[index] == '/')
+        {
+            result.put('/');
+            ++index;
+        }
+        bool marked;
+        while (index + marker.length <= text.length &&
+            text[index .. index + marker.length] == marker)
+        {
+            index += marker.length;
+            marked = true;
+        }
+        if (marked)
+            while (index < text.length &&
+                (text[index] == ' ' || text[index] == '\t')) ++index;
+    }
+    return result.data;
+}
+
 /// Detect output failure, never infer executable calls from ordinary text.
 public string agentOutputIssue(string text, const(string)[] toolNames,
     bool terminal = false, bool structuredCalls = false)
 {
     // Preserve fence state across the whole answer, including later output.
-    const plain = prose(text);
+    const plain = prose(withoutDsmlTags(text));
     int[string] paragraphs;
     foreach (paragraph; plain.splitter("\n\n"))
     {

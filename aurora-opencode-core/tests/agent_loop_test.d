@@ -47,6 +47,18 @@ int main(string[] args)
         "A settled response containing one unexecuted invocation was accepted");
     assert(decode("Example:\n```xml\n" ~ call ~ call ~ call ~ "```\n")[$ - 1].kind == OpenCodeEventKind.done);
     assert(decode("> <invoke name=\"grep\">\n> <parameter name=\"pattern\">x</parameter>\n> </invoke>\n")[$ - 1].kind == OpenCodeEventKind.done);
+    // DeepSeek can leak its DSML special tokens around a text-form tool call.
+    // The marker must not hide that leaked invocation from the guard.
+    const leaked = "<\uFF5CDSML\uFF5C calls>\n" ~
+        "<\uFF5CDSML\uFF5C invoke name=\"grep\">\n" ~
+        "<\uFF5CDSML\uFF5C parameter name=\"pattern\">test</parameter>\n" ~
+        "</\uFF5CDSML\uFF5C invoke>\n</\uFF5CDSML\uFF5C calls>";
+    assert(agentOutputIssue(leaked, ["grep", "run"], true) == "text_tool_calls",
+        "A leaked DeepSeek text tool call escaped detection");
+    assert(decode(leaked)[$ - 1].outputIssue == "text_tool_calls",
+        "A leaked DeepSeek text tool call was shown as the answer");
+    assert(decode("Example:\n```xml\n" ~ leaked ~ "\n```\n")[$ - 1].kind ==
+        OpenCodeEventKind.done, "A fenced DSML example was treated as a call");
     assert(decode(call, true)[$ - 1].kind == OpenCodeEventKind.toolCalls,
         "A real structured call alongside a printed example was discarded");
     enum paragraph = "Still crashing before printf. Let me check the runtime again. " ~
