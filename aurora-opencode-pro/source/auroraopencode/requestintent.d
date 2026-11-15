@@ -68,6 +68,24 @@ private bool requestedVerb(const(string)[] words, const(string)[] raw, size_t i)
     if (i >= 2 && words[i - 1] == "to" && ["me", "you", "need", "want"].canFind(words[i - 2])) return true;
     if (i >= 2 && words[i - 1] == "me" && words[i - 2] == "help") return true;
     if (i >= 2 && words[0] == "i" && ["want", "need"].canFind(words[1])) return true;
+    // "Do a quick review" and "do quick review" are instructions even when a
+    // qualifier separates the imperative from the verb. Before this rule such a
+    // review looked like a bare clarification ("is it organized well, do quick
+    // review?"), so the completed task answered it through the tool-free
+    // final-answer handoff and the model printed its lookup as XML call text.
+    if (i >= 1 && ["do", "perform", "give", "take", "have"].canFind(words[i - 1]))
+        return true;
+    if (i >= 1)
+    {
+        size_t begin = i;
+        foreach (step; 0 .. 2)
+            if (begin > 0 && ["a", "an", "the", "quick", "short", "brief",
+                    "full", "thorough", "small", "proper"].canFind(words[begin - 1]))
+                --begin;
+        if (begin < i && begin > 0 &&
+            ["do", "perform", "give", "take", "have"].canFind(words[begin - 1]))
+            return true;
+    }
     if (i)
     {
         bool prefix = true;

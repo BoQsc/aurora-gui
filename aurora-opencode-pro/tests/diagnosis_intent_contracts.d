@@ -49,6 +49,16 @@ int main()
     assert(requestIntent("Why did it stop? Fix it.") == RequestIntent.implementation);
     assert(requestIntent("Analyze why it failed; do not edit files.") == RequestIntent.analysis);
 
+    // A review phrased as a question still asks for inspection work. It must
+    // not reach the tool-free final-answer handoff, which previously left the
+    // model no channel for its folder lookup and made it print XML call text.
+    const reviewRequest = "is it organized well, do quick review with quick summary";
+    assert(requestIntent(reviewRequest) == RequestIntent.analysis);
+    assert(!answerOnlyRequest(reviewRequest));
+    assert(requestIntent("take a quick look at the folder") == RequestIntent.analysis);
+    assert(answerOnlyRequest("what is left?"),
+        "a completed task can still answer a status question without tools");
+
     // The prompt and per-request contract must require resolution rather than a
     // bare explanation, while the explicit explanation request stays answer-only.
     // The system prompt itself no longer carries the old "Why = diagnose" line;
