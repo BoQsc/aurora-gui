@@ -175,6 +175,7 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
     foreach (i, index; path)
         if (session.messages[index].role == "user" && !session.messages[index].internal) begin = i + 1;
     string[string] failedChecks;
+    string failureTool;
     foreach (index; path[begin .. $])
     {
         const ref message = session.messages[index];
@@ -189,10 +190,29 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
             {
                 state.failure = taskExcerpt(message.content, 800);
                 state.transientFailure = transientToolFailure(message);
+                failureTool = message.toolName;
             }
             // Successful checks resolve prior checker failures. Reads and plan
             // edits cannot clear an actual failed execution.
-            else if (message.verificationCheck.length) state.failure = "";
+            else if (message.verificationCheck.length)
+            {
+                state.failure = "";
+                failureTool = "";
+            }
+            // A later success of the same tool is the retry landing: the
+            // operation that failed now works, so the recorded obstacle no
+            // longer describes the current state. Without this, one malformed
+            // command (for example a broken `python -c` one-liner) stayed in
+            // the ledger after the next execution succeeded, two recovery
+            // rounds expired, and an already delivered answer was marked
+            // failed. A success of a different tool cannot erase the failure.
+            else if (!message.failed && failureTool.length && message.toolName == failureTool)
+            {
+                state.failure = "";
+                state.transientFailure = false;
+                state.attempts = 0;
+                failureTool = "";
+            }
             // An accepted check is real progress. A fingerprint can recur after
             // verification flips back (a later check fails, then passes), so
             // attempts from an earlier streak must not make the next answer

@@ -87,6 +87,37 @@ int main()
     assert(!s.messages[$ - 1].failed, "A transient host fault marked the delivered answer as failed");
     writeln("PASS a persistent host fault interrupts the turn and preserves the delivered answer");
 
+    // Reported regression: a malformed command (a broken python -c one-liner)
+    // was recorded as the obstacle, then the next execution of the same tool
+    // succeeded. The stale obstacle must not consume the recovery budget and
+    // turn the delivered answer into a failed turn.
+    s = pending();
+    append(s, "assistant", "Checking the published build");
+    auto recovering = decideTurn(s, p);
+    assert(recovering.action == TurnAction.request);
+    append(s, "user", recovering.guidance, true);
+    append(s, "tool",
+        "  File \"<string>\", line 1\n    import os,p=pathlib\nSyntaxError: invalid syntax\n\nProcess exited with code 1.",
+        false, "run", true);
+    assert(executionState(s).failure.indexOf("SyntaxError") >= 0);
+    append(s, "tool", "Publish log contents", false, "run");
+    const resolvedExecution = executionState(s);
+    assert(!resolvedExecution.failure.length, "A later successful execution kept the stale obstacle");
+    append(s, "assistant", "The published build is verified.");
+    auto continued = decideTurn(s, p);
+    assert(continued.action == TurnAction.request &&
+        continued.guidance.indexOf("previous completion attempt") < 0,
+        "A resolved command failure spent the recovery budget: " ~ continued.status);
+    writeln("PASS a malformed command resolved by the next execution does not fail the turn");
+
+    // A success of an unrelated tool must not erase a failed execution.
+    s = pending();
+    append(s, "tool", "Error: the target could not be written", false, "write", true);
+    append(s, "tool", "Target contents", false, "read");
+    assert(executionState(s).failure.indexOf("could not be written") >= 0,
+        "An unrelated successful tool erased the recorded obstacle");
+    writeln("PASS only the failing tool's later success resolves its obstacle");
+
     // A new accepted check is real progress: attempts from an earlier streak
     // must not make the next answer terminal when the fingerprint recurs.
     s = pending();
