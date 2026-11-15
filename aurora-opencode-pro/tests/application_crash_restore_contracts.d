@@ -61,6 +61,18 @@ private void child(string state)
     const complete = MonoTime.currTime + 45.seconds;
     while (root.pendingToolResultsForTesting() && MonoTime.currTime < complete)
     { window.onNativeTick(0.01); Thread.sleep(2.msecs); }
+    if (root.pendingToolResultsForTesting() != 0 || root.toolMessageCountForTesting() != 3)
+    {
+        JSONValue diag;
+        diag["pending"] = root.pendingToolResultsForTesting();
+        diag["tools"] = root.toolMessageCountForTesting();
+        diag["turnStatus"] = root.turnStatusForTesting();
+        diag["taskStatus"] = root.taskStatusForTesting();
+        diag["error"] = root.lastAssistantErrorForTesting();
+        diag["activity"] = root.activityTextForTesting();
+        diag["storageBlocked"] = root.storageBlockedForTesting();
+        write(buildPath(state, "child-diag.json"), diag.toString());
+    }
     assert(root.pendingToolResultsForTesting() == 0 && root.toolMessageCountForTesting() == 3);
     assert(readText(buildPath(workspace, "output.txt")) == "verified after crash");
     root.flushJournalForTesting();
@@ -104,7 +116,10 @@ int main(string[] args)
         Thread.sleep(10.msecs);
     const ready = exists(buildPath(state, "ready.json"));
     if (!tryWait(process).terminated) { kill(process); wait(process); }
-    assert(ready, "Application child did not durably settle its mixed tool batch");
+    string diagnostic;
+    const diagnosticPath = buildPath(state, "child-diag.json");
+    if (exists(diagnosticPath)) diagnostic = " " ~ readText(diagnosticPath);
+    assert(ready, "Application child did not durably settle its mixed tool batch" ~ diagnostic);
     assert(readText(index) == original, "The test accidentally saved a compatibility snapshot");
     const identities = parseJSON(readText(buildPath(state, "ready.json")));
     const events = readAgentRuntimeEvents(buildPath(state, "runtime-events.jsonl"), true);
