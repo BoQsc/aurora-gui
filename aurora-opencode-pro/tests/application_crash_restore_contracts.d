@@ -55,7 +55,10 @@ private void child(string state)
         OpenCodeToolCall("before", "read", readArgs.toString()),
         OpenCodeToolCall("mutation", "write", writeArgs.toString()),
         OpenCodeToolCall("after", "read", afterArgs.toString())]);
-    const complete = MonoTime.currTime + 15.seconds;
+    // The batch runs while compatibility snapshots are deliberately held.
+    // Allow the storage owner time to release the tool results under load; the
+    // assertions below still require all three results and the mutation.
+    const complete = MonoTime.currTime + 45.seconds;
     while (root.pendingToolResultsForTesting() && MonoTime.currTime < complete)
     { window.onNativeTick(0.01); Thread.sleep(2.msecs); }
     assert(root.pendingToolResultsForTesting() == 0 && root.toolMessageCountForTesting() == 3);
@@ -92,7 +95,11 @@ int main(string[] args)
     write(buildPath(state, "threads", "source.json"),
         `{"messages":[{"id":"prompt","role":"user","content":"Original request"},{"id":"first","parentId":"prompt","role":"assistant","content":"Earlier version"},{"id":"second","parentId":"prompt","role":"assistant","content":"Current version"}]}`);
     auto process = spawnProcess([args[0], "--child", state]);
-    const deadline = MonoTime.currTime + 25.seconds;
+    // The child's startup and tool phases each have their own 10-15 second
+    // bounds. A 25-second parent deadline could kill a healthy child before it
+    // acknowledged its batch under load. Wait for readiness; the later forced
+    // kill still verifies durability from acknowledged journal events.
+    const deadline = MonoTime.currTime + 60.seconds;
     while (!exists(buildPath(state, "ready.json")) && MonoTime.currTime < deadline)
         Thread.sleep(10.msecs);
     const ready = exists(buildPath(state, "ready.json"));
