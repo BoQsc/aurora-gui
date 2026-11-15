@@ -159,6 +159,32 @@ int main()
     assert(proposalDecision.action == TurnAction.settle, "a Plan proposal did not settle");
     assert(proposalDecision.taskStatus == "waiting_input", proposalDecision.taskStatus);
 
+    // Recording a plan is itself the proposal checkpoint. The agent followed
+    // the Plan-mode instruction and stopped; that must settle for approval
+    // instead of starting execution recovery because the plan has open steps.
+    ChatSession recorded;
+    recorded.id = "plan-recorded";
+    recorded.planMode = true;
+    recorded.taskSteps = [TaskStep("Add splitpane", "pending", "splitpane")];
+    appendMessage(recorded, "recorded-user", "user", "Add splitpane and progressbar.");
+    appendMessage(recorded, "recorded-plan", "tool", "Plan updated");
+    recorded.messages[$ - 1].toolName = "update_plan";
+    recorded.messages[$ - 1].toolCallId = "recorded-plan";
+    appendMessage(recorded, "recorded-reply", "assistant",
+        "The plan is recorded; approve it to continue.");
+    assert(planModeProposalPending(recorded),
+        "a recorded plan was not treated as awaiting approval");
+    const recordedState = executionState(recorded);
+    assert(!executionShouldContinue(recorded, true, recordedState),
+        "a recorded Plan proposal started execution recovery");
+    TurnPolicy recordedPolicy;
+    recordedPolicy.toolsEnabled = true;
+    const recordedDecision = decideTurn(recorded, recordedPolicy);
+    assert(recordedDecision.action == TurnAction.settle,
+        "a recorded Plan proposal did not settle");
+    assert(recordedDecision.taskStatus == "waiting_input",
+        recordedDecision.taskStatus);
+
     // While the model is still calling tools in the same round, the refusal is
     // not yet a proposal the user can approve.
     ChatSession inRound;

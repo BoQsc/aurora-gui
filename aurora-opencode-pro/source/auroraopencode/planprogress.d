@@ -118,7 +118,7 @@ string planProgressGuidance(const ref ChatSession session)
         (session.taskSteps.length ?
             "Check whether the plan still matches the work and new discoveries. " :
             "This work has several steps now; consider recording a short plan. ") ~
-        "If useful, use update_plan to reflect completed work, the current step and changed direction. " ~
+        "If useful, use update_plan to reflect completed work, the current step and changed direction, and explain any unfinished outcome you drop. " ~
         "If the plan still fits, continue working. This reminder does not require a plan update or extra checks.";
 }
 

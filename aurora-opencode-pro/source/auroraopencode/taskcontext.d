@@ -89,7 +89,7 @@ string taskContext(const ref ChatSession session, string request, bool nested,
     foreach (step; session.taskSteps) if (step.status != "completed") ++unfinished;
     const perStep = max(cast(size_t) 64, min(cast(size_t) 900,
         (budget > output.data.length ? budget - output.data.length : 0) * 2 / 3 / max(cast(size_t) 1, unfinished)));
-    line("", "Checklist (original row numbers; use read_plan for the complete current list):", 128);
+    line("", "Current plan (provisional; revise from evidence; row numbers are display only, IDs are stable):", 128);
     foreach (i, step; session.taskSteps)
         if (step.status != "completed")
             line(to!string(i + 1) ~ ". [" ~ step.status ~ "] " ~ step.id ~ ": ",

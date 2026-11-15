@@ -23082,8 +23082,8 @@ private void pollButtonSuggestionRequest()
             appendSkippedToolResults(*session, calls,
                 "Tool call deferred for plan upkeep: the checklist has not been refreshed for " ~
                 to!string(planSince) ~ " tool results. No command ran or failed. " ~
-                "Call update_plan to check off the outcomes the recorded results prove, keep " ~
-                "exactly one unfinished outcome in_progress, then repeat the calls.");
+                "Call update_plan to check off the outcomes the recorded results prove, prune " ~
+                "obsolete outcomes with an explanation, keep exactly one unfinished outcome in_progress, then repeat the calls.");
             ChatMessage upkeepGate;
             upkeepGate.role = "user";
             upkeepGate.internal = true;
@@ -23092,7 +23092,7 @@ private void pollButtonSuggestionRequest()
                 " of at most " ~ to!string(planUpkeepGateLimit) ~ " deferrals this request). " ~
                 "Reconcile it now with update_plan before further edits: mark finished outcomes " ~
                 "completed, keep exactly one unfinished outcome in_progress, keep the remaining " ~
-                "outcomes visible, and explain any new or reordered outcome. Then repeat the deferred calls.";
+                "outcomes that still matter, and explain any unfinished outcome you drop or acceptance you change. Then repeat the deferred calls.";
             appendMessage(*session, upkeepGate);
             session.turnStatus = "running";
             session.taskStatus = "active";

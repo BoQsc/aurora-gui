@@ -100,7 +100,8 @@ public string planModePromptBlock()
         "rebuilding are refused until the user approves the plan.\n" ~
         "Record the intended work with update_plan: each step names the files " ~
         "or symbols it touches and a done criterion the user can check, plus " ~
-        "the acceptance rule taken from the request. Then stop and summarize " ~
+        "the acceptance rule taken from the request. Treat the steps as a " ~
+        "provisional hypothesis the user can adjust. Then stop and summarize " ~
         "the proposal in one or two sentences. Nothing has been changed yet, " ~
         "so never claim work is done.\n" ~
         "If the request is only a question, answer it directly and skip the " ~
@@ -129,10 +130,11 @@ public bool planModeBlockedTool(const ref ChatMessage message)
         message.content.startsWith(planModeRefusalPrefix);
 }
 
-/// True when the agent has proposed a plan under Plan mode, a mutation was
-/// refused, and the agent has stopped to summarize. This is the point where the
-/// turn must wait for the user's approval: treating the refusal as a retryable
-/// execution failure made the agent repeat the same blocked call and flood the
+/// True when the agent has proposed a plan under Plan mode and stopped to
+/// summarize. A mutation refusal is one trigger; a plan recorded in this turn
+/// is the other, because the Plan-mode prompt tells the agent to record steps
+/// and stop for approval. Treating either as retryable execution failure made
+/// the agent repeat the blocked call, edit before approval, or flood the
 /// conversation with recovery rounds.
 public bool planModeProposalPending(const ref ChatSession session)
 {
@@ -148,19 +150,21 @@ public bool planModeProposalPending(const ref ChatSession session)
             if (proposed) break;
         }
     if (!proposed) return false;
-    bool blocked, sawAssistant, assistantUsedTools;
+    bool blocked, recordedPlan, sawAssistant, assistantUsedTools;
     foreach_reverse (index; activeMessagePath(session))
     {
         const ref message = session.messages[index];
         if (message.role == "user" && !message.internal) break;
         if (planModeBlockedTool(message)) blocked = true;
+        if (message.role == "tool" && !message.failed && message.toolName == "update_plan")
+            recordedPlan = true;
         if (!sawAssistant && message.role == "assistant" && !message.internal)
         {
             sawAssistant = true;
             assistantUsedTools = message.toolCalls.length > 0;
         }
     }
-    return blocked && sawAssistant && !assistantUsedTools;
+    return (blocked || recordedPlan) && sawAssistant && !assistantUsedTools;
 }
 
 /// The system-prompt block appended only while tracked plan mode is on. It
@@ -178,10 +182,13 @@ public string trackedPlanPromptBlock()
         "the most uncertainty (a read, a search, a quick edit, or a question " ~
         "to the user). Each step is a concrete outcome with a stable ID and " ~
         "`done` naming how completion is proven. Cite successful tool-call IDs " ~
-        "as evidence before marking outcomes completed. Keep at most one step " ~
-        "in_progress, and revise the plan whenever evidence changes the path. " ~
-        "Revisions and their explanations are retained as plan history. " ~
-        "Reconcile the plan before the final answer: mark " ~
-        "finished steps completed, rewrite obsolete or mixed steps, and never " ~
-        "mark unfinished work completed.\n";
+        "as evidence before marking outcomes completed. The plan is a live " ~
+        "state, not a fixed script: add discovered work and reorder freely, " ~
+        "and revise it whenever evidence changes the path. Keep at most one " ~
+        "step in_progress. Explain a dropped unfinished outcome, a changed " ~
+        "acceptance, or a reopened completed outcome; ordinary additions and " ~
+        "reordering need no ceremony. Revisions and their explanations are " ~
+        "retained as plan history. Reconcile the plan before the final " ~
+        "answer: mark finished steps completed, prune obsolete steps, and " ~
+        "never mark unfinished work completed to satisfy the checklist.\n";
 }

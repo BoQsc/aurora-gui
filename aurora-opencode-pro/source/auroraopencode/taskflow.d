@@ -597,9 +597,9 @@ private bool samePlanStep(const ref TaskStep a, const ref TaskStep b)
 private struct PlanRevision
 {
     bool added, reordered, changedAcceptance, interrupted, outOfOrder;
-    string[] reopened;
+    string[] reopened, removed;
     bool needsReason() const
-    { return added || reordered || changedAcceptance || interrupted || outOfOrder || reopened.length > 0; }
+    { return changedAcceptance || interrupted || outOfOrder || reopened.length > 0 || removed.length > 0; }
 }
 
 private PlanRevision inspectPlanRevision(const(TaskStep)[] previous, const(TaskStep)[] steps)
@@ -632,12 +632,26 @@ private PlanRevision inspectPlanRevision(const(TaskStep)[] previous, const(TaskS
         if (!found) result.added = true;
     }
     result.outOfOrder = active.length && active != priorActive && activeIndex > firstUnfinished;
+    // An unfinished outcome that disappears is a path change, not silent
+    // cleanup. planUpdateError requires a concrete reason before accepting it.
+    foreach (old; previous)
+    {
+        if (old.status == "completed") continue;
+        bool retained;
+        foreach (step; steps)
+            if (samePlanStep(old, step)) { retained = true; break; }
+        if (!retained) result.removed ~= (old.id.length ? old.id : old.text);
+    }
     return result;
 }
 
 void rememberPlanRevision(ref ChatSession session, JSONValue root, const(TaskStep)[] previous, const(TaskStep)[] steps)
 {
-    if (!inspectPlanRevision(previous, steps).needsReason()) return;
+    const revision = inspectPlanRevision(previous, steps);
+    // Routine additions and reordering are normal plan upkeep. Retain their
+    // rationale when the model supplies one; a required rationale is already
+    // enforced by planUpdateError before this runs.
+    if (!revision.added && !revision.reordered && !revision.needsReason()) return;
     if (auto reason = "explanation" in root.object)
         if (reason.type == JSONType.string && reason.str.strip().length)
         {
@@ -1063,21 +1077,21 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
         if (plan.type != JSONType.array || !plan.array.length) return "Error: plan must be a non-empty array.";
     string[string] evidenceIndex;
     bool indexed;
-    bool replacement;
-    if (auto f = "replace_entire_plan" in root.object) replacement = f.type == JSONType.true_;
-    if (replacement)
-    {
-        const request = latestTaskRequest(session).toLower();
-        if (!explicitlyNewTask(request) && !explicitPlanReplacementRequested(request))
-            return "Error: replacing unfinished outcomes requires an explicit user scope change. Preserve their IDs and statuses.";
-    }
-    const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], previous, !replacement, incrementalPlan(root)) : previous;
     string reason;
     if (auto field = "explanation" in root.object)
     {
         if (field.type != JSONType.string) return "Error: explanation must be a string.";
         reason = field.str.strip();
     }
+    bool replacement;
+    if (auto f = "replace_entire_plan" in root.object) replacement = f.type == JSONType.true_;
+    if (replacement)
+    {
+        const request = latestTaskRequest(session).toLower();
+        if (!explicitlyNewTask(request) && !explicitPlanReplacementRequested(request) && !reason.length)
+            return "Error: replacing unfinished outcomes requires an explicit user scope change or a concrete explanation. Preserve their IDs and statuses, or explain why the evidence changes the plan.";
+    }
+    const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], previous, !replacement, incrementalPlan(root)) : previous;
     string[] reopened;
     if (auto field = "reopen_steps" in root.object)
     {
@@ -1093,7 +1107,7 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
     if (!replacement)
     {
         if (revision.needsReason() && !reason.length)
-            return "Error: explain additions, reordering, changed acceptance, or a paused/skipped outcome in explanation. Tie the change to the user's goal or a concrete finding; preserve unfinished work.";
+            return "Error: explain a dropped unfinished outcome, changed acceptance, or a paused/skipped outcome in explanation. Tie the change to the user's goal or a concrete finding; preserve unfinished work.";
         foreach (id; revision.reopened)
             if (!reopened.canFind(id))
                 return "Error: completed outcome '" ~ id ~ "' cannot silently become unfinished. List its ID in reopen_steps and explain the new defect or changed requirement.";
@@ -1122,8 +1136,18 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
         {
             bool retained;
             foreach (step; steps) if (samePlanStep(old, step)) retained = true;
-            if (!retained) return "Error: unfinished outcome omitted: " ~ old.text ~ " [id: " ~ old.id ~
-                "]. Use plan_mode=patch with existing outcome IDs to preserve untouched outcomes. Action IDs belong in work_items.";
+            if (!retained)
+            {
+                // A stable ID is part of the outcome's identity. Reusing its
+                // text under a new ID breaks evidence and history links.
+                foreach (step; steps)
+                    if (step.text == old.text && step.id != old.id)
+                        return "Error: unfinished outcome omitted: " ~ old.text ~ " [id: " ~ old.id ~
+                            "]. Reuse its existing stable ID; do not rename outcome IDs. Use plan_mode=patch with existing outcome IDs to preserve untouched outcomes.";
+                if (!reason.length)
+                    return "Error: unfinished outcome omitted: " ~ old.text ~ " [id: " ~ old.id ~
+                        "]. Use plan_mode=patch with existing outcome IDs to preserve untouched outcomes, or explain why the evidence makes this outcome obsolete. Action IDs belong in work_items.";
+            }
         }
     if (!("plan" in root.object))
     {

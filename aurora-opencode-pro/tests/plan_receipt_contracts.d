@@ -81,6 +81,10 @@ int main()
     auto mixedEdit = parseJSON(`{"plan":[{"id":"change","step":"Write the package","kind":"edit","status":"completed","evidence":["edit","check"]}]}`);
     assert(!planUpdateError(s, mixedEdit.toString(), null).length,
         "An edit with supporting check evidence was rejected");
+    done["plan"][0]["evidence"] = JSONValue(["edit"]);
+    const currentMismatch = planUpdateError(s, done.toString(), s.taskSteps);
+    assert(currentMismatch.indexOf("Compatible recorded toolCallId receipts: check") >= 0,
+        "A current mismatch did not identify a usable recorded receipt: " ~ currentMismatch);
     done["plan"][0]["evidence"] = JSONValue(["made-up"]);
     auto error = planUpdateError(s, done.toString(), s.taskSteps);
     assert(error.indexOf("verify") >= 0 && error.indexOf("unknown tool-call ID") >= 0);
@@ -88,8 +92,9 @@ int main()
     done["plan"][0]["evidence"] = JSONValue(["failed", "check"]);
     assert(planUpdateError(s, done.toString(), s.taskSteps).indexOf("the tool failed") >= 0);
     done["plan"][0]["evidence"] = JSONValue(["edit"]);
-    assert(planUpdateError(s, done.toString(), s.taskSteps).indexOf("Compatible recorded toolCallId receipts: check") >= 0,
-        "Mismatch did not identify a usable recorded receipt");
+    const mismatchError = planUpdateError(s, done.toString(), s.taskSteps);
+    assert(mismatchError.indexOf("No compatible receipt") >= 0,
+        "A failed check left its earlier receipt usable: " ~ mismatchError);
     s.verificationScope = "checkout|generation|6";
     done["plan"][0]["evidence"] = JSONValue(["check"]);
     assert(planUpdateError(s, done.toString(), s.taskSteps).indexOf("No compatible receipt") >= 0,

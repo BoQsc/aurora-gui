@@ -26,8 +26,13 @@ int main()
 {
     foreach (tool; builtinToolDefinitions())
         if (tool.name == "update_plan")
-            assert(tool.description.indexOf("Follow the steps in order") >= 0,
-                "update_plan does not require following the planned steps");
+        {
+            assert(tool.description.indexOf("live") >= 0 ||
+                tool.description.indexOf("revise") >= 0,
+                "update_plan does not describe the plan as a live state");
+            assert(tool.description.indexOf("Follow the steps in order") < 0,
+                "update_plan still requires rigid step order");
+        }
     foreach (tool; builtinToolDefinitions())
         if (tool.name == "read_plan")
             assert(tool.description.indexOf("view=history") >= 0,
@@ -48,15 +53,20 @@ int main()
 
     const prompt = root.systemPromptViewerTextForTesting();
     root.dismissPopupForTesting();
-    assert(prompt.indexOf("# Plan") >= 0, "Plan section missing from the live prompt viewer");
-    assert(prompt.indexOf("# Plan") < prompt.indexOf("# Operating contract"),
-        "Plan section does not lead the working sections");
-    assert(prompt.indexOf("never by follow-up rounds") >= 0,
-        "The no-follow-up planning rule is missing");
+    assert(prompt.indexOf("# Work and planning") >= 0,
+        "Planning section missing from the live prompt viewer");
+    assert(prompt.indexOf("# Work and planning") < prompt.indexOf("# Tools"),
+        "Planning section does not lead the working sections");
+    assert(prompt.indexOf("live working model") >= 0,
+        "The live-plan planning rule is missing");
     assert(prompt.indexOf("Replan as you work") >= 0,
         "The adaptive replanning rule is missing");
     assert(prompt.indexOf("Keep planning history") >= 0,
         "The retained planning-history rule is missing");
+    assert(prompt.indexOf("Never keep working a stale step") >= 0,
+        "The stale-step rule is missing");
+    assert(prompt.indexOf("Follow the steps in order") < 0,
+        "The prompt still mandates rigid step order");
     assert(prompt.indexOf("Never end with a question, an offer") >= 0,
         "The closing-offer prohibition is missing");
 

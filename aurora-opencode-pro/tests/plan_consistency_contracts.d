@@ -32,7 +32,8 @@ int main()
 
     auto extra = parseJSON(initial);
     extra["plan"].array ~= parseJSON(`{"id":"c","step":"Compatibility outcome","status":"pending"}`);
-    assert(planUpdateError(s, extra.toString(), s.taskSteps).indexOf("explanation") >= 0);
+    assert(!planUpdateError(s, extra.toString(), s.taskSteps).length,
+        "A discovered outcome demanded a ceremonial explanation");
     extra["explanation"] = "Existing input requires a compatibility outcome to fulfill the requested documents.";
     assert(!planUpdateError(s, extra.toString(), s.taskSteps).length);
     auto extended = normalizedPlan(s, extra["plan"], s.taskSteps);
@@ -93,6 +94,23 @@ int main()
     assert(retained[0] == completed[0] && retained[1].id == "b" && retained[2].id == "c",
         "Appending new work displaced an omitted historical completion");
 
+    // A step made obsolete by new evidence can be pruned when the model names
+    // the reason. Silent removal remains rejected.
+    auto prune = parseJSON(forward.toString());
+    prune["plan"] = JSONValue([forward["plan"][0]]);
+    assert(planUpdateError(s, prune.toString(), completed).length,
+        "An unfinished outcome disappeared without a reason");
+    prune["explanation"] = "The remaining outcome is obsolete: the completed change already delivers the requested behavior.";
+    assert(!planUpdateError(s, prune.toString(), completed).length,
+        "An explained obsolete outcome could not be pruned");
+    auto pruned = normalizedPlan(s, prune["plan"], completed);
+    assert(pruned.length == 1 && pruned[0].id == "a");
+    rememberPlanRevision(s, prune, completed, pruned);
+    bool pruningRecorded;
+    foreach (decision; s.contract.decisions)
+        if (decision.indexOf("obsolete") >= 0) pruningRecorded = true;
+    assert(pruningRecorded, "The pruning rationale was not retained");
+
     auto reopen = parseJSON(forward.toString());
     reopen["plan"][0]["status"] = "pending";
     assert(planUpdateError(s, reopen.toString(), completed).length);
@@ -120,7 +138,8 @@ int main()
 
     auto reorder = parseJSON(initial);
     auto first = reorder["plan"][0]; reorder["plan"][0] = reorder["plan"][1]; reorder["plan"][1] = first;
-    assert(planUpdateError(s, reorder.toString(), s.taskSteps).length);
+    assert(!planUpdateError(s, reorder.toString(), s.taskSteps).length,
+        "Ordinary reordering demanded a ceremonial explanation");
     reorder["explanation"] = "Dependency inspection established a better order.";
     assert(!planUpdateError(s, reorder.toString(), s.taskSteps).length);
     auto duplicate = parseJSON(initial);
@@ -131,6 +150,6 @@ int main()
     replacedId["plan"][0]["id"] = "different-a";
     replacedId["explanation"] = "Changed the ID without changing the outcome.";
     assert(planUpdateError(s, replacedId.toString(), s.taskSteps).indexOf("unfinished outcome omitted") >= 0);
-    writeln("PASS justified additions/reordering, stable IDs, explained detours and return points, ordinary advancement, explicit reopening, acceptance integrity, duplicates and durable rationale");
+    writeln("PASS live-plan additions/reordering, explained pruning, stable IDs, explained detours and return points, ordinary advancement, explicit reopening, acceptance integrity, duplicates and durable rationale");
     return 0;
 }
