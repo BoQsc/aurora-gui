@@ -49,6 +49,28 @@ int main()
     assert(requestIntent("Why did it stop? Fix it.") == RequestIntent.implementation);
     assert(requestIntent("Analyze why it failed; do not edit files.") == RequestIntent.analysis);
 
+    // A why-question about the agent's own authorization asks for an account of
+    // what happened. Treating it as a repair authorized a destructive rollback
+    // of work the user had already requested and received.
+    const accountability = "So why implementation began without approval or question";
+    assert(requestIntent(accountability) == RequestIntent.clarification);
+    assert(answerOnlyRequest(accountability));
+    assert(!diagnosticFollowUpRequest(accountability),
+        "an accountability question would resume stopped desktop input");
+    ChatSession accountabilitySession;
+    request(accountabilitySession, "Add splitpane and progressbar.");
+    accountabilitySession.taskSteps =
+        [TaskStep("Add splitpane", "pending", "splitpane")];
+    request(accountabilitySession, accountability);
+    const accountabilityPrompt = durableTaskPrompt(accountabilitySession, true);
+    assert(accountabilityPrompt.indexOf("asks for an explanation") >= 0, accountabilityPrompt);
+    assert(accountabilityPrompt.indexOf("resolve it with the correct change") < 0,
+        "an accountability question still authorized a repair");
+    const inactivity = "so why nothing is being done by you now";
+    assert(requestIntent(inactivity) == RequestIntent.clarification,
+        "an inactivity question authorized another repair");
+    assert(answerOnlyRequest(inactivity));
+
     // A review phrased as a question still asks for inspection work. It must
     // not reach the tool-free final-answer handoff, which previously left the
     // model no channel for its folder lookup and made it print XML call text.

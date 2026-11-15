@@ -3,6 +3,7 @@ module auroraopencode.executioncontrol;
 import auroraopencode.core : ChatSession, activeMessagePath;
 import auroraopencode.taskflow : taskEvidenceIndex, supportedStep, taskHasActionEvidence, missingVerificationInput;
 import auroraopencode.taskcontext : taskExcerpt;
+import auroraopencode.planmode : planModeBlockedTool, planModeProposalPending;
 import std.json : JSONValue, JSONType, parseJSON;
 import std.string : startsWith, indexOf, strip;
 import std.digest.sha : sha256Of;
@@ -86,7 +87,10 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
         {
             ++state.tools;
             if (message.workspaceChanged) ++state.effects;
-            if (message.failed) state.failure = taskExcerpt(message.content, 800);
+            // A Plan-mode refusal is the user's gate working, not a failed
+            // attempt to recover; do not feed it back as an observed obstacle.
+            if (message.failed && !planModeBlockedTool(message))
+                state.failure = taskExcerpt(message.content, 800);
             // Successful checks resolve prior checker failures. Reads and plan
             // edits cannot clear an actual failed execution.
             else if (message.verificationCheck.length) state.failure = "";
@@ -133,6 +137,7 @@ string executionToolRecovery(const ref ChatSession session)
         if ((message.role == "user" && !message.internal) ||
             (message.internal && message.content.startsWith("Execution obstacle: "))) break;
         if (message.role != "tool") continue;
+        if (planModeBlockedTool(message)) continue;
         if (message.verificationCheck.length && !message.failed) break;
         if (message.failed && ++failures[message.toolName] >= 3)
             return "Execution obstacle: " ~ taskExcerpt(message.content, 900) ~
@@ -181,7 +186,8 @@ bool executionShouldContinue(const ref ChatSession session, bool toolsEnabled, c
     import auroraopencode.taskflow : taskInvestigation;
     import auroraopencode.contextpolicy : latestActualUserRequest;
     import auroraopencode.requestintent : answerOnlyRequest, requestIntent, RequestIntent, actionApprovalRequest;
-    if (!toolsEnabled || taskAwaitingInput(session) || taskInvestigation(session) ||
+    if (!toolsEnabled || planModeProposalPending(session) ||
+        taskAwaitingInput(session) || taskInvestigation(session) ||
         (session.contract.currentIntent == "analysis" && session.contract.intent == "analysis")) return false;
     const request = latestActualUserRequest(session);
     if (answerOnlyRequest(request) ||

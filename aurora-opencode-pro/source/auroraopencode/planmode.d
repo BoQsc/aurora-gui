@@ -13,8 +13,9 @@ module auroraopencode.planmode;
 
 import std.algorithm.searching : canFind;
 import std.process : environment;
-import std.string : strip, toLower;
+import std.string : startsWith, strip, toLower;
 
+import auroraopencode.core : ChatMessage, ChatSession, activeMessagePath;
 import auroraopencode.nativetooldefs : nativeOperationReadOnly;
 
 /// Only these values enable the mode, so an unset variable (the common case)
@@ -114,6 +115,52 @@ public string planModeRefusal(string name)
     return "Plan mode is on: nothing is changed yet, so `" ~ name ~
         "` was not run. Record the intended steps with update_plan and stop; " ~
         "the user will approve or adjust the plan.";
+}
+
+/// The refusal is a proposal checkpoint, not a failed attempt to retry. Kept as
+/// a prefix so callers can classify a blocked call without knowing the tool.
+private enum planModeRefusalPrefix =
+    "Plan mode is on: nothing is changed yet, so `";
+
+/// True when this tool result is the Plan-mode gate refusing a mutation.
+public bool planModeBlockedTool(const ref ChatMessage message)
+{
+    return message.role == "tool" && message.failed &&
+        message.content.startsWith(planModeRefusalPrefix);
+}
+
+/// True when the agent has proposed a plan under Plan mode, a mutation was
+/// refused, and the agent has stopped to summarize. This is the point where the
+/// turn must wait for the user's approval: treating the refusal as a retryable
+/// execution failure made the agent repeat the same blocked call and flood the
+/// conversation with recovery rounds.
+public bool planModeProposalPending(const ref ChatSession session)
+{
+    if (!session.planMode || !experimentalPlanModeEnabled()) return false;
+    bool proposed;
+    foreach (step; session.taskSteps)
+        if (step.status != "completed") { proposed = true; break; }
+    if (!proposed)
+        foreach (plan; session.nestedPlans)
+        {
+            foreach (step; plan.steps)
+                if (step.status != "completed") { proposed = true; break; }
+            if (proposed) break;
+        }
+    if (!proposed) return false;
+    bool blocked, sawAssistant, assistantUsedTools;
+    foreach_reverse (index; activeMessagePath(session))
+    {
+        const ref message = session.messages[index];
+        if (message.role == "user" && !message.internal) break;
+        if (planModeBlockedTool(message)) blocked = true;
+        if (!sawAssistant && message.role == "assistant" && !message.internal)
+        {
+            sawAssistant = true;
+            assistantUsedTools = message.toolCalls.length > 0;
+        }
+    }
+    return blocked && sawAssistant && !assistantUsedTools;
 }
 
 /// The system-prompt block appended only while tracked plan mode is on. It

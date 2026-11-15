@@ -5,10 +5,14 @@ module plan_mode_contracts;
 
 import auroraopencode.conversationcodec : decodeSessionMetadata;
 import auroraopencode.conversationencode : sessionMetaToJson;
-import auroraopencode.core : ChatSession, OpenCodeToolCall, Settings;
+import auroraopencode.core : ChatMessage, ChatSession, OpenCodeToolCall, Settings, TaskStep;
+import auroraopencode.executioncontrol : ExecutionState, executionShouldContinue,
+    executionState, executionToolRecovery;
 import auroraopencode.planmode : experimentalPlanModeEnabled,
-    planBlocksTool, planModePromptBlock, planModeRefusal, setPlanModeSetting;
+    planBlocksTool, planModePromptBlock, planModeProposalPending,
+    planModeRefusal, setPlanModeSetting;
 import auroraopencode.tools : ChangeContext, ToolExecution, executeTool;
+import auroraopencode.turnpolicy : TurnAction, TurnPolicy, decideTurn;
 
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
@@ -17,6 +21,19 @@ import std.file : exists, mkdirRecurse, readText, remove, rmdirRecurse, tempDir;
 import std.json : JSONValue;
 import std.path : buildPath;
 import std.string : indexOf, startsWith;
+
+void appendMessage(ref ChatSession session, string id, string role, string content,
+    bool failed = false)
+{
+    ChatMessage message;
+    message.id = id;
+    message.parentId = session.activeLeafId;
+    message.role = role;
+    message.content = content;
+    message.failed = failed;
+    session.messages ~= message;
+    session.activeLeafId = id;
+}
 
 int main()
 {
@@ -118,6 +135,51 @@ int main()
     assert(!wrote.failed, wrote.output);
     assert(exists(target));
     assert(readText(target) == "plan mode ran this");
+
+    // A refused mutation is the proposal checkpoint. Once the agent has
+    // stopped to summarize, the turn waits for approval instead of feeding the
+    // gate refusal back as a failed attempt to recover.
+    ChatSession proposal;
+    proposal.id = "plan-proposal";
+    proposal.planMode = true;
+    proposal.taskSteps = [TaskStep("Add splitpane", "pending", "splitpane")];
+    appendMessage(proposal, "proposal-user", "user", "Add splitpane and progressbar.");
+    appendMessage(proposal, "proposal-refused", "tool", planModeRefusal("write"), true);
+    appendMessage(proposal, "proposal-reply", "assistant",
+        "The plan is recorded; approve it to continue.");
+    assert(planModeProposalPending(proposal));
+    assert(executionToolRecovery(proposal).length == 0,
+        "a Plan-mode refusal was counted as a repeated execution failure");
+    const ExecutionState proposalState = executionState(proposal);
+    assert(!executionShouldContinue(proposal, true, proposalState),
+        "a stopped Plan proposal started execution recovery");
+    TurnPolicy proposalPolicy;
+    proposalPolicy.toolsEnabled = true;
+    const proposalDecision = decideTurn(proposal, proposalPolicy);
+    assert(proposalDecision.action == TurnAction.settle, "a Plan proposal did not settle");
+    assert(proposalDecision.taskStatus == "waiting_input", proposalDecision.taskStatus);
+
+    // While the model is still calling tools in the same round, the refusal is
+    // not yet a proposal the user can approve.
+    ChatSession inRound;
+    inRound.id = "plan-proposal-in-round";
+    inRound.planMode = true;
+    inRound.taskSteps = [TaskStep("Add splitpane", "pending", "splitpane")];
+    appendMessage(inRound, "round-user", "user", "Add splitpane and progressbar.");
+    appendMessage(inRound, "round-refused", "tool", planModeRefusal("write"), true);
+    ChatMessage roundReply;
+    roundReply.id = "round-assistant";
+    roundReply.parentId = inRound.activeLeafId;
+    roundReply.role = "assistant";
+    roundReply.toolCalls = [OpenCodeToolCall("round-next", "update_plan", `{}`)];
+    inRound.messages ~= roundReply;
+    inRound.activeLeafId = roundReply.id;
+    assert(!planModeProposalPending(inRound),
+        "an in-progress tool round was treated as a finished proposal");
+
+    // Approval lifts the gate, so the same recorded plan is no longer a pause.
+    proposal.planMode = false;
+    assert(!planModeProposalPending(proposal));
 
     // Turning the experimental switch off removes the control and the gate.
     setPlanModeSetting(false);

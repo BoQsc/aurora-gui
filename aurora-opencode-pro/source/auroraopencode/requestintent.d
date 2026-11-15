@@ -43,6 +43,24 @@ private bool explicitExplanationOnly(string text)
     return false;
 }
 
+/// A why-question about the agent's own authorization asks for an account of
+/// what happened, not for a repair. Treating it as a diagnosis let the agent
+/// "resolve" the answer by rolling back work the user had already requested and
+/// received, so this stays an answer-only question.
+bool processAccountabilityQuestion(string text)
+{
+    import std.regex : matchFirst;
+    const value = text.toLower.split().join(" ");
+    if (matchFirst(value,
+        `\bwhy\b.*\b(?:without|before)\b.*\b(?:approval|permission|asking|a question|consent)\b`))
+        return true;
+    if (matchFirst(value, `\bwhy (?:nothing|no work|no action|no progress)\b`) ||
+        matchFirst(value, `\bwhy (?:is|are|was|were) (?:you|we)\b.*\b(?:doing|working|acting|responding)\b`))
+        return true;
+    return cast(bool) matchFirst(value,
+        `\bwhy (?:did|was|were) (?:you|it|implementation|the implementation|the agent|this work)\b.*\b(?:start|begin|began|implement|implemented|change|changed|edit|edited|write|wrote)\b`);
+}
+
 private bool requestedVerb(const(string)[] words, const(string)[] raw, size_t i)
 {
     // A modal question about an approach is advice, not a command. Restrict
@@ -133,6 +151,9 @@ RequestIntent requestIntent(string text)
     if (correctiveActionRequest(text)) return RequestIntent.implementation;
     if (clarification) return RequestIntent.clarification;
     if (explicitExplanationOnly(text)) return RequestIntent.clarification;
+    // An account of the agent's own conduct is not authorization to undo the
+    // delivered work; only an explicit repair request above authorizes a change.
+    if (processAccountabilityQuestion(text)) return RequestIntent.clarification;
     // A question about a cause authorizes investigation and correction. It is
     // not a request to stop at an explanation; only an explicit explain-only
     // instruction above remains answer-only.

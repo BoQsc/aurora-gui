@@ -12,6 +12,7 @@ import auroraopencode.completionhandoff : completionHandoffNeeded, completionHan
 import auroraopencode.orchestrator : experimentalOrchestratorIsRouter, experimentalOrchestratorAgentName;
 import auroraopencode.contextpolicy : latestActualUserRequest;
 import auroraopencode.requestintent : workRestrictionRequest;
+import auroraopencode.planmode : planModeProposalPending;
 import std.string : strip;
 
 enum TurnAction { settle, failed, interrupted, applySteering, request, waitInput, waitChildren, reportChild }
@@ -90,6 +91,19 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         if (active) result.taskStatus = "active";
         result.guidance = guidance;
         result.status = status;
+    }
+    // experimental: planmode - the gate already refused the mutation and the
+    // agent stopped to present the plan. Wait for the user's approval instead
+    // of starting execution recovery for what the gate intentionally blocked.
+    if (settled && planModeProposalPending(session))
+    {
+        result.turnStatus = "completed";
+        result.taskStatus = "waiting_input";
+        result.status = "Plan proposed · approve or adjust it to continue.";
+        result.clearDiagnostic = true;
+        if (goalActive(session) && !session.queuedFollowUps.length)
+            result.settleGoal = "paused";
+        return result;
     }
     // A handoff saved by an older build is completed from recorded evidence;
     // new summary rounds and permission-repair rounds are never started. Work

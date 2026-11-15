@@ -60,6 +60,16 @@ version (Windows)
 /// checked as `args[1]` by `main`, before anything else runs.
 enum string rebuildHelperFlag = "--aurora-rebuild-helper";
 
+/// A detached helper must not hand its inherited standard handles to children:
+/// when the app was relaunched without a console those handles can be invalid,
+/// and Python then refuses to start (0x80070032) while DMD may fault. NUL gives
+/// every child a valid, inert stream.
+private File nullStream(string mode)
+{
+    try return File("NUL", mode);
+    catch (Exception) return File.init;
+}
+
 // ===========================================================================
 // Ledger: rebuildstate.json and the sibling build artifacts
 // ===========================================================================
@@ -725,7 +735,7 @@ bool launchRebuild(in RebuildPlan plan, string reason = "")
     if (handoffDirectory.length && !writeSupervisorHandoff(handoffDirectory, plan.exePath, plan.waitPid))
         return false;
     try
-        spawnProcess(argv, stdin, stdout, stderr, null,
+        spawnProcess(argv, nullStream("r"), nullStream("w"), nullStream("w"), null,
             Config.detached | Config.suppressConsole);
     catch (Exception)
     {
@@ -1454,12 +1464,16 @@ private bool runDub(in HelperJob job, string[] argv, string targetExe,
     int code;
     try
     {
+        File devNullOutput;
+        if (!haveSink) devNullOutput = nullStream("w");
         // `dub` is a console program and this agent runs without a console, so
         // a bare spawn would flash a console window for the whole build.
         // `suppressConsole` keeps it (and its `cmd /c` post-build steps)
         // invisible while stdout/stderr still land in the capture file.
         auto pid = spawnProcess(argv,
-            stdin, haveSink ? sink : stdout, haveSink ? sink : stderr, null,
+            nullStream("r"),
+            haveSink ? sink : (devNullOutput.isOpen ? devNullOutput : stdout),
+            haveSink ? sink : (devNullOutput.isOpen ? devNullOutput : stderr), null,
             Config.suppressConsole, job.packageDir);
         code = wait(pid);
     }
@@ -1767,7 +1781,8 @@ int runSupervisedChild(string exePath, string packageDir, string logPath, out bo
     closeProgressWindow();
     try
     {
-        auto pid = spawnProcess([exePath], stdin, stdout, stderr, null,
+        auto pid = spawnProcess([exePath], nullStream("r"), nullStream("w"),
+            nullStream("w"), null,
             Config.suppressConsole,
             packageDir.length > 0 ? packageDir : null);
         const childPid = pid.processID;
