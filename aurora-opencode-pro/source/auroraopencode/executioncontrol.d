@@ -1,15 +1,24 @@
 module auroraopencode.executioncontrol;
 
-import auroraopencode.core : ChatSession, activeMessagePath;
-import auroraopencode.taskflow : taskEvidenceIndex, supportedStep, taskHasActionEvidence, missingVerificationInput;
+import auroraopencode.core : ChatMessage, ChatSession, activeMessagePath;
+import auroraopencode.taskflow : executionDiagnosisMarker, taskEvidenceIndex, supportedStep,
+    taskHasActionEvidence, missingVerificationInput;
 import auroraopencode.taskcontext : taskExcerpt;
 import auroraopencode.planmode : planModeBlockedTool, planModeProposalPending;
+import auroraopencode.tools : diagnosticRefusalPrefix;
 import std.json : JSONValue, JSONType, parseJSON;
 import std.string : startsWith, indexOf, strip;
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 
 enum executionRecoveryMarker = "Execution recovery: ";
+
+/// The read-only gate's refusal is the gate working, not an execution failure.
+private bool diagnosticBlockedTool(const ref ChatMessage message)
+{
+    return message.role == "tool" && message.failed &&
+        message.content.startsWith(diagnosticRefusalPrefix);
+}
 
 /// One outcome ledger for desktop and headless execution. Tool volume, novel
 /// searches, edits and rewritten answers are deliberately not completion facts.
@@ -89,7 +98,8 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
             if (message.workspaceChanged) ++state.effects;
             // A Plan-mode refusal is the user's gate working, not a failed
             // attempt to recover; do not feed it back as an observed obstacle.
-            if (message.failed && !planModeBlockedTool(message))
+            if (message.failed && !planModeBlockedTool(message) &&
+                !diagnosticBlockedTool(message))
                 state.failure = taskExcerpt(message.content, 800);
             // Successful checks resolve prior checker failures. Reads and plan
             // edits cannot clear an actual failed execution.
@@ -107,6 +117,14 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
                 if (message.failed) failedChecks[key] = message.toolCallId.length ? message.toolCallId : message.id;
                 else failedChecks.remove(key);
             }
+        }
+        // A read-only review supplies new information; the main model gets a
+        // fresh recovery budget instead of inheriting the attempts that prompted
+        // the review.
+        if (message.internal && message.content.startsWith(executionDiagnosisMarker))
+        {
+            state.attempts = 0;
+            continue;
         }
         if (!message.internal || !message.content.startsWith(executionRecoveryMarker)) continue;
         try
@@ -137,7 +155,7 @@ string executionToolRecovery(const ref ChatSession session)
         if ((message.role == "user" && !message.internal) ||
             (message.internal && message.content.startsWith("Execution obstacle: "))) break;
         if (message.role != "tool") continue;
-        if (planModeBlockedTool(message)) continue;
+        if (planModeBlockedTool(message) || diagnosticBlockedTool(message)) continue;
         if (message.verificationCheck.length && !message.failed) break;
         if (message.failed && ++failures[message.toolName] >= 3)
             return "Execution obstacle: " ~ taskExcerpt(message.content, 900) ~

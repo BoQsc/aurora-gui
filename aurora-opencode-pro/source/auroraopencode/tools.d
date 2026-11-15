@@ -1089,6 +1089,10 @@ public struct ToolExecution
     ToolState state;
 }
 
+/// A diagnostic review is read-only by construction; its refusal is a gate
+/// result, not a failed execution attempt to recover from.
+public enum diagnosticRefusalPrefix = "Diagnostic review is read-only. ";
+
 public __gshared string delegate() toolStatusHandler;
 
 private OpenCodeToolDef toolStatusDefinition()

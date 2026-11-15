@@ -21961,7 +21961,8 @@ private void pollButtonSuggestionRequest()
         policy.strictPlan = experimentalStrictPlanEnabled();
         policy.orchestratorEnabled = experimentalOrchestratorEnabled();
         policy.pendingChildren = hasPendingSubagents(_sessions[sessionIndex].id);
-        policy.diagnosticAvailable = _settings.diagnosticModel.length > 0;
+        policy.diagnosticAvailable = _settings.diagnosticModel.length > 0 &&
+            !_execution.diagnosticUsed;
         policy.speakerToolRoundsBase = _speakerToolRoundsBase;
         policy.toolRounds = _toolRounds;
         return policy;
@@ -21972,6 +21973,25 @@ private void pollButtonSuggestionRequest()
         const sessionIndex = turnOwnerSessionIndex();
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
         auto session = &_sessions[sessionIndex];
+        if (_execution.diagnosticActive && _pendingToolResults == 0 &&
+            _pendingToolCalls.length == 0)
+        {
+            _execution.diagnosticActive = false;
+            _execution.diagnosticRequestsRemaining = 0;
+            ChatMessage note;
+            note.role = "user"; note.internal = true; note.time = currentTimestamp();
+            note.content = executionDiagnosisMarker ~
+                "Independent read-only review has ended. The main model must assess its recorded findings and apply the next useful fix or verification. A diagnosis is not task completion.";
+            appendMessage(*session, note);
+            session.turnStatus = "running";
+            session.taskStatus = "active";
+            publishThreadUpdated(*session);
+            markDirty();
+            setTurnActiveMarker(true, session.id);
+            setTurnInFlight(true);
+            startChatRequest(sessionIndex, false);
+            return;
+        }
         const decision = decideTurn(*session, turnPolicy(sessionIndex, cancelled));
         if (decision.action == TurnAction.failed)
         {
@@ -21997,7 +22017,10 @@ private void pollButtonSuggestionRequest()
         if (decision.clearDiagnostic)
         {
             _execution.diagnosticActive = false;
-            _execution.diagnosticRequestsRemaining = decision.diagnosticRequests;
+            // A reviewer that touches a blocked tool must get another round to
+            // report what it found, not end on the read-only rejection itself.
+            _execution.diagnosticRequestsRemaining =
+                decision.diagnosticRequests > 0 ? 4 : 0;
         }
         if (decision.clearBlocker) session.contract.blocker = "";
         if (decision.advanceGoal) ++session.goalTurns;
@@ -22069,6 +22092,10 @@ private void pollButtonSuggestionRequest()
     {
         const sessionIndex = turnOwnerSessionIndex();
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return false;
+        // The reviewer's report is complete; the main model gets the next
+        // request, so do not run the reviewer through the task decision.
+        if (_execution.diagnosticActive && _pendingToolResults == 0 &&
+            _pendingToolCalls.length == 0) return false;
         return decideTurn(_sessions[sessionIndex], turnPolicy(sessionIndex, cancelled, finishReason)).continues();
     }
 
@@ -23352,7 +23379,7 @@ private void pollButtonSuggestionRequest()
                 {
                     ChatMessage note; note.role = "user"; note.internal = true; note.content = obstacle;
                     appendMessage(*session, note);
-                    if (_settings.diagnosticModel.length) _execution.diagnosticRequestsRemaining = 1;
+                    if (_settings.diagnosticModel.length) _execution.diagnosticRequestsRemaining = 4;
                 }
                 if (!obstacle.length && !_execution.diagnosticActive) queueStalePlanGuidance(*session);
                 _execution.toolContinuationPending = true;
@@ -25554,6 +25581,7 @@ private void pollButtonSuggestionRequest()
             _turnCancelled = false;
             _execution.diagnosticRequestsRemaining = 0;
             _execution.diagnosticActive = false;
+            _execution.diagnosticUsed = false;
         }
         auto session = &_sessions[sessionIndex];
         if (_pendingDeveloperNote.length > 0 &&
@@ -25613,13 +25641,16 @@ private void pollButtonSuggestionRequest()
             if (modelOverride.length > 0)
                 orchestratorModel = resolveAvailableModel(modelOverride);
         }
-        const summaryOnly = !goalActive(*session) && completionHandoffPending(*session);
-        const diagnosticReview = !summaryOnly && _execution.diagnosticRequestsRemaining > 0 &&
-            _settings.diagnosticModel.length > 0;
+        const summaryOnly = !goalActive(*session) && !hasIncompleteTaskSteps(*session) &&
+            completionHandoffPending(*session);
+        const diagnosticReview = !summaryOnly && _settings.diagnosticModel.length > 0 &&
+            _execution.diagnosticRequestsRemaining > 0 &&
+            (_execution.diagnosticActive || !_execution.diagnosticUsed);
         _execution.diagnosticActive = diagnosticReview;
         if (diagnosticReview)
         {
             orchestratorModel = _settings.diagnosticModel;
+            _execution.diagnosticUsed = true;
             --_execution.diagnosticRequestsRemaining;
             updateStatus("Reviewing the stalled diagnosis with " ~ orchestratorModel ~ "…");
         }
@@ -25631,7 +25662,7 @@ private void pollButtonSuggestionRequest()
         policy.nestedPlans = _settings.experimentalNestedPlans;
         policy.orchestratorEnabled = experimentalOrchestratorEnabled();
         policy.orchestratorRouter = orchestratorRouter;
-        policy.compactionEnabled = diagnosticReview || contextCompactionForModel(_settings,
+        policy.compactionEnabled = contextCompactionForModel(_settings,
             providerForSession(sessionIndex), session.model);
         policy.forceCompact = _forceCompactNextRequest;
         _forceCompactNextRequest = false;

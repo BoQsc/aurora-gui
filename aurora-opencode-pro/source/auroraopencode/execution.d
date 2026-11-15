@@ -55,6 +55,7 @@ public class ThreadEngine
     string threadId;
     int diagnosticRequestsRemaining;
     bool diagnosticActive;
+    bool diagnosticUsed;
     OpenCodeClient client;
     // experimental: orchestrator - one extra client per participant, so each
     // agent talks to the gateway on its own connection/route exactly like a

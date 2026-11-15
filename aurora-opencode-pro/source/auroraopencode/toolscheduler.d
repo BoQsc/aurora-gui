@@ -4,7 +4,8 @@ import auroraopencode.core : OpenCodeToolCall;
 import auroraopencode.nativetooldefs : nativeOperationReadOnly;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeEventKind;
 import auroraopencode.tools : ToolCancellation, ToolExecution, ChangeContext, executeTool,
-    toolStatusHandler, developerToolSourceDirectory, installDeveloperToolSource, restoreDeveloperToolSource;
+    toolStatusHandler, developerToolSourceDirectory, installDeveloperToolSource, restoreDeveloperToolSource,
+    diagnosticRefusalPrefix;
 import std.json : JSONValue, JSONType;
 import std.string : startsWith;
 import auroraopencode.workscheduler : WorkItem, WorkScheduler, WorkAdmission;
@@ -293,7 +294,8 @@ private final class ToolJob : WorkItem
         import auroraopencode.taskpolicy : diagnosticToolAllowed;
         if (batch.context.diagnosticReadOnly && !diagnosticToolAllowed(call.name))
         {
-            result = ToolExecution(call.name, "Diagnostic review is read-only. Report the diagnosis so the task's main model can apply it.", true);
+            result = ToolExecution(call.name, diagnosticRefusalPrefix ~
+                "Report the diagnosis so the task's main model can apply it.", true);
             changed = false;
             return;
         }

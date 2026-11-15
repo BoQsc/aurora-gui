@@ -48,9 +48,9 @@ int main(string[] arguments)
     const loaded = MonoTime.currTime + 5.seconds;
     while (root.startupPendingForTesting() && MonoTime.currTime < loaded) pump();
     root.newChatForTesting();
-    root.setTaskStateForTesting("Fix and verify the helper", "active", "required");
+    root.setTaskStateForTesting("Verify the helper", "active", "required");
     root.applyPlanForTesting(`{"plan":[{"step":"Verify the helper","status":"in_progress"}]}`);
-    root.setInputForTesting("DIAGNOSE: Fix and verify the helper. Source: " ~ source ~ "\nRECIPE: " ~ recipePath);
+    root.setInputForTesting("DIAGNOSE: Verify the helper. Source: " ~ source ~ "\nRECIPE: " ~ recipePath);
     root.sendForTesting();
     const done = MonoTime.currTime + 25.seconds;
     while (root.turnBusyForTesting() && MonoTime.currTime < done) pump();
