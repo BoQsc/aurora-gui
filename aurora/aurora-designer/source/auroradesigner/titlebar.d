@@ -26,7 +26,9 @@ final class DesignerTitleBar : FramelessWindowTitleBar
         setCaptionButtonWidth(36);
         setTitleFontSize(12);
         setDarkMode(true);
-
+        layoutHints().preferredHeight = 28;
+        layoutHints().minHeight = 28;
+        layoutHints().fillCrossAxis = true;
     }
 
     /// Re-apply the designer palette (dark by default).

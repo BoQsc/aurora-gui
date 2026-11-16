@@ -10,7 +10,7 @@ design-time tool.
 |---|---|
 | `aurora-d/` | The GUI library: Vulkan and software rendering, the retained compositor, widgets, and the pure-D Unicode/OpenType text engine. It is the foundation used by the host, not the default application entry point. Semantic version `2.0.0`; the folder name carries no version. |
 | `aurora-standard/` | The frozen Unicode 17.0.0 text standard used by the host. |
-| `aurora-designer/` | The existing visual UI designer and design-time tool. It depends on `aurora-d`; it is not a template for new applications. |
+| `aurora-designer/` | The existing visual UI designer and design-time tool, with a hierarchy-aware canvas, Layers tree, inspector hierarchy controls, and a visible frameless titlebar. It depends on `aurora-d`; it is not a template for new applications. |
 | `aurora-host/` | The primary GUI application path: retained-scene host, runner, and live scene editor. It stays a separate executable and remains a leaf. |
 
 Aurora Designer is the first existing application moved into v2. The remaining

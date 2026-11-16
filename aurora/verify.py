@@ -55,10 +55,16 @@ def main() -> int:
     run([DUB, "run", "--config=text-system-test", f"--compiler={COMPILER}"], LIBRARY)
 
     # ---- Aurora Designer ----
-    run([DUB, "build", "--config=default", f"--compiler={COMPILER}"], DESIGNER)
+    designer_build = "build/verify"
+    run([DUB, "build", "--config=default", f"--compiler={COMPILER}",
+         f"--dest={designer_build}"], DESIGNER)
     smoke = DESIGNER / "build" / "headless-smoke" / "designer-smoke.ppm"
     smoke.unlink(missing_ok=True)
-    run([DUB, "run", "--config=headless-smoke", f"--compiler={COMPILER}"], DESIGNER)
+    run([DUB, "build", "--config=headless-smoke", f"--compiler={COMPILER}",
+         f"--dest={designer_build}"], DESIGNER)
+    smoke_exe = DESIGNER / designer_build / (
+        "aurora-designer-headless-smoke" + (".exe" if os.name == "nt" else ""))
+    run([smoke_exe], DESIGNER)
     if not smoke.is_file():
         raise RuntimeError("designer headless smoke did not write its screenshot")
     smoke_data = smoke.read_bytes()

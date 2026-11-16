@@ -25,10 +25,21 @@ private int runScreenshot(string outputPath)
     window.setRoot(root);
     auto driver = new UiTestDriver(window);
     driver.resize(Size(options.width, options.height));
-    // Add a few representative widgets so the screenshot shows a design.
+    // Build a small nested design so the screenshot shows hierarchy depth.
     root.selectNodeForTesting(root.document().root);
-    root.addNodeForTesting(NodeKind.button);
-    root.addNodeForTesting(NodeKind.label);
+    const panel = root.addNodeForTesting(NodeKind.panel);
+    root.designDocument().nodes[panel].x = 20;
+    root.designDocument().nodes[panel].y = 20;
+    root.designDocument().nodes[panel].width = 280;
+    root.designDocument().nodes[panel].height = 150;
+    root.selectNodeForTesting(panel);
+    const button = root.addNodeForTesting(NodeKind.button);
+    root.designDocument().nodes[button].x = 70;
+    root.designDocument().nodes[button].y = 40;
+    const label = root.addNodeForTesting(NodeKind.label);
+    root.designDocument().nodes[label].x = 70;
+    root.designDocument().nodes[label].y = 95;
+    root.selectNodeForTesting(label);
     driver.paint();
     window.saveScreenshot(outputPath);
     window.close();

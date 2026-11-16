@@ -31,6 +31,10 @@ final class DesignerRoot : VBox
     private DesignCanvas _canvas;
     private ScrollView _paletteScroll;
     private VBox _palette;
+    private Label _paletteTargetLabel;
+    private ScrollView _outlineScroll;
+    private VBox _outline;
+    private OutlineRow[] _outlineRows;
     private VBox _inspector;
     private ScrollView _inspectorScroll;
     private PopupOverlay _activePopup;
@@ -55,6 +59,7 @@ final class DesignerRoot : VBox
     private bool _dirty;
     private bool _dark = true;
     private string _projectPath;
+    private bool[string] _collapsed;
 
     // History (serialized document snapshots).
     private string[] _undoStack;
@@ -71,10 +76,13 @@ final class DesignerRoot : VBox
         buildToolbar();
         buildBody();
         buildWindowChrome();
-        addPaletteNode(NodeKind.window);
-        commitHistory();
+        const root = _document.addNode(NodeKind.window, 0, 0);
+        _document.root = root;
+        _selected = root;
+        _undoStack = [serializeDocument(_document)];
+        _redoStack = null;
         setDirty(false);
-        updateTitle();
+        refreshAll();
     }
 
     // ------------------------------------------------------------------
@@ -96,7 +104,7 @@ final class DesignerRoot : VBox
     {
         return _document;
     }
-    int selectedIndex() @safe pure nothrow @nogc { return _selected; }
+    int selectedIndex() const @safe pure nothrow @nogc { return _selected; }
     bool dirty() @safe pure nothrow @nogc { return _dirty; }
     string projectPath() const @safe pure nothrow @nogc { return _projectPath; }
     string codeForTesting()
@@ -118,8 +126,7 @@ final class DesignerRoot : VBox
         commitHistory();
         const index = addNodeToDocument(kind);
         selectNode(index);
-        rebuildInspector();
-        _canvas.invalidate();
+        refreshAll();
         return index;
     }
 
@@ -231,20 +238,26 @@ final class DesignerRoot : VBox
         auto body = add(new SplitPane(buildPalette(), buildCenter(),
             Orientation.horizontal));
         body.setDividerSize(5);
-        body.setRatio(0.16);
+        body.setRatio(0.17);
         body.setId("designer-body");
     }
 
     private Widget buildPalette()
     {
         auto panel = new VBox(4, Insets(6));
-        panel.layoutHints().minWidth = 148;
-        panel.layoutHints().preferredWidth = 160;
+        panel.layoutHints().minWidth = 180;
+        panel.layoutHints().preferredWidth = 200;
+        panel.layoutHints().minHeight = 220;
 
         auto header = new Label("Palette");
         header.setScale(1);
         header.setPixelSize(12);
         panel.add(header);
+
+        _paletteTargetLabel = new Label("Adds to: window");
+        _paletteTargetLabel.setScale(1);
+        _paletteTargetLabel.setPixelSize(11);
+        panel.add(_paletteTargetLabel);
 
         _palette = new VBox(2);
         _paletteScroll = new ScrollView(_palette);
@@ -264,6 +277,33 @@ final class DesignerRoot : VBox
         addPaletteEntry("List View", NodeKind.listview);
         addPaletteEntry("Image", NodeKind.image);
 
+        auto side = new SplitPane(panel, buildLayers(), Orientation.vertical);
+        side.setDividerSize(5);
+        side.setRatio(0.56);
+        side.setId("designer-sidebar");
+        return side;
+    }
+
+    private Widget buildLayers()
+    {
+        auto panel = new VBox(4, Insets(6));
+        panel.layoutHints().minHeight = 160;
+        auto header = new HBox(4);
+        auto title = new Label("Layers");
+        title.setScale(1);
+        title.setPixelSize(12);
+        title.layoutHints().flex = 1.0;
+        header.add(title);
+        auto hint = new Label("right-click");
+        hint.setScale(1);
+        hint.setPixelSize(10);
+        header.add(hint);
+        panel.add(header);
+
+        _outline = new VBox(1);
+        _outlineScroll = new ScrollView(_outline);
+        _outlineScroll.layoutHints().flex = 1.0;
+        panel.add(_outlineScroll);
         return panel;
     }
 
@@ -282,7 +322,7 @@ final class DesignerRoot : VBox
         auto center = new SplitPane(_canvas = new DesignCanvas(this),
             buildInspector(), Orientation.vertical);
         center.setDividerSize(5);
-        center.setRatio(0.76);
+        center.setRatio(0.80);
         center.setId("designer-center");
         return center;
     }
@@ -323,6 +363,7 @@ final class DesignerRoot : VBox
         if (_undoStack.length > HistoryLimit)
             _undoStack = _undoStack[$ - HistoryLimit .. $];
         _redoStack.length = 0;
+        updateHistoryButtons();
     }
 
     private void undo()
@@ -350,46 +391,51 @@ final class DesignerRoot : VBox
         refreshAll();
     }
 
-    /// Add a node under the window root at the artboard center.
-    private int addNodeToDocument(NodeKind kind)
+    /// Container that should receive a newly added node.
+    private int addTargetParent(NodeKind kind)
     {
-        int parent = _document.root;
-        if (parent < 0)
+        if (_document.findNode(_document.root) < 0) return -1;
+        if (kind == NodeKind.window) return _document.root;
+        if (_selected >= 0)
         {
-            if (kind != NodeKind.window)
-            {
-                parent = _document.addNode(NodeKind.window, 0, 0);
-                _document.root = parent;
-            }
-            else
-            {
-                parent = _document.addNode(NodeKind.window, 0, 0);
-                _document.root = parent;
-                return parent;
-            }
+            const selected = _document.nodes[_selected];
+            if (_document.canHostChildren(selected.kind)) return _selected;
+            const parent = _document.parentOf(_selected);
+            if (parent >= 0) return parent;
         }
-        const w = defaultWidth(kind);
-        const h = defaultHeight(kind);
-        const x = maxInt(0, (_document.canvasWidth - w) / 2);
-        const y = maxInt(0, (_document.canvasHeight - h) / 2);
-        const index = _document.addNode(kind, x, y);
-        _document.nodes[parent].children ~= index;
-        return index;
+        return _document.root;
     }
 
-    /// Add a node under the document root at artboard coordinates.
-    private int addNodeAt(NodeKind kind, int x, int y)
+    /// Add a node under the selected container (or its parent), centered there.
+    private int addNodeToDocument(NodeKind kind)
     {
-        int parent = _document.root;
+        int parent = addTargetParent(kind);
         if (parent < 0)
         {
             parent = _document.addNode(NodeKind.window, 0, 0);
             _document.root = parent;
             if (kind == NodeKind.window) return parent;
         }
-        const index = _document.addNode(kind, x, y);
-        _document.nodes[parent].children ~= index;
-        return index;
+        const w = defaultWidth(kind);
+        const h = defaultHeight(kind);
+        const parentNode = _document.nodes[parent];
+        const x = maxInt(0, (parentNode.width - w) / 2);
+        const y = maxInt(0, (parentNode.height - h) / 2);
+        return _document.addChild(kind, parent, x, y);
+    }
+
+    /// Add a child under a specific container, centered in that container.
+    private int addChildTo(int parent, NodeKind kind)
+    {
+        if (_document.findNode(parent) < 0 ||
+            !_document.canHostChildren(_document.nodes[parent].kind))
+            return -1;
+        const w = defaultWidth(kind);
+        const h = defaultHeight(kind);
+        const parentNode = _document.nodes[parent];
+        return _document.addChild(kind, parent,
+            maxInt(0, (parentNode.width - w) / 2),
+            maxInt(0, (parentNode.height - h) / 2));
     }
 
     private void addPaletteNode(NodeKind kind)
@@ -414,17 +460,35 @@ final class DesignerRoot : VBox
 
     private void finishPaletteDrag(NodeKind kind, Point globalPosition)
     {
+        const parent = _canvas.dropParent();
+        const drop = _canvas.dropPoint();
         _canvas.clearDropPreview();
-        if (!_canvas.artboardContainsGlobal(globalPosition)) return;
-        const art = _canvas.artboardPointFromGlobal(globalPosition);
-        const w = defaultWidth(kind);
-        const h = defaultHeight(kind);
-        const x = maxInt(0, minInt(art.x - w / 2,
-            _document.canvasWidth - w));
-        const y = maxInt(0, minInt(art.y - h / 2,
-            _document.canvasHeight - h));
+        if (!_canvas.artboardContainsGlobal(globalPosition))
+            return;
         commitHistory();
-        const index = addNodeAt(kind, x, y);
+        int index;
+        if (_document.findNode(_document.root) < 0)
+        {
+            const rootIndex = _document.addNode(NodeKind.window, 0, 0);
+            _document.root = rootIndex;
+            if (kind == NodeKind.window)
+                index = rootIndex;
+            else
+            {
+                const rootNode = _document.nodes[rootIndex];
+                index = _document.addChild(kind, rootIndex,
+                    maxInt(0, minInt(drop.x, rootNode.width - defaultWidth(kind))),
+                    maxInt(0, minInt(drop.y, rootNode.height - defaultHeight(kind))));
+            }
+        }
+        else
+        {
+            if (_document.findNode(parent) < 0) return;
+            const parentAbs = _document.absoluteRect(parent);
+            index = _document.addChild(kind, parent,
+                drop.x - parentAbs.x, drop.y - parentAbs.y);
+        }
+        if (index < 0) return;
         selectNode(index);
         rebuildInspector();
         setDirty(true);
@@ -449,6 +513,7 @@ final class DesignerRoot : VBox
         _document.canvasWidth = 900;
         _document.canvasHeight = 560;
         _projectPath = "";
+        _collapsed = null;
         _selected = -1;
         commitHistory();
         setDirty(false);
@@ -485,6 +550,7 @@ final class DesignerRoot : VBox
             commitHistory();
             _document = doc;
             _projectPath = path;
+            _collapsed = null;
             _selected = -1;
             setDirty(false);
             refreshAll();
@@ -535,15 +601,149 @@ final class DesignerRoot : VBox
     void selectNode(int index)
     {
         _selected = _document.findNode(index);
+        foreach (row; _outlineRows)
+            row.setSelected(row.index() == _selected);
         refreshToolbarFields();
+        updatePaletteTarget();
+        updateTitle();
+        _canvas.invalidate();
     }
 
     private void refreshAll()
     {
+        rebuildOutline();
         refreshToolbarFields();
         rebuildInspector();
         updateTitle();
+        updatePaletteTarget();
+        updateHistoryButtons();
         _canvas.invalidate();
+    }
+
+    private void updateHistoryButtons()
+    {
+        if (_undoButton is null || _redoButton is null) return;
+        _undoButton.setEnabled(_undoStack.length > 1);
+        _redoButton.setEnabled(_redoStack.length > 0);
+    }
+
+    private void updatePaletteTarget()
+    {
+        if (_paletteTargetLabel is null) return;
+        const target = addTargetParent(NodeKind.panel);
+        _paletteTargetLabel.setText(target < 0
+            ? "Adds to: new window"
+            : "Adds to: " ~ _document.nodes[target].id);
+    }
+
+    private void rebuildOutline()
+    {
+        if (_outline is null) return;
+        _outline.clearChildren();
+        _outlineRows = null;
+        if (_document.findNode(_document.root) < 0) return;
+        addOutlineRows(_document.root, 0);
+    }
+
+    private void addOutlineRows(int index, int depth)
+    {
+        if (_document.findNode(index) < 0) return;
+        const node = _document.nodes[index];
+        auto row = new OutlineRow(this, index, depth,
+            _document.canHostChildren(node.kind),
+            node.id ~ "  " ~ nodeKindName(node.kind),
+            node.children.length == 0 ? "" : to!string(node.children.length));
+        row.setSelected(index == _selected);
+        row.setId("outline-" ~ node.id);
+        _outline.add(row);
+        _outlineRows ~= row;
+        if (isCollapsed(index)) return;
+        for (int i = cast(int) node.children.length - 1; i >= 0; --i)
+            addOutlineRows(node.children[i], depth + 1);
+    }
+
+    bool isCollapsed(int index) const
+    {
+        if (_document.findNode(index) < 0) return false;
+        const id = _document.nodes[index].id;
+        return id in _collapsed ? _collapsed[id] : false;
+    }
+
+    void toggleCollapsed(int index)
+    {
+        if (_document.findNode(index) < 0 ||
+            !_document.canHostChildren(_document.nodes[index].kind))
+            return;
+        const id = _document.nodes[index].id;
+        _collapsed[id] = !(id in _collapsed ? _collapsed[id] : false);
+        rebuildOutline();
+    }
+
+    private void addChildFromInspector(int parent, NodeKind kind)
+    {
+        if (_document.findNode(parent) < 0 ||
+            !_document.canHostChildren(_document.nodes[parent].kind))
+            return;
+        commitHistory();
+        const index = addChildTo(parent, kind);
+        if (index < 0) return;
+        selectNode(index);
+        rebuildInspector();
+        setDirty(true);
+        refreshAll();
+    }
+
+    private void reorderNode(int index, int action)
+    {
+        commitHistory();
+        bool changed;
+        if (action == 0) changed = _document.bringToFront(index);
+        else if (action == 1) changed = _document.sendToBack(index);
+        else if (action == 2) changed = _document.raise(index);
+        else changed = _document.lower(index);
+        if (!changed) return;
+        setDirty(true);
+        refreshAll();
+    }
+
+    private void showOutlineContextMenu(int index, Point globalPosition)
+    {
+        const node = _document.findNode(index);
+        if (node < 0) return;
+        ContextMenuItem[] items;
+        if (_document.canHostChildren(_document.nodes[node].kind))
+        {
+            items ~= ContextMenuItem.command("Add Panel child", IconKind.folder,
+                delegate() { addChildFromInspector(node, NodeKind.panel); });
+            items ~= ContextMenuItem.command("Add Button child", IconKind.newDocument,
+                delegate() { addChildFromInspector(node, NodeKind.button); });
+            items ~= ContextMenuItem.command("Add Label child", IconKind.newDocument,
+                delegate() { addChildFromInspector(node, NodeKind.label); });
+        }
+        const parent = _document.parentOf(node);
+        if (parent >= 0)
+        {
+            if (items.length != 0) items ~= ContextMenuItem.separatorItem();
+            items ~= ContextMenuItem.command("Select parent", IconKind.folder,
+                delegate()
+                {
+                    selectNode(parent);
+                    rebuildInspector();
+                    _canvas.invalidate();
+                });
+            items ~= ContextMenuItem.command("Bring to front", IconKind.chevronUp,
+                delegate() { reorderNode(node, 0); });
+            items ~= ContextMenuItem.command("Raise", IconKind.chevronUp,
+                delegate() { reorderNode(node, 2); });
+            items ~= ContextMenuItem.command("Lower", IconKind.chevronDown,
+                delegate() { reorderNode(node, 3); });
+            items ~= ContextMenuItem.command("Send to back", IconKind.chevronDown,
+                delegate() { reorderNode(node, 1); });
+        }
+        if (items.length != 0) items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.command("Delete", IconKind.trash,
+            delegate() { deleteSelectedNode(); }, "Del");
+        showContextMenu(this, globalPosition, items);
     }
 
     void refreshToolbarFields()
@@ -586,11 +786,62 @@ final class DesignerRoot : VBox
         typeRow.layoutHints().fillCrossAxis = true;
         _inspector.add(typeRow);
 
+        const parent = _document.parentOf(selected);
+        _inspector.add(inspectorRow("Depth",
+            new Label(to!string(_document.depth(selected)))));
+        _inspector.add(inspectorRow("Parent", new Label(parent >= 0
+            ? _document.nodes[parent].id : "artboard")));
+        _inspector.add(inspectorRow("Children",
+            new Label(to!string(node.children.length))));
+        if (parent >= 0)
+        {
+            auto selectParent = new Button("Select parent");
+            selectParent.setId("inspector-select-parent");
+            selectParent.onClick = delegate()
+            {
+                selectNode(parent);
+                rebuildInspector();
+                _canvas.invalidate();
+            };
+            _inspector.add(selectParent);
+        }
+        if (_document.canHostChildren(node.kind))
+        {
+            auto addChild = new Button("Add panel child",
+                IconKind.newDocument);
+            addChild.setId("inspector-add-child");
+            addChild.onClick = delegate()
+            {
+                addChildFromInspector(selected, NodeKind.panel);
+            };
+            _inspector.add(addChild);
+        }
+        if (parent >= 0)
+        {
+            auto layers = new HBox(3);
+            auto front = new Button("Front");
+            front.setId("inspector-front");
+            front.onClick = delegate() { reorderNode(selected, 0); };
+            auto back = new Button("Back");
+            back.setId("inspector-back");
+            back.onClick = delegate() { reorderNode(selected, 1); };
+            auto up = new Button("Up");
+            up.setId("inspector-raise");
+            up.onClick = delegate() { reorderNode(selected, 2); };
+            auto down = new Button("Down");
+            down.setId("inspector-lower");
+            down.onClick = delegate() { reorderNode(selected, 3); };
+            layers.add(front);
+            layers.add(back);
+            layers.add(up);
+            layers.add(down);
+            _inspector.add(layers);
+        }
+
         _inspector.add(inspectorFieldRow("Name", new TextField(), node.name,
             delegate(string value) { _document.nodes[_selected].name = value; }));
 
-        _inspector.add(inspectorFieldRow("ID", new TextField(), node.id,
-            delegate(string value) { _document.nodes[_selected].id = value; }));
+        addIdInspectorRow(selected, node.id);
 
         _inspector.add(inspectorFieldRow("X", new TextField(),
             to!string(node.x), delegate(string value)
@@ -705,6 +956,42 @@ final class DesignerRoot : VBox
         return inspectorRow(label, field);
     }
 
+    private void addIdInspectorRow(int selected, string initial)
+    {
+        auto field = new TextField();
+        field.setPixelSizeOverride(12);
+        field.setText(initial, false);
+        field.layoutHints().flex = 1.0;
+        field.onChanged = delegate()
+        {
+            const current = _document.findNode(_selected);
+            if (current < 0) return;
+            const value = field.textUtf8().strip();
+            if (!setNodeId(current, value))
+            {
+                field.setText(_document.nodes[current].id, false);
+                showStatus(value.length == 0
+                    ? "ID cannot be empty"
+                    : "ID already exists: " ~ value);
+            }
+        };
+        _inspector.add(inspectorRow("ID", field));
+    }
+
+    /// Validate, apply, and surface a node id change.
+    bool setNodeId(int selected, string value)
+    {
+        const current = _document.findNode(selected);
+        if (current < 0) return false;
+        const id = value.strip();
+        if (id.length == 0 || _document.idExists(id, current))
+            return false;
+        _document.nodes[current].id = id;
+        rebuildOutline();
+        noteChange();
+        return true;
+    }
+
     private static int parseCoord(string value, int fallback)
     {
         try
@@ -792,14 +1079,22 @@ final class DesignerRoot : VBox
     private void updateTitle()
     {
         const name = _projectPath.length == 0 ? "Untitled" : baseName(_projectPath);
-        _titleBar.setDocumentTitle(name, _dirty);
         const selected = _document.findNode(_selected);
         if (selected >= 0)
-            _titleBar.setTitle(format("%s%s — %s (%s)",
+        {
+            const title = format("%s%s — %s (%s)",
                 _dirty ? "*" : "", name,
-                _document.nodes[selected].id, nodeKindName(_document.nodes[selected].kind)));
+                _document.nodes[selected].id,
+                nodeKindName(_document.nodes[selected].kind));
+            _titleBar.setTitle(title);
+            _window.setTitle(title);
+        }
         else
+        {
             _titleBar.setDocumentTitle(name, _dirty);
+            _window.setTitle(format("%s%s — Aurora Designer",
+                _dirty ? "*" : "", name));
+        }
     }
 
     private void setDirty(bool value)
@@ -970,9 +1265,13 @@ final class DesignerRoot : VBox
     }
 
     /// Called by the canvas on every committed gesture (move/resize).
-    void noteGeometryChange()
+    void beginGeometryChange()
     {
         commitHistory();
+    }
+
+    void noteGeometryChange()
+    {
         noteChange();
         refreshToolbarFields();
     }
@@ -1067,9 +1366,13 @@ final class DesignCanvas : Widget
     private Point _marqueeStart;
     private bool _marqueeActive;
     private Point _marqueeCurrent;
+    private int _dragParent = -1;
+    private int _dropParent = -1;
+    private bool _geometryStarted;
     private bool _dropPreviewActive;
     private NodeKind _dropPreviewKind;
     private Point _dropPreviewPoint;
+    private int _dropPreviewParent = -1;
 
     private enum ResizeHandle : ubyte { none, nw, ne, sw, se }
 
@@ -1128,17 +1431,42 @@ final class DesignCanvas : Widget
     /// Show where a palette drag would place the new widget.
     void showDropPreview(NodeKind kind, Point globalPosition)
     {
+        const doc = document();
+        const parent = dropParentAt(globalPosition);
         if (!artboardContainsGlobal(globalPosition))
         {
             clearDropPreview();
             return;
         }
         const art = artboardPointFromGlobal(globalPosition);
+        if (parent < 0 || doc.findNode(parent) < 0)
+        {
+            if (doc.findNode(doc.root) >= 0)
+            {
+                clearDropPreview();
+                return;
+            }
+            const w = defaultWidth(kind);
+            const h = defaultHeight(kind);
+            _dropPreviewParent = -1;
+            _dropPreviewPoint = Point(
+                maxInt(0, minInt(art.x - w / 2, doc.canvasWidth - w)),
+                maxInt(0, minInt(art.y - h / 2, doc.canvasHeight - h)));
+            _dropPreviewKind = kind;
+            _dropPreviewActive = true;
+            invalidate();
+            return;
+        }
+        const parentAbs = doc.absoluteRect(parent);
+        const parentNode = doc.nodes[parent];
         const w = defaultWidth(kind);
         const h = defaultHeight(kind);
-        _dropPreviewPoint = Point(
-            maxInt(0, minInt(art.x - w / 2, document().canvasWidth - w)),
-            maxInt(0, minInt(art.y - h / 2, document().canvasHeight - h)));
+        const relX = clampInt(art.x - parentAbs.x - w / 2, 0,
+            maxInt(0, parentNode.width - w));
+        const relY = clampInt(art.y - parentAbs.y - h / 2, 0,
+            maxInt(0, parentNode.height - h));
+        _dropPreviewParent = parent;
+        _dropPreviewPoint = Point(parentAbs.x + relX, parentAbs.y + relY);
         _dropPreviewKind = kind;
         _dropPreviewActive = true;
         invalidate();
@@ -1148,7 +1476,49 @@ final class DesignCanvas : Widget
     {
         if (!_dropPreviewActive) return;
         _dropPreviewActive = false;
+        _dropPreviewParent = -1;
         invalidate();
+    }
+
+    /// The container that would receive a palette drop at this global point.
+    int dropParentAt(Point globalPosition, int exclude = -1) const
+    {
+        const doc = document();
+        if (doc.findNode(doc.root) < 0 || !artboardContainsGlobal(globalPosition))
+            return -1;
+        const art = artboardPointFromGlobal(globalPosition);
+        int candidate = doc.hitTest(art.x, art.y);
+        while (candidate >= 0)
+        {
+            if (candidate != exclude &&
+                (exclude < 0 || !doc.isDescendant(exclude, candidate)) &&
+                doc.canHostChildren(doc.nodes[candidate].kind))
+            {
+                // The palette label describes the selected container. Keep
+                // that target when the pointer is over the window background
+                // or empty artboard; only a different container wins.
+                const selected = doc.findNode(_root.selectedIndex());
+                if (exclude < 0 && selected >= 0 &&
+                    doc.canHostChildren(doc.nodes[selected].kind) &&
+                    (candidate == doc.root || candidate == selected))
+                    return selected;
+                return candidate;
+            }
+            candidate = doc.parentOf(candidate);
+        }
+        const selected = doc.findNode(_root.selectedIndex());
+        if (exclude < 0 && selected >= 0 &&
+            doc.canHostChildren(doc.nodes[selected].kind))
+            return selected;
+        return doc.root;
+    }
+
+    int dropParent() const @safe pure nothrow @nogc { return _dropPreviewParent; }
+    Point dropPoint() const @safe pure nothrow @nogc { return _dropPreviewPoint; }
+
+    private static int clampInt(int value, int low, int high)
+    {
+        return value < low ? low : (value > high ? high : value);
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -1169,20 +1539,39 @@ final class DesignCanvas : Widget
             return;
         }
 
-        // Paint the whole tree in painter order (children after parents).
-        foreach (index, node; doc.nodes)
+        // Paint the whole tree in hierarchy order (children after parents).
+        foreach (index; doc.paintOrder())
         {
-            const rect = doc.absoluteRect(cast(int) index);
-            paintNode(canvas, doc, cast(int) index, rect, node);
+            const rect = doc.absoluteRect(index);
+            paintNode(canvas, doc, index, rect, doc.nodes[index]);
         }
 
-        // Selection outline + resize handles.
+        // Ancestor path, then selection outline + resize handles.
         const selected = doc.findNode(_root.selectedIndex());
         if (selected >= 0)
         {
+            int ancestor = doc.parentOf(selected);
+            while (ancestor >= 0)
+            {
+                const parentRect = doc.absoluteRect(ancestor)
+                    .translated(art.x, art.y);
+                canvas.strokeRect(parentRect, palette.accent.withAlpha(70), 1);
+                ancestor = doc.parentOf(ancestor);
+            }
             const rect = doc.absoluteRect(selected).translated(art.x, art.y);
             canvas.strokeRect(rect, palette.accent, 1);
             paintResizeHandles(canvas, rect, palette.accent);
+            const grip = moveGripRect();
+            if (grip.width > 0)
+            {
+                canvas.fillRect(grip, palette.accent);
+                canvas.strokeRect(grip, palette.windowBackground, 1);
+                foreach (dotY; 0 .. 2)
+                    foreach (dotX; 0 .. 2)
+                        canvas.fillRect(Rect(grip.x + 5 + dotX * 5,
+                            grip.y + 5 + dotY * 5, 2, 2),
+                            palette.windowBackground);
+            }
         }
 
         if (_marqueeActive)
@@ -1197,9 +1586,29 @@ final class DesignCanvas : Widget
             canvas.fillRect(Rect(x, y, w, h), palette.accent.withAlpha(40));
         }
 
+        if (_dragging >= 0 && _dropParent >= 0 && _dropParent != _dragParent)
+        {
+            const target = doc.absoluteRect(_dropParent)
+                .translated(art.x, art.y);
+            canvas.fillRect(target, palette.accent.withAlpha(24));
+            canvas.strokeRect(target, palette.accent, 2);
+            canvas.drawTextInRect(Rect(target.x + 6, target.y + 4,
+                target.width - 12, 20),
+                to!dstring("Drop into " ~ doc.nodes[_dropParent].id),
+                palette.accent, 1, HorizontalAlign.left, VerticalAlign.top,
+                true);
+        }
+
         if (_dropPreviewActive)
         {
             const origin = artboardOrigin();
+            if (_dropPreviewParent >= 0)
+            {
+                const parentRect = doc.absoluteRect(_dropPreviewParent)
+                    .translated(origin.x, origin.y);
+                canvas.fillRect(parentRect, palette.accent.withAlpha(18));
+                canvas.strokeRect(parentRect, palette.accent.withAlpha(150), 1);
+            }
             const rect = Rect(origin.x + _dropPreviewPoint.x,
                 origin.y + _dropPreviewPoint.y,
                 defaultWidth(_dropPreviewKind), defaultHeight(_dropPreviewKind));
@@ -1446,6 +1855,24 @@ final class DesignCanvas : Widget
         return ResizeHandle.none;
     }
 
+    /// Canvas-local move grip for the selected node. It works even when a
+    /// child covers the selected container's interior.
+    Rect moveGripRect() const
+    {
+        const selected = document().findNode(_root.selectedIndex());
+        if (selected < 0) return Rect(0, 0, 0, 0);
+        const art = artboardRect();
+        const abs = document().absoluteRect(selected);
+        const rect = Rect(abs.x + art.x, abs.y + art.y, abs.width, abs.height);
+        const size = 18;
+        int x = rect.x + 3;
+        int y = rect.y - size - 3;
+        if (y < art.y) y = rect.y + 3;
+        x = min(x, art.x + art.width - size);
+        y = min(y, art.y + art.height - size);
+        return Rect(x, y, size, size);
+    }
+
     private CursorKind cursorForHandle(ResizeHandle handle)
     {
         final switch (handle)
@@ -1458,6 +1885,26 @@ final class DesignCanvas : Widget
         }
     }
 
+    /// Container under a node-drag pointer, excluding the dragged subtree.
+    private int dragDropParent(Point local, int dragged) const
+    {
+        const doc = _root.document();
+        if (doc.findNode(doc.root) < 0 ||
+            !artboardRect().contains(local))
+            return -1;
+        const art = toArtboard(local);
+        int candidate = doc.hitTest(art.x, art.y);
+        while (candidate >= 0)
+        {
+            if (candidate != dragged &&
+                !doc.isDescendant(dragged, candidate) &&
+                doc.canHostChildren(doc.nodes[candidate].kind))
+                return candidate;
+            candidate = doc.parentOf(candidate);
+        }
+        return doc.root;
+    }
+
     override bool onMouseMove(ref Event event)
     {
         if (_resizing >= 0)
@@ -1468,6 +1915,13 @@ final class DesignCanvas : Widget
         if (_dragging >= 0)
         {
             updateDrag(event.position);
+            int target = dragDropParent(event.position, _dragging);
+            if (target == _dragging) target = _dragParent;
+            if (target != _dropParent)
+            {
+                _dropParent = target;
+                invalidate();
+            }
             return true;
         }
         if (_marqueeActive)
@@ -1480,6 +1934,12 @@ final class DesignCanvas : Widget
         auto doc = _root.designDocument();
         const art = toArtboard(event.position);
         const hit = doc.findNode(doc.root) >= 0 ? doc.hitTest(art.x, art.y) : -1;
+        const grip = moveGripRect();
+        if (grip.width > 0 && grip.contains(event.position))
+        {
+            setCursor(CursorKind.move);
+            return true;
+        }
         if (hit != _hovered)
         {
             _hovered = hit;
@@ -1502,10 +1962,28 @@ final class DesignCanvas : Widget
 
         if (event.button == MouseButton.left)
         {
+            const grip = moveGripRect();
+            if (grip.width > 0 && grip.contains(event.position) &&
+                doc.findNode(_root.selectedIndex()) >= 0)
+            {
+                const selected = _root.selectedIndex();
+                _dragging = selected;
+                _dragParent = doc.parentOf(selected);
+                _dropParent = _dragParent;
+                _geometryStarted = false;
+                _dragStart = event.position;
+                _dragStartNode = Point(doc.nodes[selected].x, doc.nodes[selected].y);
+                _dragStartSize = Size(doc.nodes[selected].width,
+                    doc.nodes[selected].height);
+                captureMouse();
+                invalidate();
+                return true;
+            }
             const handle = handleAt(event.position);
             if (handle != ResizeHandle.none && doc.findNode(_root.selectedIndex()) >= 0)
             {
                 _resizing = _root.selectedIndex();
+                _geometryStarted = false;
                 _resizeHandle = handle;
                 _dragStart = event.position;
                 _dragStartNode = Point(doc.nodes[_resizing].x,
@@ -1519,9 +1997,33 @@ final class DesignCanvas : Widget
 
             if (hit >= 0)
             {
+                const path = doc.hitPath(art.x, art.y);
+                const selected = _root.selectedIndex();
+                const drill = (event.modifiers & cast(uint) KeyModifier.alt) != 0;
+                if (drill && path.length != 0)
+                {
+                    int target = -1;
+                    foreach (i, node; path)
+                        if (node == selected)
+                        {
+                            target = i > 0 ? path[i - 1] : path[i];
+                            break;
+                        }
+                    if (target >= 0 && target != selected)
+                    {
+                        _root.selectNode(target);
+                        _root.rebuildInspector();
+                        invalidate();
+                        return true;
+                    }
+                }
+
                 _root.selectNode(hit);
                 _root.rebuildInspector();
                 _dragging = hit;
+                _dragParent = doc.parentOf(hit);
+                _dropParent = _dragParent;
+                _geometryStarted = false;
                 _dragStart = event.position;
                 _dragStartNode = Point(doc.nodes[hit].x, doc.nodes[hit].y);
                 _dragStartSize = Size(doc.nodes[hit].width,
@@ -1560,6 +2062,7 @@ final class DesignCanvas : Widget
         {
             const node = _resizing;
             _resizing = -1;
+            _geometryStarted = false;
             releaseMouse();
             _root.noteGeometryChange();
             invalidate();
@@ -1567,9 +2070,28 @@ final class DesignCanvas : Widget
         }
         if (_dragging >= 0)
         {
+            const dragged = _dragging;
+            const target = _dropParent;
+            const previousParent = _dragParent;
             _dragging = -1;
+            _dropParent = -1;
+            _dragParent = -1;
+            _geometryStarted = false;
             releaseMouse();
-            _root.noteGeometryChange();
+            if (target >= 0 && target != previousParent)
+            {
+                auto doc = _root.designDocument();
+                const current = doc.absoluteRect(dragged);
+                if (doc.reparent(dragged, target, current.x, current.y))
+                {
+                    _root.selectNode(dragged);
+                    _root.refreshAll();
+                }
+                else
+                    _root.noteGeometryChange();
+            }
+            else
+                _root.noteGeometryChange();
             invalidate();
             return true;
         }
@@ -1601,21 +2123,18 @@ final class DesignCanvas : Widget
     private int hitTestRect(const ref DesignDocument doc, int x, int y,
         int w, int h)
     {
-        // Find the topmost node whose rect intersects the marquee.
-        for (int i = cast(int) doc.nodes.length - 1; i >= 0; --i)
-        {
-            const abs = doc.absoluteRect(i);
-            if (abs.x + abs.width > x && abs.y + abs.height > y &&
-                abs.x < x + w && abs.y < y + h)
-                return i;
-        }
-        return -1;
+        return doc.hitTestRect(x, y, w, h);
     }
 
     private void updateDrag(Point local)
     {
         auto doc = _root.designDocument();
         if (doc.findNode(_dragging) < 0) return;
+        if (!_geometryStarted)
+        {
+            _root.beginGeometryChange();
+            _geometryStarted = true;
+        }
         const delta = local - _dragStart;
         doc.nodes[_dragging].x = _dragStartNode.x + delta.x;
         doc.nodes[_dragging].y = _dragStartNode.y + delta.y;
@@ -1628,6 +2147,11 @@ final class DesignCanvas : Widget
     {
         auto doc = _root.designDocument();
         if (doc.findNode(_resizing) < 0) return;
+        if (!_geometryStarted)
+        {
+            _root.beginGeometryChange();
+            _geometryStarted = true;
+        }
         const delta = local - _dragStart;
         int x = _dragStartNode.x;
         int y = _dragStartNode.y;
@@ -1759,6 +2283,131 @@ final class PaletteDragButton : Button
         else if (clicked)
             _owner.addPaletteNode(_kind);
         return true;
+    }
+}
+
+/** One indented row in the Layers tree. */
+final class OutlineRow : Widget
+{
+    private DesignerRoot _owner;
+    private int _index;
+    private int _depth;
+    private bool _container;
+    private bool _selected;
+    private bool _hovered;
+    private string _label;
+    private string _detail;
+
+    this(DesignerRoot owner, int index, int depth, bool container,
+        string label, string detail)
+    {
+        _owner = owner;
+        _index = index;
+        _depth = depth;
+        _container = container;
+        _label = label;
+        _detail = detail;
+        setCursor(CursorKind.hand);
+        layoutHints().preferredHeight = 24;
+        layoutHints().minHeight = 24;
+        layoutHints().fillCrossAxis = true;
+    }
+
+    int index() const @safe pure nothrow @nogc { return _index; }
+
+    void setSelected(bool value)
+    {
+        if (_selected == value) return;
+        _selected = value;
+        invalidate();
+    }
+
+    protected override void onMouseEnter()
+    {
+        _hovered = true;
+        invalidate();
+    }
+
+    protected override void onMouseLeave()
+    {
+        _hovered = false;
+        invalidate();
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button == MouseButton.left)
+        {
+            const glyphX = 9 + _depth * 12;
+            if (_container && event.position.x >= glyphX &&
+                event.position.x < glyphX + 14)
+            {
+                _owner.toggleCollapsed(_index);
+                return true;
+            }
+            _owner.selectNode(_index);
+            _owner.rebuildInspector();
+            return true;
+        }
+        if (event.button == MouseButton.right)
+        {
+            _owner.selectNode(_index);
+            _owner.rebuildInspector();
+            _owner.showOutlineContextMenu(_index, event.globalPosition);
+            return true;
+        }
+        return false;
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        if (_selected)
+            canvas.fillRect(Rect(0, 0, bounds().width, bounds().height),
+                palette.selection);
+        else if (_hovered)
+            canvas.fillRect(Rect(0, 0, bounds().width, bounds().height),
+                palette.buttonHover.withAlpha(90));
+
+        const textColor = _selected ? palette.selectionText : palette.text;
+        for (int level = 0; level < _depth; ++level)
+        {
+            const x = 7 + level * 12;
+            canvas.drawLine(Point(x, 0), Point(x, bounds().height),
+                palette.border.withAlpha(120), 1);
+        }
+
+        const x = 9 + _depth * 12;
+        if (_container)
+        {
+            const cy = bounds().height / 2;
+            if (_owner.isCollapsed(_index))
+            {
+                canvas.drawLine(Point(x, cy - 4), Point(x, cy + 4),
+                    palette.textMuted, 1);
+                canvas.drawLine(Point(x, cy - 4), Point(x + 6, cy),
+                    palette.textMuted, 1);
+                canvas.drawLine(Point(x, cy + 4), Point(x + 6, cy),
+                    palette.textMuted, 1);
+            }
+            else
+            {
+                canvas.drawLine(Point(x, cy - 3), Point(x + 8, cy - 3),
+                    palette.textMuted, 1);
+                canvas.drawLine(Point(x, cy - 3), Point(x + 4, cy + 3),
+                    palette.textMuted, 1);
+                canvas.drawLine(Point(x + 8, cy - 3), Point(x + 4, cy + 3),
+                    palette.textMuted, 1);
+            }
+        }
+        canvas.drawTextInRect(Rect(x + 14, 2,
+            maxInt(0, bounds().width - x - 44), bounds().height - 4),
+            to!dstring(_label), textColor, 1, HorizontalAlign.left,
+            VerticalAlign.middle, true);
+        if (_detail.length != 0)
+            canvas.drawTextInRect(Rect(bounds().width - 34, 2, 28,
+                bounds().height - 4), to!dstring(_detail), palette.textMuted,
+                1, HorizontalAlign.right, VerticalAlign.middle, true);
     }
 }
 

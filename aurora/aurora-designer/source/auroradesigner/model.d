@@ -66,7 +66,14 @@ struct DesignDocument
         Node node;
         node.kind = kind;
         node.name = defaultName(kind);
-        node.id = defaultId(kind, cast(int) nodes.length + 1);
+        int suffix = cast(int) nodes.length + 1;
+        string id;
+        do
+        {
+            id = defaultId(kind, suffix++);
+        }
+        while (idExists(id));
+        node.id = id;
         node.text = defaultText(kind);
         node.x = x;
         node.y = y;
@@ -74,6 +81,15 @@ struct DesignDocument
         node.height = defaultHeight(kind);
         nodes ~= node;
         return cast(int) nodes.length - 1;
+    }
+
+    /// True when another node already owns this id.
+    bool idExists(string id, int except = -1) const
+    {
+        foreach (i, node; nodes)
+            if (cast(int) i != except && node.id == id)
+                return true;
+        return false;
     }
 
     int findNode(int index) const @safe pure nothrow @nogc
@@ -99,6 +115,84 @@ struct DesignDocument
     bool nodeVisible(int index) const @safe pure nothrow @nogc
     {
         return findNode(index) >= 0;
+    }
+
+    /// The depth of a node below the document root (root is zero).
+    int depth(int index) const @safe pure nothrow @nogc
+    {
+        int result;
+        int current = findNode(index);
+        while (current >= 0 && current != root)
+        {
+            ++result;
+            current = parentOf(current);
+        }
+        return result;
+    }
+
+    /**
+     * Depth-first painter order: every parent before its children, and children
+     * in their sibling order. This is the canonical order for painting and for
+     * reverse-order hit testing.
+     */
+    int[] paintOrder() const
+    {
+        int[] result;
+        bool[] seen = new bool[nodes.length];
+
+        void visit(int index)
+        {
+            if (findNode(index) < 0 || seen[index]) return;
+            seen[index] = true;
+            result ~= index;
+            foreach (child; nodes[index].children)
+                visit(child);
+        }
+
+        visit(root);
+        return result;
+    }
+
+    /// Find the topmost hierarchy-ordered node intersecting a marquee rect.
+    int hitTestRect(int x, int y, int w, int h) const
+    {
+        const order = paintOrder();
+        for (int i = cast(int) order.length - 1; i >= 0; --i)
+        {
+            const abs = absoluteRect(order[i]);
+            if (abs.x + abs.width > x && abs.y + abs.height > y &&
+                abs.x < x + w && abs.y < y + h)
+                return order[i];
+        }
+        return -1;
+    }
+
+    /**
+     * The path from the document root to the deepest node containing the point.
+     * Returns an empty array when the point is outside the tree.
+     */
+    int[] hitPath(int x, int y) const
+    {
+        int[] result;
+        if (findNode(root) < 0) return result;
+
+        void visit(int index)
+        {
+            if (!containsPoint(index, x, y)) return;
+            result ~= index;
+            for (int i = cast(int) nodes[index].children.length - 1; i >= 0; --i)
+            {
+                const child = nodes[index].children[i];
+                if (containsPoint(child, x, y))
+                {
+                    visit(child);
+                    return;
+                }
+            }
+        }
+
+        visit(root);
+        return result;
     }
 
     /// Find the topmost node whose rect contains the point (children win).
@@ -184,6 +278,17 @@ struct DesignDocument
         }
     }
 
+    /// Add a node under an existing container.
+    int addChild(NodeKind kind, int parentIndex, int x, int y)
+    {
+        if (findNode(parentIndex) < 0 ||
+            !canHostChildren(nodes[parentIndex].kind))
+            return -1;
+        const index = addNode(kind, x, y);
+        nodes[parentIndex].children ~= index;
+        return index;
+    }
+
     /// Remove a node and its whole subtree (children arrays are patched).
     void removeNode(int index)
     {
@@ -218,18 +323,97 @@ struct DesignDocument
         nodes = kept;
     }
 
-    /// Reparent a node as a child of `parentIndex` at the artboard position.
-    void reparent(int index, int parentIndex, int artboardX, int artboardY)
+    bool canReparent(int index, int parentIndex) const @safe pure nothrow @nogc
     {
-        if (findNode(index) < 0 || findNode(parentIndex) < 0 || index == parentIndex)
-            return;
+        if (findNode(index) < 0 || findNode(parentIndex) < 0)
+            return false;
+        if (index == parentIndex || !canHostChildren(nodes[parentIndex].kind))
+            return false;
+        return !isDescendant(index, parentIndex);
+    }
+
+    /**
+     * Reparent a node under `parentIndex` while keeping its artboard position.
+     * The child's stored x/y become parent-relative.
+     */
+    bool reparent(int index, int parentIndex, int artboardX, int artboardY)
+    {
+        if (!canReparent(index, parentIndex)) return false;
+        const parentAbs = absoluteRect(parentIndex);
         const oldParent = parentOf(index);
         if (oldParent >= 0)
             nodes[oldParent].children = nodes[oldParent].children.filter!(c => c != index).array;
-        nodes[index].x = artboardX;
-        nodes[index].y = artboardY;
-        if (!isDescendant(parentIndex, index))
-            nodes[parentIndex].children ~= index;
+        nodes[index].x = artboardX - parentAbs.x;
+        nodes[index].y = artboardY - parentAbs.y;
+        nodes[parentIndex].children ~= index;
+        return true;
+    }
+
+    /// Index of `child` in its parent's child list, or -1.
+    int childIndex(int parentIndex, int child) const @safe pure nothrow @nogc
+    {
+        if (findNode(parentIndex) < 0) return -1;
+        foreach (i, candidate; nodes[parentIndex].children)
+            if (candidate == child) return cast(int) i;
+        return -1;
+    }
+
+    /// Move a child to a new position in its parent's sibling order.
+    bool moveChild(int parentIndex, int child, int newIndex)
+    {
+        if (findNode(parentIndex) < 0) return false;
+        const oldIndex = childIndex(parentIndex, child);
+        if (oldIndex < 0) return false;
+        auto siblings = nodes[parentIndex].children;
+        int[] rest;
+        rest.reserve(siblings.length - 1);
+        foreach (i, sibling; siblings)
+            if (i != oldIndex) rest ~= sibling;
+        newIndex = newIndex < 0 ? 0 :
+            (newIndex > cast(int) rest.length ? cast(int) rest.length : newIndex);
+        int[] result;
+        result.reserve(siblings.length);
+        for (int i = 0; i < cast(int) rest.length; ++i)
+        {
+            if (i == newIndex) result ~= child;
+            result ~= rest[i];
+        }
+        if (newIndex >= cast(int) rest.length) result ~= child;
+        nodes[parentIndex].children = result;
+        return true;
+    }
+
+    /// Move a node one step toward the front of its parent's sibling order.
+    bool raise(int index)
+    {
+        const parent = parentOf(index);
+        if (parent < 0) return false;
+        const at = childIndex(parent, index);
+        return at >= 0 && moveChild(parent, index, at + 1);
+    }
+
+    /// Move a node one step toward the back of its parent's sibling order.
+    bool lower(int index)
+    {
+        const parent = parentOf(index);
+        if (parent < 0) return false;
+        const at = childIndex(parent, index);
+        return at >= 0 && moveChild(parent, index, at - 1);
+    }
+
+    /// Move a node to the top of its parent's sibling order.
+    bool bringToFront(int index)
+    {
+        const parent = parentOf(index);
+        if (parent < 0) return false;
+        return moveChild(parent, index, cast(int) nodes[parent].children.length - 1);
+    }
+
+    /// Move a node to the bottom of its parent's sibling order.
+    bool sendToBack(int index)
+    {
+        const parent = parentOf(index);
+        return parent >= 0 && moveChild(parent, index, 0);
     }
 
     /// Move a node by a relative delta.
@@ -244,12 +428,84 @@ struct DesignDocument
     bool isDescendant(int ancestor, int candidate) const @safe pure nothrow @nogc
     {
         int current = candidate;
-        while (current >= 0 && current != root)
+        while (current >= 0)
         {
             if (current == ancestor) return true;
+            if (current == root) break;
             current = parentOf(current);
         }
         return false;
+    }
+
+    /** Repair malformed hierarchy data after deserialization. */
+    private void normalizeHierarchy()
+    {
+        if (nodes.length == 0)
+        {
+            root = -1;
+            return;
+        }
+        if (canvasWidth <= 0) canvasWidth = 900;
+        if (canvasHeight <= 0) canvasHeight = 560;
+
+        bool[] parented = new bool[nodes.length];
+        foreach (i, ref node; nodes)
+        {
+            int[] kept;
+            foreach (child; node.children)
+            {
+                if (child < 0 || child >= cast(int) nodes.length ||
+                    child == cast(int) i || parented[child])
+                    continue;
+                parented[child] = true;
+                kept ~= child;
+            }
+            node.children = kept;
+        }
+
+        if (root < 0 || root >= cast(int) nodes.length || parented[root])
+        {
+            root = -1;
+            foreach (i, node; nodes)
+                if (!parented[i])
+                {
+                    root = cast(int) i;
+                    break;
+                }
+        }
+
+        if (root >= 0)
+        {
+            bool[] visited = new bool[nodes.length];
+
+            void visit(int index)
+            {
+                visited[index] = true;
+                int[] kept;
+                foreach (child; nodes[index].children)
+                {
+                    if (visited[child]) continue;
+                    kept ~= child;
+                    visit(child);
+                }
+                nodes[index].children = kept;
+            }
+
+            visit(root);
+        }
+
+        bool[string] used;
+        foreach (i, ref node; nodes)
+        {
+            string base = node.id.length != 0 ? node.id : defaultName(node.kind);
+            string unique = base;
+            int suffix = 2;
+            while (unique in used)
+                unique = base ~ "-" ~ to!string(suffix++);
+            node.id = unique;
+            used[unique] = true;
+            if (node.name.length == 0) node.name = node.id;
+        }
     }
 
     private void markRemoved(int index, ref bool[] removed) const
@@ -339,6 +595,56 @@ string defaultId(NodeKind kind, int n)
 // Serialization
 // ---------------------------------------------------------------------------
 
+private bool tokenSafe(char ch) @safe pure nothrow @nogc
+{
+    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+        (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' ||
+        ch == '~';
+}
+
+private string encodeToken(string value)
+{
+    string result;
+    foreach (char ch; value)
+    {
+        if (tokenSafe(ch))
+            result ~= ch;
+        else
+            result ~= format("%%%02X", cast(int) cast(ubyte) ch);
+    }
+    return result;
+}
+
+private int hexValue(char ch) @safe pure nothrow @nogc
+{
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+
+private string decodeToken(string value)
+{
+    string result;
+    size_t i;
+    while (i < value.length)
+    {
+        if (value[i] == '%' && i + 2 < value.length)
+        {
+            const high = hexValue(value[i + 1]);
+            const low = hexValue(value[i + 2]);
+            if (high >= 0 && low >= 0)
+            {
+                result ~= cast(char) (high * 16 + low);
+                i += 3;
+                continue;
+            }
+        }
+        result ~= value[i++];
+    }
+    return result;
+}
+
 /** Serialize the document to a compact text format (one line per node). */
 string serializeDocument(const ref DesignDocument document)
 {
@@ -349,12 +655,13 @@ string serializeDocument(const ref DesignDocument document)
     foreach (index, node; document.nodes)
     {
         output.put(format("node %d %d %s %d %d %d %d",
-            index, cast(int) node.kind, node.id, node.x, node.y,
+            index, cast(int) node.kind, encodeToken(node.id), node.x, node.y,
             node.width, node.height));
+        output.put(format(" name=%s", encodeToken(node.name)));
         if (node.text != defaultText(node.kind))
-            output.put(format(" text=%s", node.text));
+            output.put(format(" text=%s", encodeToken(node.text)));
         if (node.colorHex.length != 0)
-            output.put(format(" color=%s", node.colorHex));
+            output.put(format(" color=%s", encodeToken(node.colorHex)));
         if (node.transparent)
             output.put(format(" transparent=1"));
         if (node.accent)
@@ -409,8 +716,11 @@ DesignDocument deserializeDocument(string text)
         else if (parts[0] == "node" && parts.length >= 8)
         {
             Node node;
-            node.kind = cast(NodeKind) parts[2].to!int;
-            node.id = parts[3];
+            const kindValue = parts[2].to!int;
+            if (kindValue < 0 || kindValue > cast(int) NodeKind.image)
+                throw new Exception("Invalid node kind");
+            node.kind = cast(NodeKind) kindValue;
+            node.id = decodeToken(parts[3]);
             node.x = parts[4].to!int;
             node.y = parts[5].to!int;
             node.width = parts[6].to!int;
@@ -420,10 +730,12 @@ DesignDocument deserializeDocument(string text)
             for (int i = 8; i < parts.length; ++i)
             {
                 const token = parts[i];
-                if (token.startsWith("text=") && token.length > 5)
-                    node.text = token[5 .. $];
-                else if (token.startsWith("color=") && token.length > 6)
-                    node.colorHex = token[6 .. $];
+                if (token.startsWith("name="))
+                    node.name = decodeToken(token[5 .. $]);
+                else if (token.startsWith("text="))
+                    node.text = decodeToken(token[5 .. $]);
+                else if (token.startsWith("color="))
+                    node.colorHex = decodeToken(token[6 .. $]);
                 else if (token == "transparent=1")
                     node.transparent = true;
                 else if (token == "accent=1")
@@ -445,7 +757,9 @@ DesignDocument deserializeDocument(string text)
             }
         }
     }
-    if (haveRoot && document.findNode(document.root) < 0)
+    if (haveRoot)
+        document.normalizeHierarchy();
+    else
         document.root = -1;
     return document;
 }
@@ -496,93 +810,100 @@ string generateCode(const ref DesignDocument document)
         return output.data;
     }
     const root = document.nodes[document.root];
-    const rootVar = root.name.length != 0 ? sanitizeVar(root.name) : "root";
+    string[] usedVars;
+    const rootVar = uniqueVariable(root.name.length != 0 ? root.name : "root",
+        usedVars);
     const indent = "    ";
     output.put(format("%sauto %s = new %s();\n", indent, rootVar,
         className(root.kind)));
-    output.put(format("%s%s.setId(\"%s\");\n", indent, rootVar, root.id));
+    output.put(format("%s%s.setId(%s);\n", indent, rootVar,
+        dStringLiteral(root.id)));
     if (root.text.length != 0 && textWidget(root.kind))
-        output.put(format("%s%s.setText(\"%s\");\n", indent, rootVar, root.text));
+        output.put(format("%s%s.setText(%s);\n", indent, rootVar,
+            dStringLiteral(root.text)));
     if (root.kind == NodeKind.checkbox && root.checked)
         output.put(format("%s%s.setChecked(true);\n", indent, rootVar));
     if (root.kind == NodeKind.button && root.accent)
         output.put(format("%s%s.setAccent(true);\n", indent, rootVar));
     if (root.colorHex.length != 0 && backgroundWidget(root.kind))
     {
-        output.put(format("%s%s.setBackground(%s);\n", indent, rootVar,
-            colorLiteral(root.colorHex)));
+        const color = colorLiteral(root.colorHex);
+        if (color.length != 0)
+            output.put(format("%s%s.setBackground(%s);\n", indent, rootVar,
+                color));
     }
     output.put(format("%s%s.setBounds(Rect(0, 0, %d, %d));\n", indent,
         rootVar, document.canvasWidth, document.canvasHeight));
     output.put("\n");
-    emitChildren(document, document.root, rootVar, output, 2);
+    if (root.kind == NodeKind.scrollview)
+        emitScrollContent(document, root, rootVar, output, 2, usedVars);
+    else
+        emitChildren(document, document.root, rootVar, output, 2, usedVars);
     output.put(format("    return %s;\n}\n", rootVar));
     return output.data;
 }
 
 private void emitChildren(const ref DesignDocument document, int parentIndex,
-    string parentVar, ref Appender!string output, int depth)
+    string parentVar, ref Appender!string output, int depth,
+    ref string[] usedVars)
+{
+    foreach (child; document.nodes[parentIndex].children)
+        emitNode(document, child, parentVar, output, depth, usedVars);
+}
+
+private string emitNode(const ref DesignDocument document, int child,
+    string parentVar, ref Appender!string output, int depth,
+    ref string[] usedVars)
 {
     const indent = repeatIndent(depth);
-    foreach (child; document.nodes[parentIndex].children)
+    const node = document.nodes[child];
+    const varName = uniqueVariable(
+        node.name.length != 0 ? node.name : defaultName(node.kind), usedVars);
+    output.put(format("%sauto %s = new %s();\n", indent, varName,
+        className(node.kind)));
+    output.put(format("%s%s.setId(%s);\n", indent, varName,
+        dStringLiteral(node.id)));
+    if (node.text.length != 0 && textWidget(node.kind))
+        output.put(format("%s%s.setText(%s);\n", indent, varName,
+            dStringLiteral(node.text)));
+    if (node.kind == NodeKind.checkbox && node.checked)
+        output.put(format("%s%s.setChecked(true);\n", indent, varName));
+    if (node.kind == NodeKind.button && node.accent)
+        output.put(format("%s%s.setAccent(true);\n", indent, varName));
+    if (node.colorHex.length != 0 && backgroundWidget(node.kind))
     {
-        const node = document.nodes[child];
-        const varName = sanitizeVar(node.name);
-        output.put(format("%sauto %s = new %s();\n", indent, varName,
-            className(node.kind)));
-        output.put(format("%s%s.setId(\"%s\");\n", indent, varName, node.id));
-        if (node.text.length != 0 && textWidget(node.kind))
-            output.put(format("%s%s.setText(\"%s\");\n", indent, varName,
-                node.text));
-        if (node.kind == NodeKind.checkbox && node.checked)
-            output.put(format("%s%s.setChecked(true);\n", indent, varName));
-        if (node.kind == NodeKind.button && node.accent)
-            output.put(format("%s%s.setAccent(true);\n", indent, varName));
-        if (node.colorHex.length != 0 && backgroundWidget(node.kind))
-        {
+        const color = colorLiteral(node.colorHex);
+        if (color.length != 0)
             output.put(format("%s%s.setBackground(%s);\n", indent, varName,
-                colorLiteral(node.colorHex)));
-        }
-        if (node.kind == NodeKind.scrollview)
-        {
-            output.put(format("%s%s.setContent(%s_content());\n", indent,
-                varName, varName));
-            emitScrollContent(document, node, varName, output, depth + 1);
-        }
-        else
-        {
-            output.put(format("%s%s.setBounds(Rect(%d, %d, %d, %d));\n",
-                indent, varName, node.x, node.y, node.width, node.height));
-            output.put(format("%s%s.add(%s);\n", indent, parentVar, varName));
-            emitChildren(document, child, varName, output, depth + 1);
-        }
+                color));
     }
+    output.put(format("%s%s.setBounds(Rect(%d, %d, %d, %d));\n",
+        indent, varName, node.x, node.y, node.width, node.height));
+    output.put(format("%s%s.add(%s);\n", indent, parentVar, varName));
+    if (node.kind == NodeKind.scrollview)
+    {
+        output.put(format("%s%s.setContent(%s_content());\n", indent,
+            varName, varName));
+        emitScrollContent(document, node, varName, output, depth + 1, usedVars);
+    }
+    else
+        emitChildren(document, child, varName, output, depth + 1, usedVars);
+    return varName;
 }
 
 private void emitScrollContent(const ref DesignDocument document,
-    const ref Node node, string varName, ref Appender!string output, int depth)
+    const ref Node node, string varName, ref Appender!string output, int depth,
+    ref string[] usedVars)
 {
     if (node.children.length == 0) return;
     const indent = repeatIndent(depth);
-    // A ScrollView hosts a single content child; emit that child and return it.
-    const first = document.nodes[node.children[0]];
-    const innerName = sanitizeVar(first.name);
+    const contentVar = uniqueVariable(varName ~ "Content", usedVars);
     output.put(format("%sWidget %s_content()\n", indent, varName));
     output.put(format("%s{\n", indent));
-    output.put(format("%s    auto %s = new %s();\n", indent, innerName,
-        className(first.kind)));
-    output.put(format("%s    %s.setId(\"%s\");\n", indent, innerName, first.id));
-    if (first.text.length != 0 && textWidget(first.kind))
-        output.put(format("%s    %s.setText(\"%s\");\n", indent, innerName,
-            first.text));
-    if (first.kind == NodeKind.checkbox && first.checked)
-        output.put(format("%s    %s.setChecked(true);\n", indent, innerName));
-    if (first.colorHex.length != 0 && backgroundWidget(first.kind))
-    {
-        output.put(format("%s    %s.setBackground(%s);\n", indent, innerName,
-            colorLiteral(first.colorHex)));
-    }
-    output.put(format("%s    return %s;\n%s}\n", indent, innerName, indent));
+    output.put(format("%s    auto %s = new VBox();\n", indent, contentVar));
+    foreach (child; node.children)
+        emitNode(document, child, contentVar, output, depth + 1, usedVars);
+    output.put(format("%s    return %s;\n%s}\n", indent, contentVar, indent));
 }
 
 private string className(NodeKind kind) @safe pure nothrow @nogc
@@ -637,6 +958,74 @@ private string repeatIndent(int depth)
     for (int i = 0; i < depth; ++i)
         result ~= "    ";
     return result;
+}
+
+private bool variableUsed(string[] used, string value) @safe pure nothrow @nogc
+{
+    foreach (candidate; used)
+        if (candidate == value)
+            return true;
+    return false;
+}
+
+private string uniqueVariable(string requested, ref string[] used)
+{
+    string base = sanitizeVar(requested);
+    if (dKeyword(base)) base = "_" ~ base;
+    string result = base;
+    int suffix = 2;
+    while (variableUsed(used, result))
+        result = base ~ to!string(suffix++);
+    used ~= result;
+    return result;
+}
+
+private bool dKeyword(string value) @safe pure nothrow @nogc
+{
+    switch (value)
+    {
+        case "abstract": case "alias": case "align": case "asm":
+        case "assert": case "auto": case "body": case "bool": case "break":
+        case "byte": case "case": case "cast": case "catch": case "char":
+        case "class": case "const": case "continue": case "debug":
+        case "default": case "delegate": case "delete": case "deprecated":
+        case "do": case "double": case "else": case "enum": case "export":
+        case "extern": case "false": case "final": case "finally": case "float":
+        case "for": case "foreach": case "foreach_reverse": case "function":
+        case "goto": case "if": case "immutable": case "import": case "in":
+        case "inout": case "int": case "interface": case "invariant": case "is":
+        case "lazy": case "long": case "macro": case "mixin": case "module":
+        case "new": case "nothrow": case "null": case "out": case "override":
+        case "package": case "pragma": case "private": case "protected":
+        case "public": case "pure": case "real": case "ref": case "return":
+        case "scope": case "shared": case "short": case "static": case "struct":
+        case "super": case "switch": case "synchronized": case "template":
+        case "this": case "throw": case "true": case "try": case "typeid":
+        case "typeof": case "ubyte": case "uint": case "ulong": case "union":
+        case "unittest": case "ushort": case "version": case "void":
+        case "volatile": case "wchar": case "while": case "with":
+            return true;
+        default:
+            return false;
+    }
+}
+
+private string dStringLiteral(string value)
+{
+    string result = "\"";
+    foreach (char ch; value)
+    {
+        if (ch == '"') result ~= "\\\"";
+        else if (ch == '\\') result ~= "\\\\";
+        else if (ch == '\n') result ~= "\\n";
+        else if (ch == '\r') result ~= "\\r";
+        else if (ch == '\t') result ~= "\\t";
+        else if (ch < 32 || ch == 127)
+            result ~= format("\\x%02X", cast(int) cast(ubyte) ch);
+        else
+            result ~= ch;
+    }
+    return result ~ "\"";
 }
 
 private string sanitizeVar(string name)

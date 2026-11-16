@@ -1,12 +1,32 @@
 # Aurora Designer
 
-A visual UI designer for Aurora-D interfaces. Drag widgets from the palette,
-position them on the artboard, edit properties in the inspector, and copy the
-generated D code.
+A visual UI designer for Aurora-D interfaces. Build a real widget hierarchy with
+the palette, canvas, Layers tree, and inspector, then copy the generated D code.
 
-Click a palette entry to add the widget at the artboard center, or drag it onto
-the artboard to place it under the pointer. Dragging a widget already on the
-artboard moves it; its corner handles resize it.
+The window uses a visible 28 px frameless titlebar with the document name, dirty
+marker, app icon, and minimize/maximize/close controls. Drag the bar to move the
+window, double-click it to maximize, or right-click it for the system menu.
+
+## Hierarchy interactions
+
+- The palette shows its current `Adds to:` container. Clicking an entry adds the
+  widget centered in the selected container, or as a sibling under its parent
+  when the selection cannot host children. The palette also targets the
+  container under a drag.
+- Dragging from the palette shows a drop preview and highlights the target
+  container. The widget is placed in that container's coordinate space, clamped
+  to its bounds. On an empty artboard, the first drop creates the root window.
+- The canvas selects the deepest widget under the pointer. Alt-click selects its
+  parent; the Layers tree and inspector also expose parent selection. Drag a
+  selected widget onto another container to reparent it while preserving its
+  artboard position; a drop target is shown during the drag. Corner handles
+  resize the selected widget.
+- The Layers tree shows the hierarchy with indentation and collapsible rows.
+  Click a row to select it. Right-click for add-child, select-parent, raise,
+  lower, bring-to-front, send-to-back, and delete actions.
+- The inspector shows type, depth, parent, and child count. Containers offer
+  `Add panel child`; child nodes offer `Select parent`; non-root nodes expose
+  Front/Back/Up/Down sibling-order controls.
 
 This is a v2 package. It depends on the sibling
 [`../aurora-d`](../aurora-d) library through DUB; it has no vendored library
@@ -30,9 +50,10 @@ appears. The `default` configuration is also what plain `dub run` selects.
 dub run --config=headless-smoke
 ```
 
-It exercises the designer's document model, selection, drag, palette add,
-code generation, serialization round-trip, undo/redo, and pointer routing. It
-writes `build/headless-smoke/designer-smoke.ppm`.
+It exercises the titlebar layout, hierarchical child insertion, palette click
+and drag, empty-artboard root creation, paint/hit order, sibling z-order,
+canvas reparenting, resizing, code generation, serialization, undo/redo, and
+pointer routing. It writes `build/headless-smoke/designer-smoke.ppm`.
 
 For a software-rendered screenshot from the windowed build:
 
