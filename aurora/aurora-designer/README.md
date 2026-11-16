@@ -18,13 +18,17 @@ window, double-click it to maximize, or right-click it for the system menu.
   to its bounds. On an empty artboard, the first drop creates the root window.
 - The canvas selects the widget painted topmost under the pointer. A visible
   child wins even where it spills outside its container, and a container's own
-  body selects the container. Alt-click selects the parent; the Layers tree and
-  inspector also expose parent selection. Every container except the window
-  shows a title chip at its top-left that selects and drags the container; the
-  rest of the top edge stays clickable for children. Drag a selected widget
-  onto another container to reparent it while preserving its artboard position;
-  a drop target is shown during the drag. Corner handles resize the selected
-  widget.
+  body selects the container. Re-clicking the already-selected widget steps to
+  its parent, so a child, its container, and the window are all reachable by
+  clicking the same point again. Alt-click, the Layers tree, and the inspector
+  select a parent directly. Every container except the window shows a title
+  chip at its top-left that selects and drags the container; the rest of the
+  top edge stays clickable for children. Drag a selected widget onto another
+  container to reparent it while preserving its artboard position; a drop
+  target is shown during the drag. Corner handles resize the selected widget.
+
+Adding a child insets it from its parent (down to a minimum size), so an
+identically sized child panel can never cover the parent's body and title chip.
 - The Layers tree shows the hierarchy with indentation and collapsible rows.
   Click a row to select it. Right-click for add-child, select-parent, raise,
   lower, bring-to-front, send-to-back, and delete actions.

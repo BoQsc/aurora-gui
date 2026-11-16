@@ -422,6 +422,28 @@ final class DesignerRoot : VBox
         return _document.root;
     }
 
+    /// Place a new child so it is inset from its parent and never fully covers
+    /// it. An identically sized child would hide the parent's body and title
+    /// chip, making the parent impossible to click or drag.
+    private int addPlacedChild(int parent, NodeKind kind)
+    {
+        if (_document.findNode(parent) < 0 ||
+            !_document.canHostChildren(_document.nodes[parent].kind))
+            return -1;
+        const parentNode = _document.nodes[parent];
+        const w = minInt(defaultWidth(kind), maxInt(24, parentNode.width - 48));
+        const h = minInt(defaultHeight(kind), maxInt(24, parentNode.height - 48));
+        const index = _document.addChild(kind, parent,
+            maxInt(0, (parentNode.width - w) / 2),
+            maxInt(0, (parentNode.height - h) / 2));
+        if (index >= 0)
+        {
+            _document.nodes[index].width = w;
+            _document.nodes[index].height = h;
+        }
+        return index;
+    }
+
     /// Add a node under the selected container (or its parent), centered there.
     private int addNodeToDocument(NodeKind kind)
     {
@@ -432,6 +454,8 @@ final class DesignerRoot : VBox
             _document.root = parent;
             if (kind == NodeKind.window) return parent;
         }
+        if (kind != NodeKind.window)
+            return addPlacedChild(parent, kind);
         const w = defaultWidth(kind);
         const h = defaultHeight(kind);
         const parentNode = _document.nodes[parent];
@@ -443,6 +467,8 @@ final class DesignerRoot : VBox
     /// Add a child under a specific container, centered in that container.
     private int addChildTo(int parent, NodeKind kind)
     {
+        if (kind != NodeKind.window)
+            return addPlacedChild(parent, kind);
         if (_document.findNode(parent) < 0 ||
             !_document.canHostChildren(_document.nodes[parent].kind))
             return -1;
@@ -1492,6 +1518,9 @@ final class DesignCanvas : Widget
     private NodeKind _dropPreviewKind;
     private Point _dropPreviewPoint;
     private int _dropPreviewParent = -1;
+    /// Whether the pressed node was already selected. A stationary repeat
+    /// click then steps up to its parent; a drag never does.
+    private bool _pressedWasSelected;
 
     private enum ResizeHandle : ubyte { none, nw, ne, sw, se }
 
@@ -2107,6 +2136,7 @@ final class DesignCanvas : Widget
 
         if (event.button == MouseButton.left)
         {
+            _pressedWasSelected = false;
             const header = containerHeaderAt(event.position);
             if (header >= 0)
             {
@@ -2163,6 +2193,7 @@ final class DesignCanvas : Widget
                     }
                 }
 
+                _pressedWasSelected = _root.selectedIndex() == hit;
                 _root.selectNode(hit);
                 _root.rebuildInspector();
                 _dragging = hit;
@@ -2220,12 +2251,28 @@ final class DesignCanvas : Widget
             const target = _dropParent;
             const previousParent = _dragParent;
             const moved = _geometryStarted;
+            const stepUp = !moved && _pressedWasSelected;
+            _pressedWasSelected = false;
             _dragging = -1;
             _dropParent = -1;
             _dragParent = -1;
             _geometryStarted = false;
             releaseMouse();
             auto doc = _root.designDocument();
+            if (stepUp && dragged >= 0)
+            {
+                // Re-clicking the selected widget steps to its parent: child,
+                // then container, then window. One level per click, and only
+                // along this node's own parent chain.
+                const parent = doc.parentOf(dragged);
+                if (parent >= 0)
+                {
+                    _root.selectNode(parent);
+                    _root.rebuildInspector();
+                    invalidate();
+                    return true;
+                }
+            }
             if (moved && target >= 0 && target != previousParent)
             {
                 const current = doc.absoluteRect(dragged);
@@ -2287,7 +2334,7 @@ final class DesignCanvas : Widget
         for (int i = cast(int) order.length - 1; i >= 0; --i)
         {
             const index = order[i];
-            if (index != doc.root && doc.containsPoint(index, x, y))
+            if (doc.containsPoint(index, x, y))
                 return index;
         }
         return -1;

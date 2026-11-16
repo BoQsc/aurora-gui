@@ -472,19 +472,19 @@ int main()
         childOrigin.x + childRect.x + childRect.width / 2,
         childOrigin.y + childRect.y + childRect.height / 2));
 
-    // Clicking a nested child selects that child every time. Parent selection
-    // stays explicit: Alt-click, Layers, inspector, or the panel header.
+    // Clicking a nested child selects it; re-clicking steps to its parent
+    // panel, so both the child and the covered container are reachable.
     driver.click(childCenter);
     assert(root.selectedIndex() == child, "First click did not select the child");
     driver.click(childCenter);
-    assert(root.selectedIndex() == child,
-        "Re-clicking the child jumped to the parent panel");
+    assert(root.selectedIndex() == panel,
+        "Re-clicking the child did not select the parent panel");
     driver.click(childCenter);
     assert(root.selectedIndex() == child,
-        "A third click on the child left it unselected");
+        "Clicking the child again did not reselect it");
 
-    // Real click-sized pointer jitter neither nudges the child nor changes
-    // the selection.
+    // Real click-sized pointer jitter neither nudges the child nor prevents
+    // the repeat-click step to its parent.
     const childX = root.document().nodes[child].x;
     driver.moveTo(childCenter);
     driver.mouseDown(MouseButton.left);
@@ -492,8 +492,8 @@ int main()
     driver.mouseUp(MouseButton.left);
     assert(root.document().nodes[child].x == childX,
         "Click-sized pointer jitter moved the child");
-    assert(root.selectedIndex() == child,
-        "Click-sized pointer jitter changed the selection");
+    assert(root.selectedIndex() == panel,
+        "Click-sized pointer jitter swallowed the parent step");
 
     // Pressing and dragging moves the child, not the parent, and the child
     // can be grabbed and dragged again immediately after a drag.
@@ -657,7 +657,7 @@ int main()
 
     // A small child inside a larger container is clickable edge to edge, and
     // the container's own body selects the container, not a sibling subtree.
-    const smallPanel = clicks.addChild(NodeKind.panel, clicks.root, 60, 60);
+    const smallPanel = clicks.addChild(NodeKind.panel, clicks.root, 60, 330);
     clicks.nodes[smallPanel].width = 200;
     clicks.nodes[smallPanel].height = 120;
     const tiny = clicks.addChild(NodeKind.button, smallPanel, 10, 40);
@@ -677,8 +677,8 @@ int main()
     assert(root.selectedIndex() == smallPanel,
         "A click on the container's empty area did not select the container");
     driver.click(emptyBody);
-    assert(root.selectedIndex() == smallPanel,
-        "A repeated body click escaped into another widget's subtree");
+    assert(root.selectedIndex() == clicks.root,
+        "Re-clicking the container did not step to its parent window");
 
     // --- Palette drag still works from a new, empty artboard. ---
     root.designDocument() = DesignDocument.init;
@@ -700,6 +700,52 @@ int main()
         "Palette drop did not add the widget under the new root");
     assert(root.document().parentOf(root.selectedIndex()) == root.document().root,
         "Empty-artboard drop is not a child of the new root");
+
+    // --- A child panel cannot hide its parent. ---
+    root.selectNodeForTesting(root.document().root);
+    const outerPanel = root.addNodeForTesting(NodeKind.panel);
+    const outerNode = root.document().nodes[outerPanel];
+    root.selectNodeForTesting(outerPanel);
+    const innerPanel = root.addNodeForTesting(NodeKind.panel);
+    assert(root.document().parentOf(innerPanel) == outerPanel,
+        "Panel added while a panel was selected did not nest");
+    const innerNode = root.document().nodes[innerPanel];
+    assert(innerNode.width < outerNode.width &&
+        innerNode.height < outerNode.height,
+        "Child panel fully covers its parent");
+    const outerChip = canvas.containerHeaderRect(outerPanel);
+    assert(outerChip.width > 0, "Parent panel lost its title chip");
+    const chipPoint = canvas.localToGlobal(Point(
+        outerChip.x + outerChip.width / 2,
+        outerChip.y + outerChip.height / 2));
+    driver.click(chipPoint);
+    assert(root.selectedIndex() == outerPanel,
+        "Clicking the parent's title chip selected the child panel");
+    const outerX = root.document().nodes[outerPanel].x;
+    driver.drag(chipPoint, Point(chipPoint.x + 20, chipPoint.y + 10), 8);
+    assert(root.document().nodes[outerPanel].x == outerX + 20,
+        "The parent panel could not be dragged after a child was added");
+
+    // The window itself stays selectable and draggable in its exposed area
+    // after children exist, and a click on it never deselects it.
+    const finalDoc = root.document();
+    const finalRoot = finalDoc.root;
+    const finalRootRect = finalDoc.absoluteRect(finalRoot);
+    const windowPoint = canvas.localToGlobal(Point(
+        clickOrigin.x + finalRootRect.x + 160,
+        clickOrigin.y + finalRootRect.y + 10));
+    driver.click(windowPoint);
+    assert(root.selectedIndex() == finalRoot,
+        "Clicking the window's exposed body did not select the window");
+    driver.click(windowPoint);
+    assert(root.selectedIndex() == finalRoot,
+        "Re-clicking the window deselected it");
+    const windowX = root.document().nodes[finalRoot].x;
+    driver.drag(windowPoint, Point(windowPoint.x + 20, windowPoint.y + 12), 8);
+    assert(root.selectedIndex() == finalRoot,
+        "Dragging the window lost its selection");
+    assert(root.document().nodes[finalRoot].x == windowX + 20,
+        "The window could not be dragged after children were added");
 
     writeln("Aurora Designer headless smoke passed.");
     return 0;
