@@ -1868,7 +1868,9 @@ int main(string[] args)
         auto fetched = executeTool(makeCall("webfetch",
             `{"url":"https://vanillaserver.eu/bloodmoon.json","timeout":20000}`),
             dir);
-        if (fetched.failed)
+        // A transport failure can arrive as curl's error text rather than a
+        // failed execution; either way the optional live check is skipped.
+        if (fetched.failed || fetched.output.indexOf("curl:") >= 0)
         {
             const shown = fetched.output.length < 140
                 ? fetched.output : fetched.output[0 .. 140];

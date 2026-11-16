@@ -35,8 +35,8 @@ import std.file : exists, mkdirRecurse, readText, rmdirRecurse, tempDir,
 import std.json : JSONType, JSONValue, parseJSON;
 import std.conv : to;
 import std.path : buildPath;
-import std.stdio : writeln;
-import std.process : environment;
+import std.stdio : stdout, writeln;
+import std.process : environment, thisProcessID;
 import std.string : indexOf, join;
 import std.utf : toUTF32;
 
@@ -371,6 +371,13 @@ private void writeStartupState(string stateDir)
     root["sessions"] = sessions;
     root["current"] = 1;
     write(buildPath(stateDir, "sessions.json"), root.toString());
+    // Keep background model requests out of unrelated UI fixtures: suggestion
+    // generation and automatic titles would otherwise start provider calls
+    // from a synthetic turn and make the suite time-dependent.
+    JSONValue settingsRoot;
+    settingsRoot["composerSuggestion"] = false;
+    settingsRoot["quickTitle"] = false;
+    write(buildPath(stateDir, "settings.json"), settingsRoot.toString());
 }
 
 /// A tool row's header names the file the tool touched (an Edit, Patch or Read
@@ -1315,7 +1322,22 @@ int main(string[] args)
     import auroraopencode.tools : runFilesystemHelperMode;
     const helperCode = runFilesystemHelperMode(args);
     if (helperCode >= 0) return helperCode;
-    const stateDir = buildPath(tempDir(), "aurora-opencode-pro-smoke-state");
+    // Keep the redirected log flush-fresh so a stalled section is visible
+    // instead of hiding behind a full standard-output buffer.
+    auto flushThread = new Thread({
+        while (true)
+        {
+            Thread.sleep(1000.msecs);
+            try stdout.flush(); catch (Exception) {}
+        }
+    });
+    flushThread.isDaemon = true;
+    flushThread.start();
+    // A per-process directory keeps concurrent or aborted fixture runs from
+    // deleting each other's sessions and journals (a fixed name produced
+    // intermittent hangs and missing restored sessions).
+    const stateDir = buildPath(tempDir(),
+        "aurora-opencode-pro-smoke-state-" ~ to!string(thisProcessID));
     if (exists(stateDir)) rmdirRecurse(stateDir);
     mkdirRecurse(stateDir);
     writeStartupState(stateDir);
@@ -4720,6 +4742,7 @@ int main(string[] args)
     // executed locally and the result lands as a `tool` role message.
     // Earlier bulk-history fixtures can overflow the bounded async journal.
     // Refused intents require snapshot recovery before accepting new effects.
+
     const storageDeadline = Clock.currTime + 7.seconds;
     root.tickTree(0.02);
     while (root.storageBlockedForTesting() && Clock.currTime < storageDeadline)
@@ -4729,12 +4752,14 @@ int main(string[] args)
     }
     assert(!root.storageBlockedForTesting(),
         "Bulk-history journal admission did not recover before the tool test");
+
     auto workspaceDir = buildPath(stateDir, "workspace");
     mkdirRecurse(workspaceDir);
     write(buildPath(workspaceDir, "notes.txt"), "hello tool world\n");
     root.enableToolsForTesting(workspaceDir);
     root.pauseToolContinuationForTesting();
     root.newChatForTesting();
+
     root.addConversationForTesting(["user"], ["What is in notes.txt?"]);
     // The client creates an assistant message (chatBegin) before delivering
     // toolCalls, so mirror that shape here.
@@ -4761,11 +4786,13 @@ int main(string[] args)
     // which can take longer than a few seconds when earlier fixtures still hold
     // leases on a slow machine.
     const deadline = Clock.currTime + 30.seconds;
+
     while (root.toolMessageCountForTesting() < 3 && Clock.currTime < deadline)
     {
         root.tickTree(0.02);
         Thread.sleep(20.msecs);
     }
+
     assert(root.toolMessageCountForTesting() == 3,
         "Tool results did not arrive as tool role messages: " ~
         to!string(root.toolMessageCountForTesting()) ~ "; " ~
