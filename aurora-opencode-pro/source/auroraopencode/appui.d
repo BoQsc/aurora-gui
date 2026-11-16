@@ -18810,11 +18810,20 @@ private string _suggestExcludeId;
         // saved settings, so the GUI keeps whatever the user last picked.
         const consoleModel = _consoleDefaultModel.length > 0;
         session.model = consoleModel ? _consoleDefaultModel : _settings.model;
-        session.thinking = consoleModel ? _consoleDefaultThinking : _settings.thinking;
-        // Pin the mode this chat starts with. Later changes in other chats (or
-        // to the app default) leave this conversation alone.
-        session.thinkingMode = fallbackThinkingMode(session.thinking,
-            session.model);
+        // Every normal new chat starts at High. The mode is a per-conversation
+        // choice, so the last choice made in another chat must not seed it, and
+        // the model-default fallback is Low for every non-Flash model. A console
+        // session keeps its own low-latency route.
+        if (consoleModel)
+        {
+            session.thinking = _consoleDefaultThinking;
+            session.thinkingMode = _consoleDefaultThinking ? "high" : "off";
+        }
+        else
+        {
+            session.thinking = true;
+            session.thinkingMode = "high";
+        }
         session.providerBaseUrl = _settings.baseUrl;
         session.projectId = activeProjectId();
         session.updatedAt = Clock.currTime.toUnixTime();
@@ -27285,7 +27294,8 @@ private void pollButtonSuggestionRequest()
     private string activeThinkingMode()
     {
         if (_current < 0 || _current >= cast(int) _sessions.length)
-            return fallbackThinkingMode(_settings.thinking, _settings.model);
+            return _consoleDefaultModel.length > 0 && !_consoleDefaultThinking
+                ? "off" : "high";
         return sessionThinkingMode(_sessions[_current]);
     }
 
@@ -35481,8 +35491,9 @@ private void pollButtonSuggestionRequest()
         if (model.length > 0) session.model = model;
         session.thinking = thinkingMode >= 0
             ? thinkingMode != 0 : _settings.thinking;
-        session.thinkingMode = fallbackThinkingMode(session.thinking,
-            session.model);
+        // A pinned headless "on" (or an inherited enabled setting) starts at
+        // High, matching every other new conversation.
+        session.thinkingMode = session.thinking ? "high" : "off";
         session.toolsMode = toolsMode >= -1 && toolsMode <= 1 ? toolsMode : -1;
         session.instructions = instructions;
         session.updatedAt = Clock.currTime.toUnixTime();

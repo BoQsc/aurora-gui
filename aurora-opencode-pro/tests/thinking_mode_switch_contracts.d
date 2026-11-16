@@ -129,14 +129,14 @@ int main()
     assert(root.sessionThinkingModeForTesting(chatA) == "high",
         "chat A did not store its own High mode");
 
-    // New chat again, then click Off. The new chat inherits the mode in effect,
-    // and its Off must not touch chat A.
+    // New chat again, then click Off. Every new chat starts at High, and its
+    // Off must not touch chat A.
     driver.click(globalCenter(requireWidget!Widget(root, "oc-new")));
     settle();
     const chatB = root.currentSessionForTesting();
     assert(chatB >= 0 && chatB != chatA, "the New chat button did not create chat B");
     assert(root.thinkingControlTextForTesting() == "Thinking: High",
-        "a new chat did not render the mode in effect: " ~
+        "a new chat did not start at High: " ~
         root.thinkingControlTextForTesting());
     menu = openThinkingMenu();
     assert(menu.items()[4].checked, "the dropdown did not mark the inherited High mode");
@@ -258,7 +258,24 @@ int main()
     assert(storedB.thinkingMode == "off",
         "chat B's stored metadata lost Off: " ~ storedB.thinkingMode);
 
+    // A new chat still starts High after the other chats chose Medium and Off.
+    driver.click(globalCenter(requireWidget!Widget(root, "oc-new")));
+    settle();
+    const chatC = root.currentSessionForTesting();
+    assert(chatC >= 0 && chatC != chatA && chatC != chatB,
+        "the New chat button did not create chat C");
+    assert(root.thinkingControlTextForTesting() == "Thinking: High",
+        "a new chat did not start at High after other chats chose Off/Medium: " ~
+        root.thinkingControlTextForTesting());
+    assert(root.requestReasoningForTesting() == "on:high",
+        "a new chat's request did not default to High: " ~
+        root.requestReasoningForTesting());
+    assert(root.sessionThinkingModeForTesting(chatA) == "medium" &&
+        root.sessionThinkingModeForTesting(chatB) == "off",
+        "creating a new chat changed an existing chat's mode");
+
     writeln("PASS each conversation keeps its own Thinking mode across switches");
+    writeln("PASS every new chat starts at Thinking High");
     writeln("thinking_mode_switch_contracts: PASS");
     return 0;
 }

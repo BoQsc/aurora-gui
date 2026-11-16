@@ -21,10 +21,10 @@ cannot disagree with what is sent.
 - Setting a mode writes only the open conversation (plus the app-wide default a
   future chat starts from). Choosing Off in one chat leaves every other chat's
   stored mode untouched, so switching chats shows each chat's own mode.
-- A new chat pins the mode in effect at creation once
-  (`fallbackThinkingMode`): the saved global switch, the route record, or the
-  model default (`high` for DeepSeek 4.1 Flash, `low` for everything else).
-  Later changes in other chats do not move it.
+- Every normal new chat starts at High. It does not inherit the last choice made
+  in another chat, and it does not fall back to the per-model default (Low for
+  every model except DeepSeek 4.1 Flash). A console session still starts Off on
+  its own low-latency route.
 - Older conversations have no stored mode. `pinSessionThinkingMode` resolves
   their historical on/off flag against the route/model default the first time
   they are opened or send, stores the result, and from then on they behave like
@@ -65,9 +65,9 @@ and maps an unset effort onto `defaultReasoningEffortForModel`.
 - `tests/thinking_mode_switch_contracts.d` — click New chat and choose High,
   create a second chat and choose Off, then switch through the sidebar with
   real clicks: chat A keeps High (selector, dropdown checkmark and request)
-  while chat B stays Off; changing A to Medium leaves B Off; the saved Thinking
-  switch is untouched by opening A; and each chat's stored metadata round-trips
-  its own mode.
+  while chat B stays Off; changing A to Medium leaves B Off; a third new chat
+  still starts High; the saved Thinking switch is untouched by opening A; and
+  each chat's stored metadata round-trips its own mode.
 
 Run the focused fixtures with the recipe below (it also covers the checkout-lock
 contracts described in `tool-lease-scope.md`):
