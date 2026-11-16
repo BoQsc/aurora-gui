@@ -1,0 +1,7 @@
+// Optional manifest-first deployment. The default DUB configurations do not
+// compile or link this resource and therefore do not require the Windows SDK.
+// With the Windows SDK installed, compile from the Aurora project root with:
+//   rc /nologo /fo build\aurora-dpi.res resources\windows\aurora.rc
+// Then pass build\aurora-dpi.res to your final executable link.
+#define RT_MANIFEST 24
+1 RT_MANIFEST "resources\windows\aurora.manifest"

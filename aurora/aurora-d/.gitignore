@@ -1,0 +1,14 @@
+/.dub/
+/.cache/
+/build/
+/aurora
+/aurora-*
+/libaurora.a
+*.o
+*.obj
+*.lib
+*.a
+*.exe
+*.pdb
+*.ilk
+.DS_Store

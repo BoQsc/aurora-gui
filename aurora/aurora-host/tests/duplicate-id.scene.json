@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Duplicate Node ID",
+    "width": 320,
+    "height": 200,
+    "theme": "light"
+  },
+  "root": {
+    "type": "column",
+    "children": [
+      {"id": "same", "type": "label", "text": "first"},
+      {"id": "same", "type": "label", "text": "second"}
+    ]
+  }
+}

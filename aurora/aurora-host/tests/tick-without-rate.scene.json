@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Tick Without Rate",
+    "width": 320,
+    "height": 200,
+    "theme": "light"
+  },
+  "root": {
+    "type": "canvas",
+    "width": 320,
+    "height": 200,
+    "events": ["tick"],
+    "commands": []
+  }
+}

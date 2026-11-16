@@ -1,0 +1,291 @@
+{
+  "name": "aurora-d",
+  "description": "Cross-platform Vulkan/software GUI library for D with an Aurora-rendered retained compositor and pure-D Unicode/OpenType text",
+  "authors": [
+    "aurora-gui contributors"
+  ],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
+  "sourcePaths": [
+    "source"
+  ],
+  "targetName": "aurora",
+  "libs-windows": [
+    "user32",
+    "gdi32"
+  ],
+  "libs-linux": [
+    "X11",
+    "dl"
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
+  "configurations": [
+    {
+      "name": "library",
+      "targetType": "library",
+      "targetName": "aurora",
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    },
+    {
+      "name": "headless-test",
+      "targetType": "executable",
+      "targetName": "aurora-headless-test",
+      "mainSourceFile": "tests/headless.d",
+      "versions": [
+        "AuroraHeadless"
+      ],
+      "libs-linux": [
+        "dl"
+      ]
+    },
+    {
+      "name": "unicode-conformance",
+      "targetType": "executable",
+      "targetName": "aurora-unicode-conformance",
+      "mainSourceFile": "tests/unicode_conformance.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "text-system-test",
+      "targetType": "executable",
+      "targetName": "aurora-text-system-test",
+      "mainSourceFile": "tests/text_system.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "hinting-regression-probe",
+      "targetType": "executable",
+      "targetName": "aurora-hinting-regression-probe",
+      "mainSourceFile": "tests/hinting_regression_probe.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "text-boundaries",
+      "targetType": "executable",
+      "targetName": "aurora-text-boundaries",
+      "mainSourceFile": "tests/text_boundaries.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "public-api-test",
+      "targetType": "executable",
+      "targetName": "aurora-public-api-test",
+      "mainSourceFile": "tests/public_api.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "titlebar-shell-test",
+      "targetType": "executable",
+      "targetName": "aurora-titlebar-shell-test",
+      "mainSourceFile": "tests/titlebar_shell.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "hinting-windows-test",
+      "targetType": "executable",
+      "targetName": "aurora-hinting-windows-test",
+      "mainSourceFile": "tests/hinting_windows_regression.d",
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "text-coverage-test",
+      "targetType": "executable",
+      "targetName": "aurora-text-coverage-test",
+      "mainSourceFile": "tests/text_coverage.d",
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "native-alpha-test",
+      "targetType": "executable",
+      "targetName": "aurora-native-alpha-test",
+      "mainSourceFile": "tests/native_alpha.d",
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "font-quality-test",
+      "targetType": "executable",
+      "targetName": "aurora-font-quality-test",
+      "mainSourceFile": "tests/font_quality_regression.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "dpi-rendering-test",
+      "targetType": "executable",
+      "targetName": "aurora-dpi-rendering-test",
+      "mainSourceFile": "tests/dpi_rendering.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "window-dpi-test",
+      "targetType": "executable",
+      "targetName": "aurora-window-dpi-test",
+      "mainSourceFile": "tests/window_dpi_regression.d",
+      "versions": [
+        "AuroraHeadless"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ]
+    },
+    {
+      "name": "compositor-test",
+      "targetType": "executable",
+      "targetName": "aurora-compositor-test",
+      "mainSourceFile": "tests/compositor.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "latency-test",
+      "targetType": "executable",
+      "targetName": "aurora-latency-test",
+      "mainSourceFile": "tests/latency.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "desktop-shell-test",
+      "targetType": "executable",
+      "targetName": "aurora-desktop-shell-test",
+      "mainSourceFile": "tests/desktop_shell.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "findfirst-probe",
+      "targetType": "executable",
+      "targetName": "aurora-findfirst-probe",
+      "mainSourceFile": "tests/findfirst_probe.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+
+    {
+      "name": "widget-infrastructure-test",
+      "targetType": "executable",
+      "targetName": "aurora-widget-infrastructure-test",
+      "mainSourceFile": "tests/widget_infrastructure.d",
+      "versions": [
+        "AuroraHeadless"
+      ],
+      "libs-windows": [
+        "user32"
+      ]
+    },
+    {
+      "name": "shell-visual-test",
+      "targetType": "executable",
+      "targetName": "aurora-shell-visual-test",
+      "mainSourceFile": "tests/shell_visual.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "pointer-sheet-test",
+      "targetType": "executable",
+      "targetName": "aurora-pointer-sheet-test",
+      "mainSourceFile": "tests/cursorsheet.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "vulkan-smoke",
+      "targetType": "executable",
+      "targetName": "aurora-vulkan-smoke",
+      "mainSourceFile": "tests/vulkan_smoke.d",
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    }
+  ],
+  "version": "2.0.0"
+}

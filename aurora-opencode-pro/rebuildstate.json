@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Fix the filesystem tool host spawn so a non-host image cannot recursively re-spawn itself (the process chain that held GBs of RAM).",
+  "reason": "Apply the recent-conversation fallback for suggestions in new empty chats",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-15 11:54:25.9686092 UTC",
-  "finishedAt": "2026-11-15 11:55:24.752896 UTC",
-  "durationMs": 58783,
+  "startedAt": "2026-11-16 14:00:14.9658911 UTC",
+  "finishedAt": "2026-11-16 14:01:13.5468165 UTC",
+  "durationMs": 58580,
   "exitCode": 0,
   "errors": [],
-  "publishStatus": "failed",
-  "publishDetail": "Publishing with installed runtime required: MSVCR120.dll",
+  "publishStatus": "published",
+  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (4859fc94bf20).",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

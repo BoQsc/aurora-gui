@@ -1,0 +1,316 @@
+module aurora.platform.base;
+
+import aurora.color : Color;
+import aurora.dragdrop : DragAction, DragActions, DragPayload;
+import aurora.event : Event;
+import aurora.font : FontRenderMode;
+public import aurora.render.base : RendererPreference;
+import aurora.types : CursorKind, DisplayScale, Point, PointF, Rect, Size;
+
+enum NativeSurfaceKind : ubyte
+{
+    none,
+    xlib,
+    win32,
+    metal
+}
+
+/** Opaque platform handles required by a presentation renderer. */
+struct NativeSurfaceInfo
+{
+    NativeSurfaceKind kind;
+    void* handleA;
+    void* handleB;
+    ulong value;
+}
+
+struct WindowOptions
+{
+    string title = "Aurora";
+    string iconPath;
+    int width = 960;
+    int height = 640;
+    int x = int.min;
+    int y = int.min;
+    bool resizable = true;
+    bool decorated = true;
+    bool alwaysOnTop;
+    bool startMaximized;
+    /** Show the initial Win32 window without activating it. Intended for
+        background integration tests and passive utility windows. */
+    bool startNoActivate;
+    /** Never let a click activate this window for its whole lifetime
+        (WS_EX_NOACTIVATE on Win32). For always-on-top overlays that must not
+        pull the foreground away from a fullscreen game. Note: a no-activate
+        window does not receive keyboard input while another app is in front. */
+    bool noActivate;
+    /** Request a dark native titlebar where the host OS supports it. */
+    bool darkTitleBar;
+    /** Start in native monitor fullscreen. Takes precedence over maximized. */
+    bool startFullscreen;
+    /** Let GuiWindow consume F11, Alt+Enter, and fullscreen Escape. */
+    bool enableFullscreenShortcut = true;
+    /** Favor newest pointer-driven frames over queued throughput. */
+    bool lowLatency = true;
+    /** Render a frame-synchronized Aurora cursor during transform drags. */
+    bool synchronizedDragPointer = true;
+    /** Register the Windows pointer-wheel, scroll-command, and pan-gesture
+        paths used by custom scrollable windows. */
+    bool extendedScrollInput = true;
+    /** Advertise a native vertical scroll range without replacing a
+        client-drawn scrollbar. This lets Windows and legacy pointing-device
+        drivers recognize a custom window as a scroll target. */
+    bool nativeVerticalScrollHost = true;
+    RendererPreference renderer = RendererPreference.automatic;
+    bool vulkanValidation;
+    bool vsync = true;
+    string uiFontPath;
+    string monospaceFontPath;
+    FontRenderMode fontRenderMode = FontRenderMode.sharp;
+}
+
+interface NativeWindowSink
+{
+    void onNativeEvent(ref Event event);
+    /** True when a retained control at this client point must receive pointer
+        input even though it overlaps a frameless window's resize margin. */
+    bool onNativeClientControlAt(Point position);
+    /** Let a native scroll command activate the retained target before range lookup. */
+    void onNativeScrollTarget(PointF position);
+    bool onNativePaint();
+    void onNativeTick(double deltaSeconds);
+    /** Service a posted application event without advancing widget animations. */
+    void onNativeService();
+    /** True while a pointer transform is actively captured (drag). Used by the
+     *  platform loop to decide whether to busy-yield for every frame vs pace. */
+    bool onNativeContinuousPointerFrames();
+    bool onNativeCloseRequested();
+    void onNativeShutdown();
+}
+
+abstract class NativeWindow
+{
+    protected NativeWindowSink sink;
+    protected WindowOptions options;
+
+    this(WindowOptions options, NativeWindowSink sink)
+    {
+        this.options = options;
+        this.sink = sink;
+    }
+
+    /**
+     * Give a native backend an opportunity to submit the complete first frame
+     * while its top-level window is still hidden. Backends that cannot safely
+     * present while hidden leave the normal show/paint path unchanged.
+     */
+    bool prepareFirstFrame(Color background)
+    {
+        return false;
+    }
+    abstract void show();
+    abstract int run();
+    abstract void invalidate();
+    /** Thread-safe notification where supported; timers are the fallback. */
+    void delegate() serviceWake() { return null; }
+    abstract void present(const(uint)[] pixels, int width, int height);
+    /**
+     * Present a cached framebuffer scaled to the current native framebuffer.
+     * Backends can override this to bypass expensive GPU resize paths during
+     * live native resizing. Returning false falls back to the normal renderer.
+     */
+    bool presentScaledResizeFrame(const(uint)[] pixels, int sourceWidth,
+        int sourceHeight, int targetWidth, int targetHeight)
+    {
+        return false;
+    }
+    abstract void setTitle(string title);
+    /**
+     * True while the current native sizing/moving gesture is a PURE MOVE (the
+     * window is being dragged but its size is unchanged). During a move the
+     * WSI "stretch the last presented image" path must NOT be used: nothing
+     * needs stretching, and the repositioned window exposes previously
+     * off-screen regions that the stale image would leave black. A move must
+     * keep presenting the real scene. Defaults to false (resize).
+     */
+    bool liveResizeIsMove() const
+    {
+        return false;
+    }
+    /** Re-apply the native frame colors when the app theme toggles dark/light. */
+    void setFrameDark(bool dark)
+    {
+    }
+    /**
+     * Replace the application icon of a live window. The path names a Windows
+     * ICO; backends that cannot update icons return false.
+     */
+    bool setIconPath(string path)
+    {
+        return false;
+    }
+    /** Current native decoration state. */
+    bool decorated() const
+    {
+        return options.decorated;
+    }
+    /**
+     * Switch between the native frame and a frameless custom-caption window.
+     * Backends that cannot restyle a live window return false.
+     */
+    bool setDecorated(bool value)
+    {
+        return false;
+    }
+    abstract void setCursor(CursorKind cursor);
+    /** Hide/show the host cursor; false means the backend cannot guarantee it. */
+    bool setPointerVisible(bool visible)
+    {
+        return false;
+    }
+    /** Start the platform's normal top-level window move loop, if supported. */
+    bool beginSystemMove()
+    {
+        return false;
+    }
+    /** Enter or leave native monitor fullscreen. */
+    abstract void setFullscreen(bool value);
+    /** Current or requested native fullscreen state. */
+    abstract bool fullscreen() const;
+    abstract void close();
+    abstract Size clientSize() const;
+    /** Outer native window bounds in Aurora logical screen coordinates. */
+    bool windowBounds(out Rect bounds)
+    {
+        bounds = Rect.init;
+        return false;
+    }
+
+    /** Move the top-level window so its outer top-left is at `logicalPosition`. */
+    bool setWindowPosition(Point logicalPosition)
+    {
+        return false;
+    }
+
+    /**
+     * Move and resize the top-level window to the given logical outer bounds
+     * (used by aero-style drag snapping). Unsupported backends return false.
+     */
+    bool setWindowBounds(Rect logicalBounds)
+    {
+        return false;
+    }
+
+    /**
+     * Work area (monitor bounds minus taskbar and docked bars) of the monitor
+     * under a screen point, in logical units. Used to compute drag-snap targets.
+     * Unsupported backends return false.
+     */
+    bool queryWorkArea(Point screenPoint, out Rect workArea)
+    {
+        workArea = Rect.init;
+        return false;
+    }
+
+    /** Force an immediate synchronous full repaint of the window surface. */
+    bool redrawWindow()
+    {
+        return false;
+    }
+
+    final void toggleFullscreen()
+    {
+        setFullscreen(!fullscreen());
+    }
+
+    /** Minimize the window to the taskbar; unsupported backends return false. */
+    bool minimize()
+    {
+        return false;
+    }
+
+    /** Restore a minimized window; unsupported backends return false. */
+    bool restore()
+    {
+        return false;
+    }
+
+    /** True when the native window is currently minimized. */
+    bool isMinimized()
+    {
+        return false;
+    }
+
+    /**
+     * Opt out of minimizing. Desktop-shell windows cover the screen and have no
+     * taskbar button to restore them, so a stray Win+D / "Show desktop" would
+     * leave the last frame on screen with no way back (looks frozen). When set,
+     * minimize requests are ignored by the platform. Unsupported backends
+     * return false.
+     */
+    bool setPreventMinimize(bool prevent)
+    {
+        return false;
+    }
+
+    /** True when minimize requests are ignored (see setPreventMinimize). */
+    bool preventMinimize()
+    {
+        return false;
+    }
+
+    /**
+     * Hide or show the native window (used for minimize-to-tray, where the
+     * taskbar button disappears but the process keeps running). Unsupported
+     * backends return false.
+     */
+    bool setVisible(bool visible)
+    {
+        return false;
+    }
+
+    /** Physical pixel extent consumed by Vulkan or the software presenter. */
+    Size framebufferSize() const
+    {
+        return clientSize();
+    }
+
+    /** Logical-to-physical scale for the monitor currently containing the window. */
+    DisplayScale displayScale() const
+    {
+        return DisplayScale.init;
+    }
+
+    /**
+     * Sample the newest native pointer position in subpixel Aurora logical units.
+     * Backends may return false when the host cannot query pointer state directly.
+     */
+    bool queryPointerPosition(out PointF position)
+    {
+        position = PointF.init;
+        return false;
+    }
+
+    /** Absolute screen position of the native pointer in logical units. */
+    bool queryPointerScreenPosition(out PointF position)
+    {
+        position = PointF.init;
+        return false;
+    }
+
+    /** Synchronize a custom view's pixel scroll range with its native host. */
+    void setVerticalScrollInfo(int position, int maximum, int pageSize)
+    {
+    }
+
+    /** Begin an outbound native drag; unsupported backends return none. */
+    DragAction beginDrag(DragPayload payload, DragActions allowedActions)
+    {
+        return DragAction.none;
+    }
+
+    NativeSurfaceInfo nativeSurfaceInfo()
+    {
+        return NativeSurfaceInfo.init;
+    }
+}

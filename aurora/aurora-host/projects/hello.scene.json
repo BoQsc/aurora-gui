@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "New Aurora Scene",
+    "width": 1100,
+    "height": 720,
+    "theme": "dark"
+  },
+  "root": {
+    "id": "root",
+    "type": "column",
+    "spacing": 16,
+    "padding": 32,
+    "background": "#0b1020",
+    "children": [
+      {
+        "id": "heading",
+        "type": "label",
+        "text": "New Aurora Scene",
+        "scale": 4,
+        "textColor": "#f8fafc"
+      },
+      {
+        "id": "subtitle",
+        "type": "label",
+        "text": "Edit the source in the dev panel, then Reload.",
+        "scale": 1,
+        "textColor": "#94a3b8"
+      },
+      {
+        "id": "card",
+        "type": "row",
+        "spacing": 12,
+        "padding": 18,
+        "background": "#0b1220",
+        "border": "#1e293b",
+        "radius": 10,
+        "children": [
+          {
+            "id": "kicker",
+            "type": "label",
+            "text": "DEV MODE",
+            "scale": 1,
+            "textColor": "#34d399"
+          },
+          {
+            "id": "card-text",
+            "type": "label",
+            "text": "This file is the program. Save writes it; Reload applies it.",
+            "scale": 1,
+            "textColor": "#94a3b8"
+          }
+        ]
+      },
+      {
+        "type": "spacer",
+        "flex": 1
+      },
+      {
+        "id": "footer",
+        "type": "label",
+        "text": "Single executable · no Python required",
+        "scale": 1,
+        "textColor": "#64748b"
+      }
+    ]
+  }
+}

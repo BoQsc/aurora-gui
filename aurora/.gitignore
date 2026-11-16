@@ -1,0 +1,13 @@
+# Build and verification output
+build/
+.dub/
+*.exe
+*.pdb
+*.obj
+*.lib
+*.log
+__pycache__/
+*.pyc
+
+# Local scene sessions
+aurora-scene.json

@@ -1,0 +1,965 @@
+module aurora.widgets.contextmenu;
+
+import aurora.canvas : Canvas;
+import aurora.color : Color;
+import aurora.event : Event, Key, MouseButton;
+import aurora.icons : IconKind, drawIcon;
+import aurora.types : CursorKind, HorizontalAlign, Point, Rect, VerticalAlign,
+    clampInt, maxInt, minInt;
+import aurora.widget : Widget;
+import aurora.widgets.popup : TransientPopup, currentTransientPopup,
+    dismissTransientPopups, lastPointerPressClaimed, lastPointerPressGlobal,
+    popupRoot;
+
+import std.utf : toUTF32;
+
+/** One command, check item, or separator in an Aurora-rendered context menu. */
+struct ContextMenuItem
+{
+    dstring label;
+    dstring shortcut;
+    IconKind icon = IconKind.none;
+    bool separator;
+    bool enabled = true;
+    bool checked;
+    void delegate() action;
+    /// Non-empty marks a cascading (sub-menu) item; its items render in a
+    /// child menu that slides out to the right of the parent on hover.
+    ContextMenuItem[] submenu;
+
+    static ContextMenuItem command(string label, IconKind icon,
+        void delegate() action, string shortcut = "", bool enabled = true)
+    {
+        ContextMenuItem result;
+        result.label = toUTF32(label);
+        result.shortcut = toUTF32(shortcut);
+        result.icon = icon;
+        result.enabled = enabled;
+        result.action = action;
+        return result;
+    }
+
+    static ContextMenuItem command(string label, void delegate() action,
+        string shortcut = "", bool enabled = true)
+    {
+        return command(label, IconKind.none, action, shortcut, enabled);
+    }
+
+    static ContextMenuItem check(string label, bool checked,
+        void delegate() action, bool enabled = true)
+    {
+        auto result = command(label, IconKind.none, action, "", enabled);
+        result.checked = checked;
+        return result;
+    }
+
+    static ContextMenuItem separatorItem()
+    {
+        ContextMenuItem result;
+        result.separator = true;
+        result.enabled = false;
+        return result;
+    }
+
+    /// A sub-menu item whose children render in a slide-out parent menu.
+    static ContextMenuItem submenuItem(string label, IconKind icon,
+        ContextMenuItem[] children, bool enabled = true)
+    {
+        auto result = command(label, icon, null, "", enabled);
+        result.submenu = children;
+        return result;
+    }
+
+    bool hasSubmenu() const @safe pure nothrow @nogc
+    {
+        return submenu.length > 0;
+    }
+}
+
+/**
+ * Full-window transparent popup layer. It owns dismissal, keyboard traversal,
+ * and the rendered menu, so context menus never depend on a host-OS popup.
+ */
+class ContextMenu : TransientPopup
+{
+    private ContextMenuItem[] _items;
+    private Point _requestedOrigin;
+    private Rect _requestedAnchor;
+    private bool _hasRequestedAnchor;
+    private Rect _consumeAnchorGlobal;
+    private bool _consumeAnchorPress;
+    // Whether this menu may toggle by the recorded press point. Set by the
+    // opener only for a live press.
+    private bool _toggleByPress;
+    private Point _openPressGlobal;
+
+    private Rect _menuRect;
+    private int _hot = -1;
+    private int _pressed = -1;
+    // Compact editor menus: roughly one third of the former surface area while
+    // retaining readable labels and full keyboard/mouse hit targets.
+    private int _rowHeight = 22;
+    private int _separatorHeight = 4;
+    private int _padding = 3;
+    // Icon column geometry, in pixels. drawIcon renders several glyphs wider
+    // than their 16-pixel box (folder/terminal/computer reach ~10 px and the
+    // settings gear ~14 px from the centre), so the column is wider than the
+    // box and the label starts clear of the widest glyph instead of crowding
+    // it. labelLeftOffset is the label's x offset from the item rect.
+    private enum int iconColumnLeft = 5;
+    private enum int iconColumnWidth = 22;
+    private enum int iconLabelGap = 5;
+    private enum int labelLeftOffset =
+        iconColumnLeft + iconColumnWidth + iconLabelGap;
+    private int _scrollOffset;
+    /**
+     * Fired on mouse-move while the pointer is OUTSIDE the menu's own rect.
+     * Menu-bar dropdowns use this to switch to another top-level item when the
+     * pointer moves over it (native Windows behavior). The argument is the
+     * menu-local position; the owner may convert to global/root space.
+     */
+    bool delegate(Point localPosition) onMouseMoveOutside;
+    /// Child sub-menu currently open to the right of a cascade item.
+    private ContextMenu _child;
+    /// The parent cascade item index that owns `_child`.
+    private int _submenuOwnerIndex = -1;
+    /// The menu that opened `this` as a cascade, if any.
+    private ContextMenu _parentMenu;
+    this(ContextMenuItem[] items, Widget focusReturn = null)
+    {
+        super(focusReturn);
+        _items = items.dup;
+        setCursor(CursorKind.arrow);
+    }
+
+    const(ContextMenuItem)[] items() const @safe pure nothrow @nogc
+    {
+        return _items;
+    }
+
+    Rect menuRect() const @safe pure nothrow @nogc
+    {
+        return _menuRect;
+    }
+
+    /// The currently open cascade sub-menu, or null when none is open.
+    ContextMenu childMenu()
+    {
+        return _child;
+    }
+
+    int rowHeightForTesting() const @safe pure nothrow @nogc
+    {
+        return _rowHeight;
+    }
+
+    override bool popupContains(Point globalPoint) const @safe pure nothrow @nogc
+    {
+        const origin = globalOrigin();
+        return _menuRect.contains(Point(globalPoint.x - origin.x,
+            globalPoint.y - origin.y));
+    }
+
+    /**
+     * Keep an anchor toggle from closing and immediately reopening this menu.
+     *
+     * `globalAnchor` is the anchor rectangle a press inside it toggles. It may
+     * be empty: the opening press point then decides the toggle, which is what
+     * an opener that does not know the control geometry (a menu opened by a
+     * view opened on the same click) relies on.
+     *
+     * `ownerHandlesToggle` true means the owner keeps its own surface open and
+     * closes it on the next click by itself, so an empty-rect menu must not
+     * also swallow that click by the shared press point.
+     */
+    void setConsumeAnchorPress(Rect globalAnchor,
+        bool ownerHandlesToggle = false)
+    {
+        _consumeAnchorGlobal = globalAnchor;
+        _consumeAnchorPress = true;
+        _toggleByPress = !ownerHandlesToggle;
+    }
+
+    /** Arm the toggle against a widget anchor, deriving its global rect. */
+    void setConsumeAnchorPress(Widget anchor)
+    {
+        if (anchor is null)
+        {
+            _consumeAnchorPress = _openPressGlobal != Point.init;
+            if (_consumeAnchorPress) _consumeAnchorGlobal = Rect.init;
+            return;
+        }
+        const origin = anchor.globalOrigin();
+        setConsumeAnchorPress(Rect(origin.x, origin.y,
+            anchor.bounds().width, anchor.bounds().height));
+    }
+
+    override bool dismissPopupForPointer(Point globalPoint, MouseButton button)
+    {
+        // Swallow only the left press that toggles the anchor button; other
+        // presses dismiss the menu and pass through unchanged. The exact opener
+        // press point is matched too, so a menu anchored below its button (or
+        // owned by a larger row) still toggles instead of reopening.
+        const consume = consumePressedAnchor(globalPoint, button);
+        dismiss();
+        return consume;
+    }
+
+    /// The "is this the press that opened me, and does it toggle?" decision.
+    private bool consumePressedAnchor(Point globalPoint, MouseButton button)
+    {
+        if (button != MouseButton.left || !_consumeAnchorPress) return false;
+        // A right-click, or a menu with no toggle anchor, just dismisses and
+        // lets the press through.
+        //
+        // The anchor rect is the owner's own geometry and therefore precise: a
+        // press inside it is the anchor toggle, so swallow it.
+        if (!_consumeAnchorGlobal.empty() && _consumeAnchorGlobal.contains(globalPoint))
+            return true;
+        // The recorded press point covers the case where the anchor rect does
+        // not describe the control that was clicked (a menu opened below its
+        // button, or owned by a wider row). It is trusted only while its press
+        // has not already been claimed: a second press at the same point is a
+        // genuinely new click, so it must dismiss and pass through instead of
+        // toggling.
+        return _toggleByPress &&
+            _openPressGlobal != Point.init && _openPressGlobal == globalPoint;
+    }
+
+
+    void openAt(Point localPosition)
+    {
+        _requestedOrigin = localPosition;
+        _requestedAnchor = Rect.init;
+        _hasRequestedAnchor = false;
+        _scrollOffset = 0;
+        recalculateMenuRect();
+        // Native Windows menus open with no item highlighted; the highlight
+        // appears only on hover or keyboard navigation (see onMouseMove and
+        // onKeyDown). Pre-selecting the first item would draw a hover band on
+        // the first row immediately after a mouse open.
+        _hot = -1;
+        requestFocus();
+        invalidate();
+    }
+
+    void openBelow(Rect localAnchor)
+    {
+        _requestedAnchor = localAnchor;
+        _hasRequestedAnchor = true;
+        _requestedOrigin = Point(localAnchor.x, localAnchor.bottom());
+        _scrollOffset = 0;
+        recalculateMenuRect();
+        _hot = -1;
+        requestFocus();
+        invalidate();
+    }
+
+    override void dismiss()
+    {
+        if (dismissed()) return;
+        closeChild();
+        if (_pressed >= 0)
+        {
+            _pressed = -1;
+            releaseMouse();
+        }
+        super.dismiss();
+    }
+
+    /// Close the cascade sub-menu, if any, without dismissing this menu.
+    private void closeChild()
+    {
+        if (_child !is null)
+        {
+            _child.dismiss();
+            _child = null;
+        }
+        _submenuOwnerIndex = -1;
+        invalidate();
+    }
+
+    private bool openChildFor(int index)
+    {
+        if (index < 0 || index >= cast(int) _items.length) return false;
+        if (!_items[cast(size_t) index].hasSubmenu() ||
+            !_items[cast(size_t) index].enabled)
+            return false;
+        if (_child !is null && index == _submenuOwnerIndex) return true;
+        closeChild();
+
+        auto root = popupRoot(this);
+        if (root is null) return false;
+        auto childItems = _items[cast(size_t) index].submenu.dup;
+        if (childItems.length == 0) return false;
+        auto child = new ContextMenu(childItems, this);
+        child._parentMenu = this;
+        root.add(child);
+        child.setBounds(Rect(0, 0, root.bounds().width, root.bounds().height));
+        root.bringChildToFront(child);
+        // Position the cascade just right of the parent item, aligned to the
+        // item's top so it reads as "sliding out to the right". When the menu
+        // would overflow the root's right edge, flip it to the left of the item
+        // so every child item stays on screen and under the cursor.
+        const parentRect = itemRect(index);
+        const childOrigin = parentRect.right() + child.preferredMenuWidth() >
+            bounds().width - 4 ?
+            Point(parentRect.x - 2, parentRect.y - 2) :
+            Point(parentRect.right(), parentRect.y - 2);
+        child.openAt(childOrigin);
+        child.onDismissed = delegate()
+        {
+            if (_child is child)
+            {
+                _child = null;
+                _submenuOwnerIndex = -1;
+                invalidate();
+            }
+        };
+        _child = child;
+        _submenuOwnerIndex = index;
+        invalidate();
+        return true;
+    }
+
+    private void updateChildForHot()
+    {
+        const int index = _hot;
+        if (index >= 0 && index < cast(int) _items.length &&
+            _items[cast(size_t) index].hasSubmenu() &&
+            _items[cast(size_t) index].enabled)
+        {
+            openChildFor(index);
+            return;
+        }
+        closeChild();
+    }
+
+    protected override void onBoundsChanged()
+    {
+        recalculateMenuRect();
+    }
+
+    private int preferredMenuWidth() const @safe pure nothrow @nogc
+    {
+        int width = 148;
+        foreach (item; _items)
+        {
+            if (item.separator) continue;
+            const estimatedLabel = cast(int) item.label.length * 7;
+            const estimatedShortcut = cast(int) item.shortcut.length * 7;
+            width = maxInt(width, labelLeftOffset + 23 + estimatedLabel +
+                estimatedShortcut);
+        }
+        return clampInt(width, 148, 280);
+    }
+
+    private int preferredMenuHeight() const @safe pure nothrow @nogc
+    {
+        int height = _padding * 2;
+        foreach (item; _items)
+            height += item.separator ? _separatorHeight : _rowHeight;
+        return maxInt(1, height);
+    }
+
+    private int maximumScroll() const @safe pure nothrow @nogc
+    {
+        return maxInt(0, preferredMenuHeight() - _menuRect.height);
+    }
+
+    private void clampScroll()
+    {
+        _scrollOffset = clampInt(_scrollOffset, 0, maximumScroll());
+    }
+
+    private void recalculateMenuRect()
+    {
+        if (bounds().width <= 0 || bounds().height <= 0)
+        {
+            _menuRect = Rect.init;
+            return;
+        }
+
+        const preferredWidth = preferredMenuWidth();
+        int x;
+        int width;
+        if (_hasRequestedAnchor)
+        {
+            width = minInt(preferredWidth, maxInt(80, bounds().width - 8));
+            x = _requestedAnchor.x;
+            if (x + width > bounds().width - 4)
+                x = _requestedAnchor.right() - width;
+            x = clampInt(x, 4, maxInt(4, bounds().width - width - 4));
+        }
+        else
+        {
+            x = clampInt(_requestedOrigin.x + 2, 4, maxInt(4, bounds().width - 84));
+
+            const availableWidth = maxInt(80, bounds().width - x - 4);
+            width = minInt(preferredWidth, availableWidth);
+            if (preferredWidth > availableWidth && width < 180 &&
+                bounds().width >= 188)
+            {
+                width = minInt(preferredWidth, bounds().width - 8);
+                x = bounds().width - width - 4;
+            }
+        }
+
+        const preferredHeight = preferredMenuHeight();
+        const minimumHeight = 40;
+        const belowY = _hasRequestedAnchor ? _requestedAnchor.bottom() + 2 :
+            _requestedOrigin.y + 2;
+        const belowSpace = maxInt(0, bounds().height - 4 - belowY);
+        const aboveBottom = _hasRequestedAnchor ? _requestedAnchor.y - 2 :
+            _requestedOrigin.y - 2;
+        const aboveSpace = maxInt(0, aboveBottom - 4);
+        const openAbove = preferredHeight > belowSpace &&
+            aboveSpace >= minimumHeight && aboveSpace >= belowSpace;
+
+        int height;
+        int y;
+        if (openAbove)
+        {
+            height = minInt(preferredHeight, aboveSpace);
+            y = aboveBottom - height;
+        }
+        else
+        {
+            height = minInt(preferredHeight, maxInt(minimumHeight, belowSpace));
+            y = belowY;
+        }
+        height = minInt(height, maxInt(minimumHeight, bounds().height - 8));
+        y = clampInt(y, 4, maxInt(4, bounds().height - height - 4));
+        _menuRect = Rect(x, y, width, height);
+        clampScroll();
+    }
+
+    private Rect itemRect(int requestedIndex) const @safe pure nothrow @nogc
+    {
+        int y = _menuRect.y + _padding - _scrollOffset;
+        foreach (index, item; _items)
+        {
+            const height = item.separator ? _separatorHeight : _rowHeight;
+            if (cast(int) index == requestedIndex)
+                return Rect(_menuRect.x + _padding, y,
+                    maxInt(0, _menuRect.width - _padding * 2), height);
+            y += height;
+        }
+        return Rect.init;
+    }
+
+    private void revealHot()
+    {
+        if (_hot < 0 || _menuRect.empty()) return;
+        const rect = itemRect(_hot);
+        const top = _menuRect.y + _padding;
+        const bottom = _menuRect.bottom() - _padding;
+        if (rect.y < top) _scrollOffset -= top - rect.y;
+        else if (rect.bottom() > bottom) _scrollOffset += rect.bottom() - bottom;
+        clampScroll();
+    }
+
+    private int itemAt(Point point) const @safe pure nothrow @nogc
+    {
+        if (!_menuRect.contains(point)) return -1;
+        foreach (index, item; _items)
+        {
+            if (!item.separator && itemRect(cast(int) index).contains(point))
+                return cast(int) index;
+        }
+        return -1;
+    }
+
+    private bool selectable(int index) const @safe pure nothrow @nogc
+    {
+        return index >= 0 && index < cast(int) _items.length &&
+            !_items[cast(size_t) index].separator &&
+            _items[cast(size_t) index].enabled;
+    }
+
+    private int firstSelectable() const @safe pure nothrow @nogc
+    {
+        foreach (index, item; _items)
+            if (!item.separator && item.enabled) return cast(int) index;
+        return -1;
+    }
+
+    private int lastSelectable() const @safe pure nothrow @nogc
+    {
+        for (size_t index = _items.length; index > 0; --index)
+        {
+            const item = _items[index - 1];
+            if (!item.separator && item.enabled) return cast(int) index - 1;
+        }
+        return -1;
+    }
+
+    private int nextSelectable(int start, int direction) const @safe pure nothrow @nogc
+    {
+        if (_items.length == 0) return -1;
+        int index = start;
+        foreach (_; 0 .. _items.length)
+        {
+            index += direction;
+            if (index < 0) index = cast(int) _items.length - 1;
+            if (index >= cast(int) _items.length) index = 0;
+            if (selectable(index)) return index;
+        }
+        return -1;
+    }
+
+    private void setHot(int value)
+    {
+        if (_hot == value) return;
+        _hot = value;
+        revealHot();
+        invalidate();
+        updateChildForHot();
+    }
+
+    private void activate(int index)
+    {
+        if (!selectable(index)) return;
+        const item = _items[cast(size_t) index];
+        if (item.hasSubmenu())
+            return; // cascade items never activate; hover drives their child
+        auto action = item.action;
+        dismiss();
+        if (_parentMenu !is null)
+            _parentMenu.dismiss();
+        if (action !is null) action();
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        if (_menuRect.empty()) return;
+        const palette = theme();
+        // Soft, subtle drop shadow: very low alpha, small offset, like the
+        // thin translucent shadow native Windows menus cast. A bold hard
+        // shadow (large alpha + wide offset) looks out of place next to the
+        // flat Win10 chrome.
+        const shadow = _menuRect.translated(2, 3);
+        canvas.fillRoundedRect(shadow, 5, palette.shadow.withAlpha(38));
+        // Light 1 px border instead of a near-opaque one.
+        canvas.drawRoundedRect(_menuRect, 4, palette.panelElevated,
+            palette.border.withAlpha(110), 1);
+
+        auto content = canvas.clipped(_menuRect.inset(1));
+        foreach (index, item; _items)
+        {
+            const rect = itemRect(cast(int) index);
+            if (rect.bottom() <= _menuRect.y + 1 || rect.y >= _menuRect.bottom() - 1)
+                continue;
+            if (item.separator)
+            {
+                const y = rect.y + rect.height / 2;
+                content.fillRect(Rect(rect.x + 8, y, maxInt(0, rect.width - 16), 1),
+                    palette.border.withAlpha(180));
+                continue;
+            }
+
+            const active = cast(int) index == _hot;
+            if (active)
+                content.fillRoundedRect(rect.inset(1), 3,
+                    item.enabled ? palette.buttonHover : palette.buttonHover.withAlpha(55));
+
+            const foreground = item.enabled ? palette.text : palette.disabled;
+            const iconRect = Rect(rect.x + iconColumnLeft,
+                rect.y + (rect.height - 16) / 2, 16, 16);
+            if (item.checked)
+            {
+                const cx = iconRect.x + iconRect.width / 2;
+                const cy = iconRect.y + iconRect.height / 2;
+                content.drawLine(Point(cx - 6, cy), Point(cx - 1, cy + 5), foreground, 2);
+                content.drawLine(Point(cx - 1, cy + 5), Point(cx + 7, cy - 5), foreground, 2);
+            }
+            else if (item.icon != IconKind.none)
+                drawIcon(content, item.icon, iconRect, foreground, palette.accent);
+
+            const shortcutWidth = item.shortcut.length == 0 ? 0 :
+                maxInt(42, cast(int) item.shortcut.length * 7 + 8);
+            content.drawTextInRect(Rect(rect.x + labelLeftOffset, rect.y,
+                    maxInt(0, rect.width - labelLeftOffset - 6 - shortcutWidth),
+                    rect.height),
+                item.label, foreground, palette.fontScale,
+                HorizontalAlign.left, VerticalAlign.middle, true);
+            if (shortcutWidth > 0)
+                content.drawTextInRect(Rect(rect.right() - shortcutWidth - 5, rect.y,
+                        shortcutWidth, rect.height), item.shortcut,
+                    item.enabled ? palette.textMuted : palette.disabled,
+                    palette.fontScale, HorizontalAlign.right, VerticalAlign.middle, true);
+            if (item.hasSubmenu())
+                content.drawTextInRect(Rect(rect.right() - 20, rect.y, 16, rect.height),
+                    "►", foreground, palette.fontScale,
+                    HorizontalAlign.center, VerticalAlign.middle, true);
+        }
+
+        if (_scrollOffset > 0)
+            content.fillVerticalGradient(Rect(_menuRect.x + 2, _menuRect.y + 2,
+                _menuRect.width - 4, 10), palette.panelElevated,
+                palette.panelElevated.withAlpha(0));
+        if (_scrollOffset < maximumScroll())
+            content.fillVerticalGradient(Rect(_menuRect.x + 2, _menuRect.bottom() - 12,
+                _menuRect.width - 4, 10), palette.panelElevated.withAlpha(0),
+                palette.panelElevated);
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        // A cascade sub-menu sits in front of its parent as a full-window popup,
+        // so the framework routes every pointer move to it, even when the cursor
+        // is actually over the parent menu. Forward such moves to the parent so
+        // it recomputes its hover and can retract this child (or switch to a
+        // neighbouring cascade) instead of the child swallowing the event.
+        if (_parentMenu !is null && !_menuRect.contains(event.position))
+        {
+            _parentMenu.forwardPointerMove(event.position);
+            return true;
+        }
+        const index = itemAt(event.position);
+        if (index < 0 && onMouseMoveOutside !is null)
+        {
+            // Pointer left the menu panel (e.g. over the menu bar). Let the
+            // owner switch/highlight top-level items as in native Windows.
+            onMouseMoveOutside(event.position);
+        }
+        setHot(index >= 0 && _items[cast(size_t) index].enabled ? index : -1);
+        return true;
+    }
+
+    /// Handle a pointer move that arrived at a child cascade menu but actually
+    /// lies over this (parent) menu's panel. Recomputes the hot item and, via
+    /// updateChildForHot, keeps or retracts the open cascade.
+    private void forwardPointerMove(Point localPoint)
+    {
+        const index = itemAt(localPoint);
+        if (index < 0 && onMouseMoveOutside !is null)
+            onMouseMoveOutside(localPoint);
+        setHot(index >= 0 && _items[cast(size_t) index].enabled ? index : -1);
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button != MouseButton.left && event.button != MouseButton.right)
+            return true;
+        if (!_menuRect.contains(event.position))
+        {
+            dismiss();
+            return true;
+        }
+        const index = itemAt(event.position);
+        setHot(index >= 0 && _items[cast(size_t) index].enabled ? index : -1);
+        if (event.button == MouseButton.left && selectable(index))
+        {
+            _pressed = index;
+            captureMouse();
+            invalidate();
+        }
+        return true;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (event.button != MouseButton.left) return true;
+        const pressed = _pressed;
+        _pressed = -1;
+        releaseMouse();
+        if (pressed >= 0 && pressed == itemAt(event.position))
+            activate(pressed);
+        else
+            invalidate();
+        return true;
+    }
+
+    override bool onMouseWheel(ref Event event)
+    {
+        if (maximumScroll() <= 0) return true;
+        const old = _scrollOffset;
+        _scrollOffset = clampInt(_scrollOffset - event.wheelY * _rowHeight,
+            0, maximumScroll());
+        if (_scrollOffset != old)
+        {
+            _hot = itemAt(event.position);
+            invalidate();
+        }
+        return true;
+    }
+
+    override bool onKeyDown(ref Event event)
+    {
+        switch (event.key)
+        {
+            case Key.escape:
+                if (_child !is null)
+                {
+                    closeChild();
+                    return true;
+                }
+                dismiss();
+                return true;
+            case Key.left:
+                closeChild();
+                return true;
+            case Key.right:
+                if (_hot >= 0 && _items[cast(size_t) _hot].hasSubmenu())
+                    openChildFor(_hot);
+                return true;
+            case Key.down:
+                setHot(nextSelectable(_hot < 0 ? cast(int) _items.length - 1 : _hot, 1));
+                return true;
+            case Key.up:
+                setHot(nextSelectable(_hot < 0 ? 0 : _hot, -1));
+                return true;
+            case Key.home:
+                setHot(firstSelectable());
+                return true;
+            case Key.end:
+                setHot(lastSelectable());
+                return true;
+            case Key.enter:
+            case Key.space:
+                activate(_hot);
+                return true;
+            default:
+                return true;
+        }
+    }
+}
+
+/** Remove any Aurora context menu or other transient popup attached to the root. */
+void dismissContextMenus(Widget owner)
+{
+    dismissTransientPopups(owner);
+}
+
+/** Show a context menu at a host-window global logical position. */
+ContextMenu showContextMenu(Widget owner, Point globalPosition, ContextMenuItem[] items)
+{
+    if (owner is null || items.length == 0) return null;
+    auto root = popupRoot(owner);
+    if (root is null) return null;
+    dismissTransientPopups(root);
+    auto popup = new ContextMenu(items, owner);
+    root.add(popup);
+    popup.setBounds(Rect(0, 0, root.bounds().width, root.bounds().height));
+    root.bringChildToFront(popup);
+    // Toggle behavior: clicking this menu's anchor opens it here, so remember
+    // which press did. The next press at the same point then closes the menu
+    // instead of closing and immediately reopening it.
+    popup.setConsumeAnchorPress(owner);
+    popup.openAt(root.globalToLocal(globalPosition));
+    return popup;
+}
+
+/**
+ * Show a context menu without dismissing the host popup. Used by edit fields
+ * that live inside a popup (e.g. the yt-dlp URL field): right-clicking them
+ * must open the editing menu while keeping the dialog itself open. Only other
+ * open context menus are closed, so the new one stays on top.
+ */
+ContextMenu showContextMenuKeepPopups(Widget owner, Point globalPosition,
+    ContextMenuItem[] items)
+{
+    if (owner is null || items.length == 0) return null;
+    auto root = popupRoot(owner);
+    if (root is null) return null;
+    // Close only sibling context menus, never the popup that owns the field.
+    ContextMenu[] existing;
+    foreach (child; root.children())
+        if (auto menu = cast(ContextMenu) child) existing ~= menu;
+    foreach (menu; existing) menu.dismiss();
+    auto popup = new ContextMenu(items, owner);
+    root.add(popup);
+    popup.setBounds(Rect(0, 0, root.bounds().width, root.bounds().height));
+    root.bringChildToFront(popup);
+    popup.openAt(root.globalToLocal(globalPosition));
+    return popup;
+}
+
+/**
+ * Show a context menu directly below the owner widget as a dropdown.
+ *
+ * `ownerHandlesToggle` true means the owner keeps its own surface open and
+ * closes it on the next click itself: the menu then only dismisses and never
+ * swallows a press by the shared opener point (the owner's own anchor rect
+ * still toggles the menu closed).
+ */
+ContextMenu showContextMenuBelow(Widget owner, ContextMenuItem[] items,
+    bool ownerHandlesToggle = false)
+{
+    if (owner is null || items.length == 0) return null;
+    auto root = popupRoot(owner);
+    if (root is null) return null;
+    dismissTransientPopups(root);
+    auto popup = new ContextMenu(items, owner);
+    root.add(popup);
+    popup.setBounds(Rect(0, 0, root.bounds().width, root.bounds().height));
+    root.bringChildToFront(popup);
+    const ownerOrigin = owner.globalOrigin();
+    const rootOrigin = root.globalOrigin();
+    popup.setConsumeAnchorPress(Rect(ownerOrigin.x - rootOrigin.x,
+        ownerOrigin.y - rootOrigin.y, owner.bounds().width,
+        owner.bounds().height), ownerHandlesToggle);
+    popup.openBelow(Rect(ownerOrigin.x - rootOrigin.x,
+        ownerOrigin.y - rootOrigin.y, owner.bounds().width,
+        owner.bounds().height));
+    return popup;
+}
+
+
+unittest
+{
+    // Label clearance: drawIcon draws several glyphs wider than the 16-pixel
+    // box (the settings gear reaches 14 px from the icon centre), so the label
+    // offset must keep the text clear of the widest glyph.
+    assert(ContextMenu.iconColumnLeft + 16 / 2 + 14 <=
+        ContextMenu.labelLeftOffset - 2);
+
+    auto root = new ContextMenuTestRoot();
+    root.setBounds(Rect(0, 0, 640, 480));
+    bool activated;
+    auto anchored = showContextMenu(root, Point(120, 90), [
+        ContextMenuItem.command("Anchor", delegate() {})
+    ]);
+    assert(anchored.menuRect().x == 122 && anchored.menuRect().y == 92);
+    anchored.dismiss();
+
+    auto menu = showContextMenu(root, Point(630, 470), [
+        ContextMenuItem.command("Open", IconKind.open, delegate() { activated = true; }),
+        ContextMenuItem.separatorItem(),
+        ContextMenuItem.check("Align to grid", true, delegate() {})
+    ]);
+    assert(menu !is null);
+    assert(menu.menuRect().right() <= 636);
+    assert(menu.menuRect().bottom() <= 476);
+    // A mouse-open menu must not pre-highlight an item; Down selects the
+    // first selectable one, then Enter activates it.
+    Event down;
+    down.key = Key.down;
+    assert(menu.onKeyDown(down));
+    Event key;
+    key.key = Key.enter;
+    assert(menu.onKeyDown(key));
+    assert(activated);
+    assert(menu.dismissed());
+
+    // Cascade sub-menu: hover opens it to the right, moving away closes it,
+    // and activating a child dismisses the whole cascade chain.
+    bool childActivated;
+    ContextMenuItem[] views;
+    views ~= ContextMenuItem.command("Details", delegate() { childActivated = true; });
+    auto cascade = showContextMenu(root, Point(120, 90), [
+        ContextMenuItem.submenuItem("View", IconKind.none, views),
+        ContextMenuItem.command("Refresh", delegate() {})
+    ]);
+    assert(cascade !is null);
+    const cr = cascade.menuRect();
+    assert(cr.x == 122 && cr.y == 92);
+    // Hover the cascade row (row 0): the sub-menu slides out to the right.
+    Event hover;
+    hover.position = Point(cr.x + 30, cr.y + 11);
+    cascade.onMouseMove(hover);
+    auto child = cascade.childMenu();
+    assert(child !is null);
+    assert(child.menuRect().x >= cr.right() - 4);
+    assert(child.menuRect().y >= cr.y - 4);
+    // Hovering the plain second row closes the sub-menu.
+    hover.position = Point(cr.x + 30, cr.y + 11 + 22);
+    cascade.onMouseMove(hover);
+    assert(cascade.childMenu() is null);
+    // Re-open and activate a child with the keyboard: both menus close.
+    hover.position = Point(cr.x + 30, cr.y + 11);
+    cascade.onMouseMove(hover);
+    child = cascade.childMenu();
+    assert(child !is null);
+    Event downKey;
+    downKey.key = Key.down;
+    assert(child.onKeyDown(downKey));
+    Event enterKey;
+    enterKey.key = Key.enter;
+    assert(child.onKeyDown(enterKey));
+    assert(childActivated);
+    assert(child.dismissed());
+    assert(cascade.dismissed());
+
+    // Toggle contract: a menu opened by a press on its anchor must be closed
+    // (and that press swallowed) by the next press at the same point, so an
+    // anchored dropdown opens on one click and closes on the next instead of
+    // closing and immediately reopening.
+    lastPointerPressGlobal = Point(120, 90);
+    auto toggle = showContextMenu(root, Point(120, 90), [
+        ContextMenuItem.command("Only", delegate() {})
+    ]);
+    assert(toggle !is null && !toggle.dismissed());
+    assert(toggle.dismissPopupForPointer(Point(120, 90), MouseButton.left),
+        "the closing press on the opener point was not swallowed");
+    assert(toggle.dismissed(), "the menu did not close on its toggle press");
+    // A menu opened with an explicit anchor rect ignores the press point: a
+    // press inside the rect toggles, a press outside dismisses and passes
+    // through so it can reach whatever sits underneath.
+    lastPointerPressGlobal = Point(400, 300);
+    toggle = showContextMenu(root, Point(400, 300), [
+        ContextMenuItem.command("Only", delegate() {})
+    ]);
+    toggle.setConsumeAnchorPress(Rect(120, 80, 80, 40));
+    assert(toggle.dismissPopupForPointer(Point(160, 100), MouseButton.left),
+        "a press inside the anchor rect must toggle");
+    assert(toggle.dismissed());
+    lastPointerPressGlobal = Point(400, 300);
+    toggle = showContextMenu(root, Point(400, 300), [
+        ContextMenuItem.command("Only", delegate() {})
+    ]);
+    toggle.setConsumeAnchorPress(Rect(120, 80, 80, 40));
+    assert(!toggle.dismissPopupForPointer(Point(400, 300), MouseButton.left),
+        "a press outside the anchor rect must pass through");
+    assert(toggle.dismissed());
+    // A press somewhere else still dismisses but must NOT be swallowed, so it
+    // can reach whatever sits underneath.
+    lastPointerPressGlobal = Point(120, 90);
+    toggle = showContextMenu(root, Point(120, 90), [
+        ContextMenuItem.command("Only", delegate() {})
+    ]);
+    // An empty anchor rect (the widget call is skipped by hand here) matches the
+    // opener point only, so a press at another point passes through.
+    toggle.setConsumeAnchorPress(Rect.init);
+    assert(!toggle.dismissPopupForPointer(Point(400, 300), MouseButton.left),
+        "a click away from the opener point must pass through");
+    assert(toggle.dismissed());
+    // A later click at the same point is a new press, not the opener: it must
+    // dismiss and pass through, or the anchor button could never be clicked
+    // again while the coordinates still match the previous open.
+    lastPointerPressClaimed = true;
+    toggle = showContextMenu(root, Point(120, 90), [
+        ContextMenuItem.command("Only", delegate() {})
+    ]);
+    toggle.setConsumeAnchorPress(Rect.init);
+    assert(!toggle.dismissPopupForPointer(Point(120, 90), MouseButton.left),
+        "a later press at the opener point must pass through");
+    assert(toggle.dismissed());
+    // The top-left corner is the "no press recorded" sentinel and must never
+    // look like a toggle.
+    lastPointerPressGlobal = Point.init;
+    toggle = showContextMenu(root, Point(120, 90), [
+        ContextMenuItem.command("Only", delegate() {})
+    ]);
+    toggle.setConsumeAnchorPress(Rect.init);
+    assert(!toggle.dismissPopupForPointer(Point(0, 0), MouseButton.left),
+        "the missing-press sentinel must not swallow a corner click");
+    toggle.dismiss();
+}
+
+
+private final class ContextMenuTestRoot : Widget
+{
+}
+
+// Standalone test entry point for building this module's tests on their own.
+// Guarding it behind `version(unittest)` collides with the generated test
+// runner of any project that consumes aurora-d as a source dependency (dub
+// reports "only one entry point main is allowed"), so gate it behind a
+// dedicated version that must be opted into explicitly.
+version (AuroraDStandaloneTestMain)
+{
+    int main() { return 0; }
+}
+

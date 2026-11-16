@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Aurora Host — Animated Canvas",
+    "width": 660,
+    "height": 400,
+    "theme": "dark"
+  },
+  "root": {
+    "type": "column",
+    "spacing": 8,
+    "children": [
+      {
+        "id": "status",
+        "type": "label",
+        "text": "waiting for the first animation tick",
+        "scale": 2
+      },
+      {
+        "id": "wave",
+        "type": "canvas",
+        "width": 620,
+        "height": 300,
+        "background": "#0b132b",
+        "events": ["tick"],
+        "tickHz": 20,
+        "commands": [
+          {
+            "op": "text",
+            "x": 24,
+            "y": 20,
+            "text": "application-driven canvas animation",
+            "color": "#f1faee",
+            "scale": 2
+          }
+        ]
+      }
+    ]
+  }
+}

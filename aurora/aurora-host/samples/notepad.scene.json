@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Untitled - Notepad",
+    "width": 900,
+    "height": 620,
+    "theme": "light",
+    "decorated": false
+  },
+  "themeOverrides": {
+    "fontScale": 1
+  },
+  "root": {
+    "id": "root",
+    "type": "column",
+    "spacing": 0,
+    "padding": 0,
+    "background": "#ffffff",
+    "children": [
+      {
+        "id": "notepad",
+        "type": "component",
+        "component": "notepad.win10",
+        "flex": 1,
+        "props": {
+          "title": "Untitled - Notepad",
+          "text": "Windows 10 Notepad\n\nThis entire window is rendered by Aurora.\nThe titlebar, menus, editor, and status bar are painted by one host component.\n\nStart typing..."
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Editor Primitive Test",
+    "width": 640,
+    "height": 420,
+    "theme": "light"
+  },
+  "root": {
+    "id": "root",
+    "type": "column",
+    "spacing": 8,
+    "children": [
+      {
+        "id": "search",
+        "type": "textField",
+        "text": "",
+        "events": ["change"]
+      },
+      {
+        "id": "editor",
+        "type": "textArea",
+        "text": "Initial editor text",
+        "events": ["change", "cursor"]
+      },
+      {
+        "id": "apply",
+        "type": "button",
+        "text": "Apply",
+        "action": "apply"
+      },
+      {
+        "id": "status",
+        "type": "label",
+        "text": "Ready",
+        "scale": 1
+      }
+    ]
+  }
+}

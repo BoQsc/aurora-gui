@@ -1,0 +1,71 @@
+{
+  "name": "aurora-host",
+  "description": "Aurora retained-scene host for live GUI design and headless rendering",
+  "authors": [
+    "Aurora project"
+  ],
+  "copyright": "Copyright (C) 2026 aurora-host contributors",
+  "license": "0BSD",
+  "sourcePaths": [
+    "source",
+    "generated"
+  ],
+  "stringImportPaths": [
+    "assets"
+  ],
+  "targetName": "aurora-host",
+  "targetType": "executable",
+  "mainSourceFile": "source/aurorahost/main.d",
+  "dflags-windows": [
+    "-mscrtlib=msvcrt"
+  ],
+  "version": "2.0.0",
+  "dependencies": {
+    "aurora-d": {
+      "path": "../aurora-d"
+    },
+    "aurora-standard": {
+      "path": "../aurora-standard"
+    }
+  },
+  "configurations": [
+    {
+      "name": "host",
+      "targetType": "executable",
+      "targetName": "aurora-host",
+      "mainSourceFile": "source/aurorahost/main.d",
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    },
+    {
+      "name": "host-headless",
+      "targetType": "executable",
+      "targetName": "aurora-host-headless",
+      "mainSourceFile": "source/aurorahost/main.d",
+      "versions": [
+        "AuroraHeadless"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ]
+    }
+  ]
+}

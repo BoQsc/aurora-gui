@@ -1,0 +1,841 @@
+module aurora.canvas;
+
+import aurora.color : Color;
+import aurora.font : FontFace, FontMetrics, FontRole, fontPixelSize;
+import aurora.image : RgbaImage;
+import aurora.render.drawlist : DrawList;
+import aurora.surface : Surface;
+import aurora.text.atlas : AtlasGlyph, FontSystem, glyphOriginX;
+import aurora.text.layout : PositionedGlyph, TextLayout, TextLayoutOptions;
+import aurora.text.unicode.grapheme : previousGraphemeBoundary;
+import aurora.types : HorizontalAlign, Point, Rect, Size, VerticalAlign,
+    clampInt, maxInt, minInt;
+import std.math : floor, ceil;
+import std.conv : to;
+
+private final class LayoutVisibility
+{
+    enum size_t chunkSize = 64;
+    Rect[] bounds;
+    // True when the per-chunk left edges advance with the glyph index. Long
+    // wrapped code lines are painted as many narrow slices of one huge layout;
+    // without this hint every slice scanned all chunks from the start.
+    bool xOrdered = true;
+    FontSystem fonts;
+    int pixelSize;
+    int renderMode;
+    double scaleX, scaleY;
+    struct FaceVersion { FontFace face; uint variation; }
+    FaceVersion[] faces;
+
+    bool current(FontSystem system, int pixels, double sx, double sy)
+    {
+        if (fonts !is system || pixelSize != pixels || scaleX != sx ||
+            scaleY != sy || renderMode != cast(int) system.renderMode) return false;
+        foreach (entry; faces)
+            if (entry.face.variationHash() != entry.variation) return false;
+        return true;
+    }
+}
+
+/** Drawing context with translation/clipping and software or draw-list output. */
+struct Canvas
+{
+    private Surface _surface;
+    private DrawList _drawList;
+    private FontSystem _fonts;
+    private int _offsetX;
+    private int _offsetY;
+    private Rect _clip;
+
+    this(Surface surface)
+    {
+        _surface = surface;
+        _fonts = FontSystem.sharedInstance();
+        _clip = Rect(0, 0, surface.width(), surface.height());
+    }
+
+    /** Immediate surface canvas with an explicit font system.
+     * Used by worker-side title rasterization so UI and export do not share a
+     * mutable glyph atlas. */
+    this(Surface surface, FontSystem fonts)
+    {
+        _surface = surface;
+        _fonts = fonts is null ? FontSystem.sharedInstance() : fonts;
+        _clip = Rect(0, 0, surface.width(), surface.height());
+    }
+
+    this(DrawList list, int width, int height)
+    {
+        _drawList = list;
+        _fonts = list.fonts;
+        _clip = Rect(0, 0, width, height);
+    }
+
+    private this(Surface surface, DrawList list, FontSystem fonts,
+        int offsetX, int offsetY, Rect clip)
+    {
+        _surface = surface;
+        _drawList = list;
+        _fonts = fonts;
+        _offsetX = offsetX;
+        _offsetY = offsetY;
+        _clip = clip;
+    }
+
+    Surface surface() { return _surface; }
+    DrawList drawList() { return _drawList; }
+    Rect clipRect() const @safe pure nothrow @nogc { return _clip; }
+
+    Canvas translated(int dx, int dy)
+    {
+        return Canvas(_surface, _drawList, _fonts,
+            _offsetX + dx, _offsetY + dy, _clip);
+    }
+
+    Canvas clipped(Rect localRect)
+    {
+        const absolute = localRect.translated(_offsetX, _offsetY);
+        return Canvas(_surface, _drawList, _fonts, _offsetX, _offsetY,
+            _clip.intersection(absolute));
+    }
+
+    Point toSurface(Point point) const @safe pure nothrow @nogc
+    {
+        return Point(point.x + _offsetX, point.y + _offsetY);
+    }
+
+    Rect toSurface(Rect rect) const @safe pure nothrow @nogc
+    {
+        return rect.translated(_offsetX, _offsetY);
+    }
+
+    void clear(Color color)
+    {
+        if (_drawList !is null)
+            _drawList.addSolidRect(_clip, color, _clip);
+        else if (_surface !is null)
+            _surface.fillRect(_clip, color, _clip);
+    }
+
+    void fillRect(Rect rect, Color color)
+    {
+        const absolute = toSurface(rect);
+        if (_drawList !is null)
+            _drawList.addSolidRect(absolute, color, _clip);
+        else if (_surface !is null)
+            _surface.fillRect(absolute, color, _clip);
+    }
+
+    /** Draw an RGB24 image with scaling. The draw-list path retains the pixel buffer. */
+    void drawRgbImage(Rect destination, int width, int height, ubyte[] pixels,
+        bool linearFiltering = true)
+    {
+        if (destination.empty() || width <= 0 || height <= 0) return;
+        const required = cast(size_t) width * cast(size_t) height * 3;
+        if (pixels.length < required) return;
+        const absolute = toSurface(destination);
+        if (_drawList !is null)
+        {
+            _drawList.addRgbImage(absolute, width, height, pixels, _clip,
+                linearFiltering);
+            return;
+        }
+        if (_surface is null) return;
+
+        const clipped = absolute.intersection(_clip);
+        if (clipped.empty()) return;
+        foreach (y; clipped.y .. clipped.bottom())
+        {
+            const sourceY = clampInt((y - absolute.y) * height /
+                maxInt(1, absolute.height), 0, height - 1);
+            foreach (x; clipped.x .. clipped.right())
+            {
+                const sourceX = clampInt((x - absolute.x) * width /
+                    maxInt(1, absolute.width), 0, width - 1);
+                const offset = (cast(size_t) sourceY * cast(size_t) width +
+                    cast(size_t) sourceX) * 3;
+                _surface.setPixel(x, y, Color.rgb(pixels[offset],
+                    pixels[offset + 1], pixels[offset + 2]));
+            }
+        }
+    }
+
+    void drawImage(Rect destination, RgbaImage image, bool linearFiltering = true)
+    {
+        if (image is null) return;
+        drawImage(destination, image, image.bounds(), Color(255, 255, 255, 255),
+            linearFiltering);
+    }
+
+    void drawImageMirroredX(Rect destination, RgbaImage image, Rect source,
+        Color tint = Color(255, 255, 255, 255), bool linearFiltering = true)
+    {
+        drawImage(destination, image, source, tint, linearFiltering, true);
+    }
+
+    void drawImage(Rect destination, RgbaImage image, Rect source,
+        Color tint = Color(255, 255, 255, 255), bool linearFiltering = true,
+        bool mirrorX = false)
+    {
+        if (image is null || destination.empty() || tint.a == 0) return;
+        source = source.intersection(image.bounds());
+        if (source.empty()) return;
+        const absolute = toSurface(destination);
+        if (_drawList !is null)
+        {
+            _drawList.addRgbaImage(absolute, image, source, tint, _clip,
+                linearFiltering, mirrorX);
+            return;
+        }
+        if (_surface is null) return;
+
+        const clipped = absolute.intersection(_clip);
+        if (clipped.empty()) return;
+        const pixels = image.pixels();
+        foreach (y; clipped.y .. clipped.bottom())
+        {
+            const sourceY = source.y + clampInt((y - absolute.y) * source.height /
+                maxInt(1, absolute.height), 0, source.height - 1);
+            foreach (x; clipped.x .. clipped.right())
+            {
+                const localSourceX = clampInt((x - absolute.x) * source.width /
+                    maxInt(1, absolute.width), 0, source.width - 1);
+                const sourceX = source.x + (mirrorX ?
+                    source.width - 1 - localSourceX : localSourceX);
+                const offset = (cast(size_t) sourceY * cast(size_t) image.width() +
+                    cast(size_t) sourceX) * 4;
+                auto color = Color(pixels[offset], pixels[offset + 1],
+                    pixels[offset + 2], pixels[offset + 3]);
+                if (tint != Color(255, 255, 255, 255))
+                    color = tintedImageColor(color, tint);
+                _surface.setPixel(x, y, color);
+            }
+        }
+    }
+
+    void strokeRect(Rect rect, Color color, int thickness = 1)
+    {
+        thickness = maxInt(1, thickness);
+        fillRect(Rect(rect.x, rect.y, rect.width, thickness), color);
+        fillRect(Rect(rect.x, rect.bottom() - thickness, rect.width, thickness), color);
+        fillRect(Rect(rect.x, rect.y + thickness, thickness,
+            maxInt(0, rect.height - thickness * 2)), color);
+        fillRect(Rect(rect.right() - thickness, rect.y + thickness, thickness,
+            maxInt(0, rect.height - thickness * 2)), color);
+    }
+
+    void fillVerticalGradient(Rect rect, Color top, Color bottom)
+    {
+        if (rect.height <= 0) return;
+        if (_drawList !is null)
+        {
+            _drawList.addVerticalGradient(toSurface(rect), top, bottom, _clip);
+            return;
+        }
+        foreach (row; 0 .. rect.height)
+        {
+            const t = rect.height <= 1 ? 0.0 : cast(double) row / (rect.height - 1);
+            fillRect(Rect(rect.x, rect.y + row, rect.width, 1), top.mixed(bottom, t));
+        }
+    }
+
+    void drawLine(Point from, Point to, Color color, int thickness = 1)
+    {
+        if (_drawList !is null)
+        {
+            _drawList.addLine(toSurface(from), toSurface(to), color, thickness, _clip);
+            return;
+        }
+        auto a = toSurface(from);
+        auto b = toSurface(to);
+        int x0 = a.x;
+        int y0 = a.y;
+        const x1 = b.x;
+        const y1 = b.y;
+        const dx = x1 > x0 ? x1 - x0 : x0 - x1;
+        const sx = x0 < x1 ? 1 : -1;
+        const dyAbs = y1 > y0 ? y1 - y0 : y0 - y1;
+        const dy = -dyAbs;
+        const sy = y0 < y1 ? 1 : -1;
+        int error = dx + dy;
+        const radius = maxInt(0, thickness - 1) / 2;
+        while (true)
+        {
+            if (thickness <= 1)
+                _surface.setPixelClipped(x0, y0, color, _clip);
+            else
+                _surface.fillRect(Rect(x0 - radius, y0 - radius, thickness, thickness), color, _clip);
+            if (x0 == x1 && y0 == y1) break;
+            const twice = 2 * error;
+            if (twice >= dy) { error += dy; x0 += sx; }
+            if (twice <= dx) { error += dx; y0 += sy; }
+        }
+    }
+
+    void fillCircle(Point center, int radius, Color color)
+    {
+        if (radius <= 0) return;
+        if (_drawList !is null)
+        {
+            _drawList.addCircle(toSurface(center), radius, color, _clip);
+            return;
+        }
+        const c = toSurface(center);
+        const rr = radius * radius;
+        foreach (dy; -radius .. radius + 1)
+        {
+            int extent;
+            while ((extent + 1) * (extent + 1) + dy * dy <= rr) ++extent;
+            _surface.fillRect(Rect(c.x - extent, c.y + dy, extent * 2 + 1, 1), color, _clip);
+        }
+    }
+
+    void strokeCircle(Point center, int radius, Color color, int thickness = 1)
+    {
+        thickness = maxInt(1, thickness);
+        if (_drawList !is null)
+        {
+            _drawList.addCircleStroke(toSurface(center), radius, color, thickness, _clip);
+            return;
+        }
+        const outer = radius;
+        const inner = maxInt(0, radius - thickness);
+        const c = toSurface(center);
+        const outerSquared = outer * outer;
+        const innerSquared = inner * inner;
+        foreach (dy; -outer .. outer + 1)
+            foreach (dx; -outer .. outer + 1)
+            {
+                const distance = dx * dx + dy * dy;
+                if (distance <= outerSquared && distance >= innerSquared)
+                    _surface.setPixelClipped(c.x + dx, c.y + dy, color, _clip);
+            }
+    }
+
+    void fillRoundedRect(Rect rect, int radius, Color color)
+    {
+        radius = clampInt(radius, 0, minInt(rect.width, rect.height) / 2);
+        if (_drawList !is null)
+        {
+            _drawList.addRoundedRect(toSurface(rect), radius, color, _clip);
+            return;
+        }
+        if (radius <= 0)
+        {
+            fillRect(rect, color);
+            return;
+        }
+        auto absolute = toSurface(rect).intersection(_clip);
+        if (absolute.empty()) return;
+        const original = toSurface(rect);
+        const rr = radius * radius;
+        foreach (y; absolute.y .. absolute.bottom())
+            foreach (x; absolute.x .. absolute.right())
+            {
+                int cx = x;
+                int cy = y;
+                if (x < original.x + radius) cx = original.x + radius;
+                else if (x >= original.right() - radius) cx = original.right() - radius - 1;
+                if (y < original.y + radius) cy = original.y + radius;
+                else if (y >= original.bottom() - radius) cy = original.bottom() - radius - 1;
+                const dx = x - cx;
+                const dy = y - cy;
+                if (dx * dx + dy * dy <= rr) _surface.setPixel(x, y, color);
+            }
+    }
+
+    void drawRoundedRect(Rect rect, int radius, Color fill, Color border, int thickness = 1)
+    {
+        thickness = maxInt(1, thickness);
+        fillRoundedRect(rect, radius, border);
+        const inner = rect.inset(thickness);
+        if (!inner.empty()) fillRoundedRect(inner, maxInt(0, radius - thickness), fill);
+    }
+
+    /** Shape text through the shared Unicode/OpenType layout engine. */
+    TextLayout layoutText(const(dchar)[] text, int scale = 2,
+        FontRole role = FontRole.ui, const(FontFace) font = null,
+        int maxWidth = 0, bool wrap = false)
+    {
+        if (_fonts is null) _fonts = FontSystem.sharedInstance();
+        TextLayoutOptions options;
+        options.role = role;
+        options.overrideFace = cast(FontFace) font;
+        options.pixelSize = fontPixelSize(maxInt(1, scale));
+        options.maxWidth = maxWidth;
+        options.wrap = wrap;
+        return !wrap && maxWidth == 0 ?
+            _fonts.textEngine.layoutCached(text, options) :
+            _fonts.textEngine.layout(text, options);
+    }
+
+    /** Replay a previously shaped layout without reshaping it. */
+    void drawLayout(Point position, TextLayout layout, Color color,
+        bool useVisibilityIndex = true)
+    {
+        if (layout is null || color.a == 0 || _clip.empty()) return;
+        if (_fonts is null) _fonts = FontSystem.sharedInstance();
+        auto visibility = useVisibilityIndex ? layoutVisibility(layout) : null;
+        const surfaceOrigin = toSurface(position);
+        size_t firstChunk, chunkLimit = layout.glyphs.length /
+            LayoutVisibility.chunkSize + (layout.glyphs.length %
+            LayoutVisibility.chunkSize != 0);
+        if (visibility !is null && visibility.xOrdered)
+        {
+            // Binary-search the chunks that can overlap the clip. A single
+            // 600 KB code line becomes thousands of clipped paint items; each
+            // one used to walk all ~9,400 visibility chunks, which is seconds
+            // of frame time on an ordinary transcript.
+            size_t lower, upper;
+            lower = 0; upper = visibility.bounds.length;
+            while (lower < upper)
+            {
+                const middle = lower + (upper - lower) / 2;
+                if (visibility.bounds[middle].x + surfaceOrigin.x < _clip.x)
+                    lower = middle + 1;
+                else upper = middle;
+            }
+            firstChunk = lower;
+            // A chunk starting at/after the clip's left edge is visible, but a
+            // preceding chunk may still end inside the clip.
+            while (firstChunk > 0)
+            {
+                const previous = visibility.bounds[firstChunk - 1]
+                    .translated(surfaceOrigin.x, surfaceOrigin.y);
+                if (previous.right() <= _clip.x) break;
+                --firstChunk;
+            }
+            lower = firstChunk; upper = visibility.bounds.length;
+            while (lower < upper)
+            {
+                const middle = lower + (upper - lower) / 2;
+                if (visibility.bounds[middle].x + surfaceOrigin.x < _clip.right())
+                    lower = middle + 1;
+                else upper = middle;
+            }
+            chunkLimit = lower < firstChunk ? firstChunk : lower;
+        }
+        for (size_t chunk = firstChunk; chunk < chunkLimit; ++chunk)
+        {
+            const start = chunk * LayoutVisibility.chunkSize;
+            if (start >= layout.glyphs.length) break;
+            const end = start + LayoutVisibility.chunkSize < layout.glyphs.length
+                ? start + LayoutVisibility.chunkSize : layout.glyphs.length;
+            if (visibility !is null &&
+                visibility.bounds[chunk].translated(surfaceOrigin.x, surfaceOrigin.y)
+                    .intersection(_clip).empty()) continue;
+            foreach (positioned; layout.glyphs[start .. end])
+            {
+                // A glyph whose face failed to resolve has nothing to draw from,
+                // and every branch below dereferences it. The same is true of a
+                // glyph index outside the face's range: `glyphByIndex`,
+                // `isColorGlyph` and `rasterizeColorGlyph` all index the face's
+                // tables with it, and an out-of-range index runs off the end of
+                // those tables and faults. Both cases are skipped rather than
+                // dereferenced, because dereferencing them took the whole process
+                // down here. The frequency is logged once, because a layout that
+                // reaches this point has an inconsistency upstream worth seeing.
+                if (positioned.font is null ||
+                    positioned.glyphIndex >= cast(uint) maxInt(1,
+                        positioned.font.glyphCount()))
+                {
+                    version (Windows)
+                    {
+                        import core.stdc.stdio : fclose, fflush, fopen, fwrite;
+                        static __gshared bool reported;
+                        if (!reported)
+                        {
+                            reported = true;
+                            const line = "aurora: drawLayout skipped a glyph with " ~
+                                "no font face or an out-of-range glyph index\n";
+                            if (auto file = fopen("aurora-nullfont.log\0", "a"))
+                            {
+                                fwrite(line.ptr, 1, line.length, file);
+                                fflush(file);
+                                fclose(file);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if (_drawList !is null)
+                {
+                    // Layout remains in 96-DPI logical units. Rasterize at the
+                    // monitor's physical size, snap the vertical baseline,
+                    // and submit the atlas bitmap 1:1 so it is never enlarged by
+                    // the renderer or by Windows DPI virtualization.
+                    const pixelSize = maxInt(1,
+                        _drawList.logicalToDeviceY(layout.pixelSize));
+                    if (positioned.font.hasColorGlyphs() &&
+                        positioned.font.isColorGlyph(positioned.glyphIndex))
+                    {
+                        drawColorGlyph(positioned, position, pixelSize);
+                        continue;
+                    }
+                    const origin = glyphOriginX((position.x + _offsetX + positioned.x) *
+                        _drawList.displayScale.x(), positioned.font.isOpenType(), pixelSize,
+                        positioned.font.rasterPhases(pixelSize));
+                    const glyph = _fonts.atlas.glyphByIndex(positioned.font,
+                        positioned.glyphIndex, pixelSize, _fonts.renderMode, origin.phase, color);
+                    if (!glyph.hasPixels()) continue;
+                    const x = origin.pixel + glyph.bearingX;
+                    const y = _drawList.logicalToDeviceY(
+                        position.y + _offsetY + positioned.y) - glyph.bearingY;
+                    const destination = Rect(x, y, glyph.region.width, glyph.region.height);
+                    _drawList.addTexturedRectDevice(destination, glyph, color,
+                        _drawList.logicalToDevice(_clip));
+                }
+                else
+                {
+                    if (positioned.font.hasColorGlyphs() &&
+                        positioned.font.isColorGlyph(positioned.glyphIndex))
+                    {
+                        drawColorGlyph(positioned, position, layout.pixelSize);
+                        continue;
+                    }
+                    const origin = glyphOriginX(position.x + positioned.x,
+                        positioned.font.isOpenType(), layout.pixelSize,
+                        positioned.font.rasterPhases(layout.pixelSize));
+                    const glyph = _fonts.atlas.glyphByIndex(positioned.font,
+                        positioned.glyphIndex, layout.pixelSize, _fonts.renderMode, origin.phase, color);
+                    if (!glyph.hasPixels()) continue;
+                    const x = origin.pixel + glyph.bearingX;
+                    const y = position.y + cast(int) floor(positioned.y + 0.5) - glyph.bearingY;
+                    drawGlyphImmediate(toSurface(Rect(x, y,
+                        glyph.region.width, glyph.region.height)), glyph, color);
+                }
+            }
+        }
+    }
+
+    private LayoutVisibility layoutVisibility(TextLayout layout)
+    {
+        const sx = _drawList is null ? 1.0 : _drawList.displayScale.x();
+        const sy = _drawList is null ? 1.0 : _drawList.displayScale.y();
+        const pixels = _drawList is null ? layout.pixelSize :
+            maxInt(1, _drawList.logicalToDeviceY(layout.pixelSize));
+        auto cached = cast(LayoutVisibility) layout.paintVisibility;
+        if (cached !is null && cached.current(_fonts, pixels, sx, sy)) return cached;
+        auto result = new LayoutVisibility();
+        result.fonts = _fonts;
+        result.pixelSize = pixels;
+        result.renderMode = cast(int) _fonts.renderMode;
+        result.scaleX = sx; result.scaleY = sy;
+        result.bounds.length = (layout.glyphs.length + LayoutVisibility.chunkSize - 1) /
+            LayoutVisibility.chunkSize;
+        foreach (i, glyph; layout.glyphs)
+        {
+            if (glyph.font is null || glyph.glyphIndex >= cast(uint) maxInt(1, glyph.font.glyphCount())) continue;
+            bool known;
+            foreach (entry; result.faces) if (entry.face is glyph.font) { known = true; break; }
+            if (!known) result.faces ~= LayoutVisibility.FaceVersion(glyph.font, glyph.font.variationHash());
+            double left, top, right, bottom;
+            if (glyph.font.hasColorGlyphs() && glyph.font.isColorGlyph(glyph.glyphIndex))
+            {
+                // Color ink is centered on the baseline and cannot exceed its
+                // rasterizer's square output. No color bitmap allocation here.
+                left = glyph.x - pixels / sx;
+                right = glyph.x + pixels / sx;
+                top = glyph.y - pixels / sy;
+                bottom = glyph.y + pixels / sy;
+            }
+            else
+            {
+                const bitmap = _fonts.atlas.glyphByIndex(glyph.font, glyph.glyphIndex,
+                    pixels, _fonts.renderMode);
+                if (!bitmap.hasPixels()) continue;
+                // Actual raster bounds retain italic bearings, combining marks
+                // and fallback fonts. Two device pixels cover phase snapping.
+                left = glyph.x + (bitmap.bearingX - 2.0) / sx;
+                right = glyph.x + (bitmap.bearingX + bitmap.region.width + 2.0) / sx;
+                top = glyph.y - (bitmap.bearingY + 2.0) / sy;
+                bottom = glyph.y + (bitmap.region.height - bitmap.bearingY + 2.0) / sy;
+            }
+            const bounds = Rect(cast(int) floor(left), cast(int) floor(top),
+                cast(int) ceil(right) - cast(int) floor(left),
+                cast(int) ceil(bottom) - cast(int) floor(top));
+            auto chunk = &result.bounds[i / LayoutVisibility.chunkSize];
+            if (chunk.empty()) *chunk = bounds;
+            else
+            {
+                const x = minInt(chunk.x, bounds.x), y = minInt(chunk.y, bounds.y);
+                *chunk = Rect(x, y, maxInt(chunk.right(), bounds.right()) - x,
+                    maxInt(chunk.bottom(), bounds.bottom()) - y);
+            }
+        }
+        int previousRight = int.min;
+        foreach (index, rect; result.bounds)
+        {
+            if (rect.empty())
+            {
+                // A whitespace-only chunk has no ink. Collapse it to the
+                // previous chunk's right edge instead of giving up the sorted
+                // search for the whole layout.
+                result.bounds[index] = Rect(index ? previousRight : 0, 0, 0, 0);
+                continue;
+            }
+            if (index && rect.x < previousRight)
+            {
+                result.xOrdered = false;
+                break;
+            }
+            previousRight = rect.right();
+        }
+        layout.paintVisibility = result;
+        return result;
+    }
+
+    /// Rasterize a COLR color glyph and draw it as an RGBA image.
+    private void drawColorGlyph(const(PositionedGlyph) positioned,
+        Point position, int pixelSize)
+    {
+        ubyte[] rgba;
+        bool drew = positioned.font.rasterizeColorGlyph(positioned.glyphIndex,
+            maxInt(1, pixelSize), rgba);
+        if (!drew || rgba.length == 0) return;
+        // Render at the requested size; find the actual rasterized extent by
+        // scanning the alpha bounds so placement uses the real ink.
+        const size = maxInt(1, pixelSize);
+        // The scan below indexes `rgba` as exactly size*size*4 bytes. The
+        // rasterizer is not required to return a buffer of that size, and
+        // indexing past the end of a shorter buffer faults. Bail out instead
+        // of reading out of bounds.
+        if (rgba.length < cast(size_t) size * size * 4) return;
+        int minX = size, minY = size, maxX = -1, maxY = -1;
+        foreach (y; 0 .. size)
+        {
+            foreach (x; 0 .. size)
+            {
+                if (rgba[(cast(size_t) y * size + x) * 4 + 3] != 0)
+                {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        }
+        if (maxX < 0) return;
+        const width = maxX - minX + 1;
+        const height = maxY - minY + 1;
+
+        // Place the ink centered on the glyph origin (the COLR renderer draws
+        // from the top-left at the origin, so shift to the visual baseline).
+        int x;
+        int y;
+        if (_drawList !is null)
+        {
+            x = _drawList.logicalToDeviceX(
+                position.x + _offsetX + positioned.x) - (width / 2);
+            y = _drawList.logicalToDeviceY(
+                position.y + _offsetY + positioned.y) - (height / 2);
+        }
+        else
+        {
+            x = position.x + _offsetX + cast(int) floor(positioned.x + 0.5) - (width / 2);
+            y = position.y + _offsetY + cast(int) floor(positioned.y + 0.5) - (height / 2);
+        }
+
+        // Build an RgbaImage from the color buffer, trimmed to the ink extent.
+        ubyte[] trimmed;
+        trimmed.length = cast(size_t) width * height * 4;
+        foreach (dy; 0 .. height)
+            foreach (dx; 0 .. width)
+            {
+                const src = ((cast(size_t) (minY + dy) * size + (minX + dx))) * 4;
+                const dst = (cast(size_t) dy * width + dx) * 4;
+                trimmed[dst .. dst + 4] = rgba[src .. src + 4];
+            }
+        auto image = new RgbaImage(width, height, trimmed);
+
+        if (_drawList !is null)
+        {
+            const deviceClip = _drawList.logicalToDevice(_clip);
+            _drawList.addRgbaImage(Rect(x, y, width, height), image,
+                Rect(0, 0, width, height), Color(255, 255, 255, 255),
+                deviceClip, false);
+        }
+        else
+        {
+            auto target = _surface;
+            foreach (dy; 0 .. height)
+            {
+                const sy = y + dy;
+                if (sy < 0 || sy >= target.height()) continue;
+                foreach (dx; 0 .. width)
+                {
+                    const sx = x + dx;
+                    if (sx < 0 || sx >= target.width() || !_clip.contains(sx, sy)) continue;
+                    const src = (cast(size_t) dy * width + dx) * 4;
+                    const alpha = trimmed[src + 3];
+                    if (alpha == 0) continue;
+                    // Premultiply for the surface.
+                    target.setPixelClipped(sx, sy,
+                        Color(trimmed[src], trimmed[src + 1], trimmed[src + 2],
+                            alpha), _clip);
+                }
+            }
+        }
+    }
+
+    void drawText(Point position, const(dchar)[] text, Color color, int scale = 2,
+        FontRole role = FontRole.ui, const(FontFace) font = null)
+    {
+        if (text.length == 0 || color.a == 0) return;
+        auto layout = layoutText(text, scale, role, font, 0, false);
+        drawLayout(position, layout, color);
+    }
+
+    void drawTextInRect(Rect rect, const(dchar)[] text, Color color, int scale = 2,
+        HorizontalAlign horizontal = HorizontalAlign.left,
+        VerticalAlign vertical = VerticalAlign.middle,
+        bool ellipsis = true, FontRole role = FontRole.ui, const(FontFace) font = null)
+    {
+        scale = maxInt(1, scale);
+        dchar[] rendered = text.dup;
+        auto layout = layoutText(rendered, scale, role, font, 0, false);
+        if (ellipsis && layout.width > rect.width)
+        {
+            immutable(dchar)[] dots = "..."d;
+            auto dotsLayout = layoutText(dots, scale, role, font, 0, false);
+            if (dotsLayout.width > rect.width)
+            {
+                rendered.length = 0;
+                layout = layoutText(rendered, scale, role, font, 0, false);
+            }
+            else
+            {
+                const budget = rect.width - dotsLayout.width;
+                // Find the last glyph whose advance fits within `budget` using the
+                // already-shaped (cached) full layout, then truncate to the source
+                // cluster boundary. This avoids re-shaping the string repeatedly
+                // for every candidate boundary, which was the per-cell cost that
+                // made icon-grid scroll jag (long filenames overflow the cell).
+                const glyphs = layout.glyphs;
+                // Track the visual cut as the end of the last glyph whose advance
+                // still fits, then snap that end to its source cluster boundary.
+                // Advancing the cut to every fitting glyph's clusterEnd is what
+                // keeps the prefix growing: the old code pinned the cut at the
+                // first (zero-advance-cluster) glyph and collapsed to bare dots.
+                size_t boundary = 0;
+                double advance = 0.0;
+                foreach (g; glyphs)
+                {
+                    const nextAdvance = advance + g.advanceX;
+                    if (nextAdvance > budget) break;
+                    advance = nextAdvance;
+                    boundary = g.clusterEnd;
+                }
+                if (boundary > 0)
+                {
+                    boundary = previousGraphemeBoundary(rendered, boundary);
+                    rendered = rendered[0 .. boundary] ~ dots;
+                    layout = layoutText(rendered, scale, role, font, 0, false);
+                }
+                else
+                {
+                    rendered = dots.dup;
+                    layout = dotsLayout;
+                }
+            }
+        }
+        const measured = layout.measuredSize();
+        int x = rect.x;
+        final switch (horizontal)
+        {
+            case HorizontalAlign.left: break;
+            case HorizontalAlign.center: x += maxInt(0, (rect.width - measured.width) / 2); break;
+            case HorizontalAlign.right: x += maxInt(0, rect.width - measured.width); break;
+        }
+        int y = rect.y;
+        final switch (vertical)
+        {
+            case VerticalAlign.top: break;
+            case VerticalAlign.middle: y += maxInt(0, (rect.height - measured.height) / 2); break;
+            case VerticalAlign.bottom: y += maxInt(0, rect.height - measured.height); break;
+        }
+        auto child = clipped(rect);
+        child.drawLayout(Point(x, y), layout, color);
+    }
+
+    Size measureText(const(dchar)[] text, int scale = 2,
+        FontRole role = FontRole.ui, const(FontFace) font = null)
+    {
+        return layoutText(text, scale, role, font, 0, false).measuredSize();
+    }
+
+    private const(FontFace) selectFont(FontRole role, const(FontFace) overrideFace)
+    {
+        if (overrideFace !is null) return overrideFace;
+        if (_fonts is null) _fonts = FontSystem.sharedInstance();
+        return _fonts.face(role);
+    }
+
+    private void drawGlyphImmediate(Rect destination, AtlasGlyph glyph, Color color)
+    {
+        if (_surface is null) return;
+        const atlas = _fonts.atlas;
+        const pixels = atlas.pixels();
+        const atlasWidth = atlas.width();
+        foreach (y; 0 .. glyph.region.height)
+        {
+            foreach (x; 0 .. glyph.region.width)
+            {
+                const coverage = pixels[cast(size_t) (glyph.region.y + y) * atlasWidth +
+                    cast(size_t) glyph.region.x + x];
+                if (coverage == 0) continue;
+                const alpha = (cast(int) color.a * coverage + 127) / 255;
+                _surface.setPixelClipped(destination.x + x, destination.y + y,
+                    Color(color.r, color.g, color.b, cast(ubyte) alpha), _clip);
+            }
+        }
+    }
+
+    private static Color tintedImageColor(Color source, Color tint)
+        @safe pure nothrow @nogc
+    {
+        return Color(
+            cast(ubyte) ((cast(uint) source.r * cast(uint) tint.r + 127u) / 255u),
+            cast(ubyte) ((cast(uint) source.g * cast(uint) tint.g + 127u) / 255u),
+            cast(ubyte) ((cast(uint) source.b * cast(uint) tint.b + 127u) / 255u),
+            cast(ubyte) ((cast(uint) source.a * cast(uint) tint.a + 127u) / 255u));
+    }
+}
+
+unittest
+{
+    auto surface = new Surface(128, 48);
+    auto canvas = Canvas(surface);
+    canvas.fillRect(Rect(0, 0, 128, 48), Color.rgb(255, 255, 255));
+    canvas.drawText(Point(2, 2), "Smooth"d, Color.rgb(0, 0, 0), 2);
+    bool changed;
+    foreach (pixel; surface.pixels())
+        if (pixel != 0xffffffff) { changed = true; break; }
+    assert(changed);
+}
+
+unittest
+{
+    // Ellipsis must keep a readable prefix, not collapse to bare "..." when the
+    // label is only slightly wider than the box. The 7a9ee0b optimization pinned
+    // the cut at the first (zero-advance-cluster) glyph, so every medium-width
+    // truncation rendered only the dots. Verify a truncated label still paints
+    // more ink than the "..." glyphs alone across a range of box widths.
+    auto font = FontSystem.sharedInstance().face(FontRole.ui);
+    foreach (labelWidth; [40, 80, 120, 160])
+    {
+        auto surf = new Surface(300, 22);
+        auto cv = Canvas(surf);
+        surf.fillRect(Rect(0, 0, 300, 22), Color.rgb(255, 255, 255),
+            Rect(0, 0, 300, 22));
+        cv.drawTextInRect(Rect(0, 0, labelWidth, 22),
+            "Saved but unavailable"d, Color.rgb(0, 0, 0), 2,
+            HorizontalAlign.left, VerticalAlign.middle, true, FontRole.ui, font);
+        int dark;
+        foreach (pixel; surf.pixels())
+            if (pixel != 0xffffffff) ++dark;
+        assert(dark > 40, "ellipsis must keep a prefix at width " ~
+            labelWidth.to!string ~ " (found " ~ dark.to!string ~ " px)");
+    }
+}
