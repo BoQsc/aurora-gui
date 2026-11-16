@@ -342,7 +342,8 @@ int main(string[] args)
         `{"pattern":"definitely-absent","path":"wide.txt","timeout":1}`), dir);
     assert(pausedGrep.failed && pausedGrep.output.indexOf("soft deadline") >= 0 &&
         pausedGrep.output.indexOf("lines; found") >= 0 &&
-        pausedGrep.output.indexOf("decide whether waiting longer") >= 0,
+        pausedGrep.output.indexOf("Narrow path/include or inspect partial results") >= 0 &&
+        pausedGrep.output.indexOf("Increasing the deadline alone repeats the same work") >= 0,
         "long grep did not return an inspectable progress report: " ~
         pausedGrep.output);
     auto extendedGrep = executeTool(makeCall("grep",

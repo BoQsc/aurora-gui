@@ -4757,8 +4757,10 @@ int main(string[] args)
         runCall.arguments = `{"program":"/bin/echo","args":["run-args-ok"]}`;
     root.injectToolCallsForTesting([readCall, grepCall, runCall]);
     // The tool worker runs on a background thread; tick the tree so onTick
-    // drains the results, up to a short deadline.
-    const deadline = Clock.currTime + 5.seconds;
+    // drains the results. The exclusive `run` job waits for the workspace lane,
+    // which can take longer than a few seconds when earlier fixtures still hold
+    // leases on a slow machine.
+    const deadline = Clock.currTime + 30.seconds;
     while (root.toolMessageCountForTesting() < 3 && Clock.currTime < deadline)
     {
         root.tickTree(0.02);
@@ -6339,11 +6341,15 @@ int main(string[] args)
         "repeated-failure guidance was not marked as internal: " ~
         root.lastUserMessageForTesting());
     auto recoveryRequest = root.requestMessagesForTesting();
-    assert(recoveryRequest.length > 0 && recoveryRequest[$ - 1].role == "system",
-        "Internal progress guidance was sent as a fake user message");
-    assert(recoveryRequest[$ - 1].content.indexOf(
-        "Internal agent-control instruction") >= 0,
-        "Internal progress guidance lost its control-role marker");
+    assert(recoveryRequest.length > 0,
+        "repeated-failure guidance produced no outgoing request");
+    // Progress guidance is durable replay state; the request projection folds
+    // internal control state into the system prompt and must never leak the
+    // note as something the user said.
+    foreach (message; recoveryRequest)
+        assert(message.content.indexOf("Progress guidance") < 0,
+            "Internal progress guidance leaked into the request as a " ~
+            message.role ~ " message");
     writeln("Repeated failures execute and receive hidden guidance");
 
     // Let the earlier real workers settle before starting the sequential
@@ -6485,9 +6491,10 @@ int main(string[] args)
         writeln("Tracked plan mode gates exploration that ran without a plan");
     }
 
-    // A plan that runs a full upkeep window without being refreshed is stale:
-    // the agent is told to check it off, and a refresh clears the reminder.
-    // Actual completed outcomes still need action evidence.
+    // A plan that runs a full upkeep window without being refreshed is counted
+    // stale. Ordinary mode no longer injects a layered reminder for it; strict
+    // mode enforces the upkeep window before the next mutation. A refresh
+    // clears the staleness, and completed outcomes still need action evidence.
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["Refactor and verify"]);
     root.applyPlanForTesting(
@@ -6506,9 +6513,8 @@ int main(string[] args)
     assert(root.toolResultsSincePlanUpdateForTesting() == 16,
         "tool results since the last update_plan were miscounted: " ~
         to!string(root.toolResultsSincePlanUpdateForTesting()));
-    assert(root.userMessageCountForTesting() == beforePlanInspection + 1 &&
-        root.lastUserMessageForTesting().indexOf("Plan upkeep") >= 0,
-        "a plan that ran a full upkeep window without a refresh received no reminder: " ~
+    assert(root.userMessageCountForTesting() == beforePlanInspection,
+        "ordinary plan mode injected a layered upkeep reminder: " ~
         root.lastUserMessageForTesting());
     root.injectToolResultForTesting("edit", "Change implemented", false,
         `{"filePath":"app.d"}`, 1, 1, "@@ -1 +1 @@\n-old\n+new\n");
@@ -6519,7 +6525,7 @@ int main(string[] args)
         "an update_plan call did not clear plan staleness");
     assert(root.taskStepStatusForTesting(0) == "completed",
         "update_plan did not update the durable checklist");
-    writeln("Plan upkeep reminds after a full window; a refresh clears it and completion retains action evidence");
+    writeln("Plan upkeep counts a stale window; a refresh clears it and completion retains action evidence");
 
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["Make and verify a change"]);
@@ -7097,6 +7103,13 @@ int main(string[] args)
                 "Special pill did not insert its own prompt text");
             root.setInputForTesting("");
         }
+        // Each special-pill click leaves that pill selected. Clear the
+        // selection so the following plain-pill click inserts instead of
+        // toggling the still-selected special pill off.
+        const selectedSpecial = root.introSelectedSuggestionForTesting();
+        if (selectedSpecial >= 0)
+            root.clickIntroSuggestionForTesting(selectedSpecial);
+        root.setInputForTesting("");
         assert(selfFixSeen == (program.length > 0),
             "The self-fix pill should appear exactly when the source is known");
         assert(generalSeen == (general.length > 0),
@@ -7109,16 +7122,20 @@ int main(string[] args)
             "Intro overlay fade did not complete");
         assert(paintProjection(root, driver), "Faded intro did not paint");
         window.saveScreenshot("build\\intro-empty.ppm");
-        // The visible starters now lead with "Search the web ", whose prompt
-        // intentionally ends in a space. Use a plain pill for the toggle
-        // assertions so their expected text stays independent of that spacer.
+        // Pick a starter whose prompt is exactly its label. The special pills
+        // insert generated prompts, and the plain "Search the web " starter
+        // intentionally ends in a space, which `separator` below accounts for.
         size_t plainIndex;
         foreach (i, label; suggestions)
-            if (label.length > 0 && label[$ - 1] != ' ')
+            if (label.length > 0 &&
+                root.introSuggestionPromptsForTesting()[i] == label)
             {
                 plainIndex = i;
                 break;
             }
+        assert(root.introSuggestionPromptsForTesting()[plainIndex] ==
+            suggestions[plainIndex],
+            "the intro fixture needs one starter whose prompt is its label");
         const plain = suggestions[plainIndex];
         const separator =
             plain.length > 0 && plain[$ - 1] == ' ' ? "" : "\n";
@@ -7358,7 +7375,8 @@ int main(string[] args)
         assert(root.detachedPlanRectForTesting().width == restingWidth,
             "the plan card grew while the pointer was on its border");
         driver.moveTo(planPanel.localToGlobal(Point(
-            planRect.x + planRect.width / 2, planRect.y + 12)));
+            planRect.x + planRect.width / 2,
+            planRect.y + planRect.height - 15)));
         assert(paintProjection(root, driver), "hovering the plan card did not repaint");
         assert(root.detachedPlanHoverExpandedForTesting(),
             "hovering the detached plan card did not expand it");
