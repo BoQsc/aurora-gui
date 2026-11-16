@@ -99,6 +99,16 @@ def main() -> int:
             pass
 
     run([PYTHON, "-B", "tools/verify_host.py"], HOST)
+    run([DUB, "build", "--config=hotswap", f"--compiler={COMPILER}"], HOST)
+    run(
+        [
+            host_executable("aurora-hotswap"),
+            "supervisor",
+            "--host",
+            host_executable("aurora-host"),
+        ],
+        HOST,
+    )
 
     print()
     print("Aurora v2 verification passed.")

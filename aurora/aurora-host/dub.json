@@ -66,6 +66,17 @@
         "user32",
         "gdi32"
       ]
+    },
+    {
+      "name": "hotswap",
+      "targetType": "executable",
+      "targetName": "aurora-hotswap",
+      "mainSourceFile": "tools/hotswap.d",
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "ws2_32"
+      ]
     }
   ]
 }

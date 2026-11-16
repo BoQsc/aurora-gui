@@ -155,6 +155,37 @@ acknowledgement, pointer/key ring delivery, stale detection and recovery,
 malformed-map recovery, and clean shutdown. The recipe
 `.aurora/verify-modules.json` runs it after a fresh host build.
 
+### Native hot-swap supervisor
+
+`tools/hotswap.d` is the native supervisor for replacing an application module
+while the host stays up. Build it with:
+
+```text
+dub build --config=hotswap --compiler=dmd
+```
+
+Generation 1 and generation 2 are separate processes of `aurora-hotswap` with
+distinct surfaces and PIDs. The supervisor publishes the generation 2 scene,
+sends `reload`, waits for the new surface mapping, and verifies the host PID did
+not change. Module state is carried through a small state file: the second
+generation reads the first generation's value and continues it.
+
+The verified run reports:
+
+```text
+PASS host module hot swap
+host: pid=... stable
+v1: pid=... value=11
+v2: pid=... value=12
+reload + remap: 13.0 ms
+```
+
+Both frames are checked through the host's own screenshot path. This is the
+external-supervisor half of the module contract, not an in-host plugin ABI:
+the host remains the stable window and scene tree, and the module processes own
+their own lifecycle. `verify.py` builds and runs the native supervisor after
+the host verification.
+
 ## Explicit non-goals
 
 Contract version 1 does not provide a native plugin ABI, GPU-shared textures or
