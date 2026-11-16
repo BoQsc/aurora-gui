@@ -38653,6 +38653,32 @@ private void pollButtonSuggestionRequest()
         projectTranscriptForTesting();
     }
 
+    /// Test-only: land a completed tool batch (calls on the last assistant
+    /// message plus their tool results) without executing the tools. UI
+    /// fixtures use this where real execution is covered by the tools fixture.
+    public void injectCompletedToolBatchForTesting(
+        const(OpenCodeToolCall)[] calls, const(string)[] outputs)
+    {
+        if (_current < 0 || calls.length == 0 || calls.length != outputs.length)
+            return;
+        auto session = &_sessions[_current];
+        if (session.messages.length == 0 ||
+            session.messages[$ - 1].role != "assistant") return;
+        session.messages[$ - 1].toolCalls = calls.dup;
+        foreach (i, call; calls)
+        {
+            ChatMessage message;
+            message.role = "tool";
+            message.toolCallId = call.id;
+            message.toolName = call.name;
+            message.content = outputs[i];
+            message.toolArgs = call.arguments;
+            message.time = currentTimestamp();
+            appendMessage(*session, message);
+        }
+        rebuildMessageColumn();
+    }
+
     /// Test-only: consecutive repeat count used to trigger progress guidance.
     public int toolRepeatCountForTesting()
     {

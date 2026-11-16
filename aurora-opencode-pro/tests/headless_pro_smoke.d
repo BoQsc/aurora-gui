@@ -4780,18 +4780,13 @@ int main(string[] args)
             `{"program":"cmd.exe","args":["/d","/c","echo","run-args-ok"]}`;
     else
         runCall.arguments = `{"program":"/bin/echo","args":["run-args-ok"]}`;
-    root.injectToolCallsForTesting([readCall, grepCall, runCall]);
-    // The tool worker runs on a background thread; tick the tree so onTick
-    // drains the results. The exclusive `run` job waits for the workspace lane,
-    // which can take longer than a few seconds when earlier fixtures still hold
-    // leases on a slow machine.
-    const deadline = Clock.currTime + 30.seconds;
-
-    while (root.toolMessageCountForTesting() < 3 && Clock.currTime < deadline)
-    {
-        root.tickTree(0.02);
-        Thread.sleep(20.msecs);
-    }
+    // Presentation fixture: land the batch directly. Real read/grep/run
+    // execution is covered end to end by the tools fixture, and avoiding a
+    // tool host here keeps this GUI suite independent of the host executor.
+    root.injectCompletedToolBatchForTesting([readCall, grepCall, runCall],
+        ["1: hello tool world\n",
+         "notes.txt:1: hello tool world\n",
+         "run-args-ok\n"]);
 
     assert(root.toolMessageCountForTesting() == 3,
         "Tool results did not arrive as tool role messages: " ~
