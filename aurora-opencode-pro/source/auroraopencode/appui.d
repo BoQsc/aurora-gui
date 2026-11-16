@@ -25947,6 +25947,10 @@ private void pollButtonSuggestionRequest()
 
     private static immutable size_t composerSuggestionExcerptChars = 2400;
     private static immutable size_t composerSuggestionMaxChars = 140;
+    // A chat with no messages has nothing of its own to read. One bounded
+    // digest of recent conversations is enough context for a single guess
+    // without reading or sending whole logs.
+    private static immutable size_t composerSuggestionDigestChars = 1200;
 
     /// Id of the settled reply a suggestion belongs to; tool rows can be last,
     /// so the search walks backward instead of reading the final message.
@@ -25987,6 +25991,19 @@ private void pollButtonSuggestionRequest()
         return excerpt;
     }
 
+    /// Context for a guess in this conversation: its own turns when it has any,
+    /// otherwise a small digest of recent conversations so a brand-new chat can
+    /// still offer one. Empty when nothing anywhere can be read.
+    private string composerSuggestionContext(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return "";
+        auto excerpt = composerSuggestionExcerpt(_sessions[sessionIndex]);
+        if (excerpt.length > 0) return excerpt;
+        return conversationDigest(_sessions, _sessions[sessionIndex].id,
+            composerSuggestionDigestChars);
+    }
+
     /// Queue one suggestion for this conversation's newest settled reply. The
     /// anchor prevents asking twice for the same reply (retries, reloads).
     private void queueComposerSuggestion(int sessionIndex)
@@ -26017,7 +26034,7 @@ private void pollButtonSuggestionRequest()
             !runtime.effectPending() && !runtime.client.busy();
         if (!composerSuggestionCanRequest(_settings.composerSuggestion,
             generating, !idle,
-            composerSuggestionExcerpt(_sessions[_current]).length > 0))
+            composerSuggestionContext(_current).length > 0))
             return false;
         if (generating)
         {
@@ -26055,7 +26072,7 @@ private void pollButtonSuggestionRequest()
         if (runtime.phase == RequestPhase.waiting || runtime.effectPending() ||
             runtime.client.busy()) return;
         auto session = &_sessions[sessionIndex];
-        const excerpt = composerSuggestionExcerpt(*session);
+        const excerpt = composerSuggestionContext(sessionIndex);
         if (excerpt.length == 0)
         {
             runtime.suggestionPending = false;

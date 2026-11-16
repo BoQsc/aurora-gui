@@ -48,14 +48,14 @@ int main()
         Thread.sleep(1.msecs);
     }
 
-    // No conversation context means nothing to guess from: Tab keeps its
+    // Nothing anywhere to read means nothing to guess from: Tab keeps its
     // ordinary behaviour and no request is queued.
     root.newChatForTesting();
     root.tickTree(0.02);
     root.focusComposerForTesting();
     driver.pressKey(Key.tab);
     assert(!root.composerSuggestionPendingForTesting(),
-        "Tab requested a guess without any conversation to read");
+        "Tab requested a guess with nothing anywhere to read");
     root.setInputForTesting("");
 
     // With a settled conversation and no offered guess, Tab asks for one.
@@ -113,8 +113,20 @@ int main()
     assert(root.composerSuggestionForTesting().length == 0,
         "accepting a suggestion should clear it");
 
+    // A new chat has no turns of its own, but Tab may read a bounded digest of
+    // recent conversations. One small request, and only when asked.
+    root.newChatForTesting();
+    root.tickTree(0.02);
+    root.focusComposerForTesting();
+    driver.pressKey(Key.tab);
+    assert(root.composerSuggestionPendingForTesting(),
+        "Tab in a new chat did not fall back to recent conversations");
+    assert(root.composerSuggestionBusyForTesting(),
+        "the new chat's generation pulse did not start");
+
     writeln("PASS Tab requests a composer guess when none is offered, " ~
-        "shows the pulse while it runs, and still accepts a guess");
+        "falls back to recent conversations in a new chat, shows the pulse " ~
+        "while it runs, and still accepts a guess");
     window.close();
     return 0;
 }
