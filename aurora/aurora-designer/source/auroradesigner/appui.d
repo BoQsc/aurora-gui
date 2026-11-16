@@ -269,13 +269,12 @@ final class DesignerRoot : VBox
 
     private void addPaletteEntry(string label, NodeKind kind)
     {
-        auto button = _palette.add(new Button(label));
+        auto button = _palette.add(new PaletteDragButton(this, label, kind));
         button.setFlat(true);
         button.setTextPixelSize(12);
         button.layoutHints().preferredWidth = 0;
         button.layoutHints().fillCrossAxis = true;
         button.setId("palette-" ~ defaultId(kind, 0));
-        button.onClick = delegate() { addPaletteNode(kind); };
     }
 
     private Widget buildCenter()
@@ -378,6 +377,21 @@ final class DesignerRoot : VBox
         return index;
     }
 
+    /// Add a node under the document root at artboard coordinates.
+    private int addNodeAt(NodeKind kind, int x, int y)
+    {
+        int parent = _document.root;
+        if (parent < 0)
+        {
+            parent = _document.addNode(NodeKind.window, 0, 0);
+            _document.root = parent;
+            if (kind == NodeKind.window) return parent;
+        }
+        const index = _document.addNode(kind, x, y);
+        _document.nodes[parent].children ~= index;
+        return index;
+    }
+
     private void addPaletteNode(NodeKind kind)
     {
         commitHistory();
@@ -387,6 +401,36 @@ final class DesignerRoot : VBox
         setDirty(true);
         refreshAll();
     }
+
+    private void beginPaletteDrag(NodeKind kind, Point globalPosition)
+    {
+        _canvas.showDropPreview(kind, globalPosition);
+    }
+
+    private void updatePaletteDrag(NodeKind kind, Point globalPosition)
+    {
+        _canvas.showDropPreview(kind, globalPosition);
+    }
+
+    private void finishPaletteDrag(NodeKind kind, Point globalPosition)
+    {
+        _canvas.clearDropPreview();
+        if (!_canvas.artboardContainsGlobal(globalPosition)) return;
+        const art = _canvas.artboardPointFromGlobal(globalPosition);
+        const w = defaultWidth(kind);
+        const h = defaultHeight(kind);
+        const x = maxInt(0, minInt(art.x - w / 2,
+            _document.canvasWidth - w));
+        const y = maxInt(0, minInt(art.y - h / 2,
+            _document.canvasHeight - h));
+        commitHistory();
+        const index = addNodeAt(kind, x, y);
+        selectNode(index);
+        rebuildInspector();
+        setDirty(true);
+        refreshAll();
+    }
+
 
     private void deleteSelectedNode()
     {
@@ -1023,6 +1067,9 @@ final class DesignCanvas : Widget
     private Point _marqueeStart;
     private bool _marqueeActive;
     private Point _marqueeCurrent;
+    private bool _dropPreviewActive;
+    private NodeKind _dropPreviewKind;
+    private Point _dropPreviewPoint;
 
     private enum ResizeHandle : ubyte { none, nw, ne, sw, se }
 
@@ -1064,6 +1111,44 @@ final class DesignCanvas : Widget
         const origin = artboardOrigin();
         return Rect(origin.x, origin.y, document().canvasWidth,
             document().canvasHeight);
+    }
+
+    /// True when a global point is inside the artboard.
+    bool artboardContainsGlobal(Point globalPosition) const
+    {
+        return artboardRect().contains(globalToLocal(globalPosition));
+    }
+
+    /// Map a global point to artboard coordinates.
+    Point artboardPointFromGlobal(Point globalPosition) const
+    {
+        return toArtboard(globalToLocal(globalPosition));
+    }
+
+    /// Show where a palette drag would place the new widget.
+    void showDropPreview(NodeKind kind, Point globalPosition)
+    {
+        if (!artboardContainsGlobal(globalPosition))
+        {
+            clearDropPreview();
+            return;
+        }
+        const art = artboardPointFromGlobal(globalPosition);
+        const w = defaultWidth(kind);
+        const h = defaultHeight(kind);
+        _dropPreviewPoint = Point(
+            maxInt(0, minInt(art.x - w / 2, document().canvasWidth - w)),
+            maxInt(0, minInt(art.y - h / 2, document().canvasHeight - h)));
+        _dropPreviewKind = kind;
+        _dropPreviewActive = true;
+        invalidate();
+    }
+
+    void clearDropPreview()
+    {
+        if (!_dropPreviewActive) return;
+        _dropPreviewActive = false;
+        invalidate();
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -1110,6 +1195,16 @@ final class DesignCanvas : Widget
             const h = maxInt(0, (a.y > b.y ? a.y : b.y) - y);
             canvas.strokeRect(Rect(x, y, w, h), palette.accent.withAlpha(180), 1);
             canvas.fillRect(Rect(x, y, w, h), palette.accent.withAlpha(40));
+        }
+
+        if (_dropPreviewActive)
+        {
+            const origin = artboardOrigin();
+            const rect = Rect(origin.x + _dropPreviewPoint.x,
+                origin.y + _dropPreviewPoint.y,
+                defaultWidth(_dropPreviewKind), defaultHeight(_dropPreviewKind));
+            canvas.fillRect(rect, palette.accent.withAlpha(40));
+            canvas.strokeRect(rect, palette.accent, 2);
         }
     }
 
@@ -1596,6 +1691,74 @@ final class DesignCanvas : Widget
         items ~= ContextMenuItem.command("Delete", IconKind.trash,
             delegate() { _root.deleteSelectedForTesting(); }, "Del");
         showContextMenu(this, globalPosition, items);
+    }
+}
+
+/**
+ * Palette entry that supports both click-to-add and drag-to-place.
+ *
+ * A plain Button only exposes onClick, which is why the old palette could not
+ * be dragged onto the artboard. This keeps the Button visuals while tracking
+ * the captured pointer and offering a drop preview on the canvas.
+ */
+final class PaletteDragButton : Button
+{
+    private DesignerRoot _owner;
+    private NodeKind _kind;
+    private bool _pressed;
+    private bool _dragging;
+    private Point _pressGlobal;
+
+    private enum int dragThreshold = 4;
+
+    this(DesignerRoot owner, string label, NodeKind kind)
+    {
+        super(label);
+        _owner = owner;
+        _kind = kind;
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button != MouseButton.left) return false;
+        if (!super.onMouseDown(event)) return false;
+        _pressed = true;
+        _dragging = false;
+        _pressGlobal = event.globalPosition;
+        return true;
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        if (!_pressed) return false;
+        const dx = event.globalPosition.x - _pressGlobal.x;
+        const dy = event.globalPosition.y - _pressGlobal.y;
+        if (!_dragging && dx * dx + dy * dy >= dragThreshold * dragThreshold)
+        {
+            _dragging = true;
+            _owner.beginPaletteDrag(_kind, event.globalPosition);
+        }
+        if (_dragging)
+        {
+            _owner.updatePaletteDrag(_kind, event.globalPosition);
+            return true;
+        }
+        return false;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (!_pressed) return false;
+        const wasDragging = _dragging;
+        const point = event.globalPosition;
+        _pressed = false;
+        _dragging = false;
+        const clicked = super.onMouseUp(event);
+        if (wasDragging)
+            _owner.finishPaletteDrag(_kind, point);
+        else if (clicked)
+            _owner.addPaletteNode(_kind);
+        return true;
     }
 }
 

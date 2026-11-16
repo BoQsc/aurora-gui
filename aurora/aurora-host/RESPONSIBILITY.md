@@ -11,6 +11,15 @@ The host turns a validated scene plus platform and application events into one
 correctly composited Aurora frame. It does not own what the application's
 content means.
 
+## Primary GUI path
+
+The host is the primary application presentation path for Aurora. New GUI work
+is a validated host scene, not a new executable that constructs its own
+`GuiWindow`. Application policy stays outside the host and uses the public scene
+and control/shared-surface contracts. Direct window construction is limited to
+host internals, framework tests, and an explicitly owner-approved specialized
+embedder.
+
 ## The host MUST own
 
 - Scene parsing, validation, and construction of the retained widget tree.

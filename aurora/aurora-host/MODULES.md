@@ -18,6 +18,11 @@ A module owns its domain state, its scene content, its offscreen rendering, and
 its own process lifecycle. A browser, editor, game, or media pipeline is a
 module; it must not be added to the host package.
 
+The host scene is the primary GUI path. A module supplies a scene and, when
+needed, control messages or shared-surface pixels; it does not replace the host
+with its own application window. A standalone `GuiWindow` shell is not a module
+and requires explicit project-owner approval.
+
 An in-process widget is not a module. New node types remain subject to
 [RESPONSIBILITY.md](RESPONSIBILITY.md) and must describe host-owned UI behavior,
 not application content.

@@ -5,6 +5,19 @@ depends only on the sibling `aurora-d` and `aurora-standard` packages. No
 framework package depends on it. Delete this folder and the library is
 unaffected.
 
+## Primary application path
+
+This host is the main way to build and ship an Aurora GUI. New application work
+starts from a validated scene and runs it with `aurora-host`; use `--dev` or
+`tools/live_host.py` for the live scene-building loop.
+
+The host owns the window and retained UI shell. Application domain state and
+policy remain outside it and use the scene plus the versioned control and
+shared-surface contracts. An application does not import or link the host, and
+it does not create another `GuiWindow` shell. A direct-window executable for a
+new GUI product requires explicit project-owner approval and is not the default
+application pattern.
+
 ## Responsibility
 
 The host has one responsibility: it owns the retained Aurora UI shell and its

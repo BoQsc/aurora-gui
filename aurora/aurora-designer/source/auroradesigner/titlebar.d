@@ -5,10 +5,10 @@ import aurora;
 /**
  * The Aurora Designer titlebar.
  *
- * Frameless window chrome built on the vendored `TitleBar` exactly like the
- * Notepad's: slim bar, compact Win10-style caption buttons, owner-driven
- * window move, work-area maximize/restore, restore-on-drag, drag snapping,
- * and an owner-drawn system menu.
+ * Frameless window chrome built on Aurora-D's `FramelessWindowTitleBar`: slim
+ * bar, compact Win10-style caption buttons, owner-driven window move,
+ * work-area maximize/restore, restore-on-drag, drag snapping, and an
+ * owner-drawn system menu.
  */
 final class DesignerTitleBar : FramelessWindowTitleBar
 {

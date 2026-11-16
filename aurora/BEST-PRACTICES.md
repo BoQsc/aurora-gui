@@ -7,6 +7,15 @@ short guide. Detailed explanations remain in `aurora-d/docs/` and
 
 ## 1. Ownership
 
+- **The host is the primary GUI path.** New GUI products start as validated
+  scenes run by `aurora-host`. Do not create a new executable around
+  `GuiWindow` to deliver an application; direct window construction is limited
+  to host internals, framework tests, and an owner-approved specialized
+  embedder. Existing direct-window applications are migration sources, not
+  examples.
+- **The host stays a leaf.** Applications do not import or link `aurora-host`.
+  They provide a scene and use the versioned control/shared-surface contract for
+  domain behavior.
 - **The library owns GUI behavior.** Rendering, text layout, widget layout,
   input routing, the retained compositor, DPI conversion, and window-shell
   behavior belong in `aurora-d`.
@@ -137,6 +146,9 @@ needle or unmatched context.
 ## 12. Build and run
 
 - `dub build` writes the executable to the package root, not `build/`.
+- Start new GUI work from an `aurora-host` scene. The `GuiWindow` examples in
+  `aurora-d/docs/` document library mechanisms; they are not an application
+  scaffold.
 - Do not rebuild over a running executable on Windows; stop the instance first,
   rebuild, then launch exactly one new instance.
 - GUI executables on Windows link with `/SUBSYSTEM:WINDOWS` and
@@ -148,5 +160,7 @@ needle or unmatched context.
 
 - No generated build output or copied binaries in source packages.
 - No second copy of the text standard, the library, or a demo application.
+- No new standalone `GuiWindow` application package; the host scene is the
+  application contract.
 - Put a rule here only when it maps to a real, repeated bug; add its regression
   next to the code.

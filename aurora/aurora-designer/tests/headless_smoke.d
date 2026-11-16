@@ -8,6 +8,7 @@ import auroradesigner.model : DesignDocument, Node, NodeKind, generateCode,
 import auroradesigner.titlebar : DesignerTitleBar;
 import std.conv : to;
 import std.file : mkdirRecurse;
+import std.math : abs;
 import std.stdio : writeln;
 import std.string : indexOf;
 
@@ -162,6 +163,50 @@ int main()
         "Palette click did not add a Label node");
     assert(root.document().nodes[root.selectedIndex()].kind == NodeKind.label,
         "Palette click added the wrong node kind");
+
+    // --- Dragging a palette entry places a widget at the drop point. ---
+    auto dragPalette = findById(root, "palette-button0");
+    assert(dragPalette !is null, "Palette Button entry missing");
+    const beforeDrag = root.document().nodes.length;
+    const from = dragPalette.localToGlobal(Point(
+        dragPalette.bounds().width / 2, dragPalette.bounds().height / 2));
+    const artOrigin = canvas.artboardOrigin();
+    const targetArt = Point(250, 160);
+    const target = canvas.localToGlobal(Point(
+        artOrigin.x + targetArt.x, artOrigin.y + targetArt.y));
+    driver.moveTo(from);
+    driver.mouseDown(MouseButton.left);
+    driver.moveTo(Point(from.x + 6, from.y + 6));
+    driver.moveTo(target);
+    driver.mouseUp(MouseButton.left);
+    assert(driver.paint(), "Paint after palette drag failed");
+    assert(root.document().nodes.length == beforeDrag + 1,
+        "Palette drag did not add a widget");
+    const dropped = root.document().nodes[root.selectedIndex()];
+    assert(dropped.kind == NodeKind.button,
+        "Palette drag added the wrong node kind");
+    assert(abs(dropped.x - (targetArt.x - dropped.width / 2)) <= 2,
+        "Palette drop X is not centered on the pointer");
+    assert(abs(dropped.y - (targetArt.y - dropped.height / 2)) <= 2,
+        "Palette drop Y is not centered on the pointer");
+
+    // --- Dragging a selected node's corner handle resizes it. ---
+    root.selectNodeForTesting(initialRoot);
+    assert(driver.paint(), "Paint before resize failed");
+    const resizeFrom = root.document().nodes[initialRoot];
+    const resizeOrigin = canvas.artboardOrigin();
+    const bottomRight = canvas.localToGlobal(Point(
+        resizeOrigin.x + resizeFrom.x + resizeFrom.width,
+        resizeOrigin.y + resizeFrom.y + resizeFrom.height));
+    driver.moveTo(bottomRight);
+    driver.mouseDown(MouseButton.left);
+    driver.moveTo(Point(bottomRight.x + 40, bottomRight.y + 30));
+    driver.mouseUp(MouseButton.left);
+    assert(driver.paint(), "Paint after resize failed");
+    const resized = root.document().nodes[initialRoot];
+    assert(resized.width == resizeFrom.width + 40 &&
+        resized.height == resizeFrom.height + 30,
+        "Corner-handle drag did not resize the node");
 
     writeln("Aurora Designer headless smoke passed.");
     return 0;

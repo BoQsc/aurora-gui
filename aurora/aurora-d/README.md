@@ -13,6 +13,12 @@ The design host lives in [../aurora-host](../aurora-host). It renders this
 library's scenes and supports live scene editing without becoming part of the
 library.
 
+`aurora-d` is a library, not the default entry point for a GUI application. New
+Aurora GUI work starts with an `aurora-host` scene. Direct `GuiWindow`
+construction is reserved for host internals, framework tests, and an
+owner-approved specialized embedder. The window examples in this document
+describe library mechanisms; they are not an application scaffold.
+
 ## Included features
 
 ### Rendering

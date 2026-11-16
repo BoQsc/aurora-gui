@@ -3,10 +3,16 @@ module app;
 import aurora;
 import auroradesigner.appui : DesignerRoot, darkDesignerTheme;
 import auroradesigner.model : NodeKind;
+import std.file : exists, mkdirRecurse;
+import std.path : dirName;
 import std.stdio : writeln;
 
 private int runScreenshot(string outputPath)
 {
+    const directory = dirName(outputPath);
+    if (directory.length != 0 && directory != "." && !exists(directory))
+        mkdirRecurse(directory);
+
     WindowOptions options;
     options.title = "Aurora Designer";
     options.width = 1280;

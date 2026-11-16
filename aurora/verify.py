@@ -13,6 +13,7 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 ROOT = Path(__file__).resolve().parent
 LIBRARY = ROOT / "aurora-d"
+DESIGNER = ROOT / "aurora-designer"
 HOST = ROOT / "aurora-host"
 DUB = os.environ.get("DUB", "dub")
 COMPILER = os.environ.get("DC", "dmd")
@@ -52,6 +53,18 @@ def main() -> int:
     run([DUB, "run", "--config=headless-test", f"--compiler={COMPILER}"], LIBRARY)
     run([DUB, "run", "--config=public-api-test", f"--compiler={COMPILER}"], LIBRARY)
     run([DUB, "run", "--config=text-system-test", f"--compiler={COMPILER}"], LIBRARY)
+
+    # ---- Aurora Designer ----
+    run([DUB, "build", "--config=default", f"--compiler={COMPILER}"], DESIGNER)
+    smoke = DESIGNER / "build" / "headless-smoke" / "designer-smoke.ppm"
+    smoke.unlink(missing_ok=True)
+    run([DUB, "run", "--config=headless-smoke", f"--compiler={COMPILER}"], DESIGNER)
+    if not smoke.is_file():
+        raise RuntimeError("designer headless smoke did not write its screenshot")
+    smoke_data = smoke.read_bytes()
+    if len(smoke_data) < 32 or smoke_data[:2] != b"P6":
+        raise RuntimeError("designer headless screenshot is not a binary PPM")
+    print(f"designer smoke: {len(smoke_data)} bytes, P6")
 
     # ---- Aurora Host ----
     run([PYTHON, "-B", "tools/check_boundary.py"], HOST)

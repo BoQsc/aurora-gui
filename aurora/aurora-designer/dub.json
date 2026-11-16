@@ -1,0 +1,80 @@
+{
+  "name": "aurora-designer",
+  "description": "A visual UI designer for building Aurora-D interfaces: drag widgets from a palette, position them on an artboard, edit properties in an inspector, and copy generated D code.",
+  "authors": [
+    "Aurora project"
+  ],
+  "copyright": "Copyright (C) 2026 Aurora project contributors",
+  "license": "0BSD",
+  "sourcePaths": [
+    "source"
+  ],
+  "dependencies": {
+    "aurora-d": {
+      "path": "../aurora-d"
+    }
+  },
+  "libs-windows": [
+    "user32",
+    "gdi32",
+    "shell32",
+    "wininet"
+  ],
+  "libs-linux": [
+    "X11",
+    "dl"
+  ],
+  "lflags-osx": [
+    "-framework",
+    "AppKit",
+    "-framework",
+    "CoreGraphics",
+    "-framework",
+    "CoreFoundation",
+    "-framework",
+    "QuartzCore",
+    "-lobjc"
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
+  "configurations": [
+    {
+      "name": "default",
+      "targetType": "executable",
+      "targetName": "aurora-designer",
+      "mainSourceFile": "source/app.d",
+      "lflags-windows": [
+        "/SUBSYSTEM:WINDOWS",
+        "/ENTRY:mainCRTStartup"
+      ]
+    },
+    {
+      "name": "headless-smoke",
+      "targetType": "executable",
+      "targetName": "aurora-designer-headless-smoke",
+      "mainSourceFile": "tests/headless_smoke.d",
+      "versions": [
+        "AuroraHeadless"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "shell32"
+      ]
+    }
+  ],
+  "version": "2.0.0"
+}
