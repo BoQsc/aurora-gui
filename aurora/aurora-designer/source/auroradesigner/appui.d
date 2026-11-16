@@ -2,6 +2,7 @@ module auroradesigner.appui;
 
 import aurora;
 import auroradesigner.model;
+import auroradesigner.preview : buildPreviewWidget;
 import auroradesigner.titlebar : DesignerTitleBar;
 import std.algorithm : min;
 import std.array : array, appender;
@@ -44,6 +45,7 @@ final class DesignerRoot : VBox
     private Button _openButton;
     private Button _saveButton;
     private Button _codeButton;
+    private Button _previewButton;
     private Button _undoButton;
     private Button _redoButton;
     private Button _deleteButton;
@@ -179,6 +181,10 @@ final class DesignerRoot : VBox
         _codeButton = toolbar.add(new Button("", IconKind.terminal));
         _codeButton.setId("designer-code");
         _codeButton.onClick = delegate() { showCodePopup(); };
+
+        _previewButton = toolbar.add(new Button("Preview"));
+        _previewButton.setId("designer-preview");
+        _previewButton.onClick = delegate() { showPreviewPopup(); };
 
         _undoButton = toolbar.add(new Button("", IconKind.refresh));
         _undoButton.setId("designer-undo");
@@ -1293,6 +1299,44 @@ final class DesignerRoot : VBox
         popup.setBackdrop(Color.rgba(0, 0, 0, 130));
         popup.onDismissed = delegate() { _activePopup = null; };
         openPopup(popup);
+    }
+
+    private void showPreviewPopup()
+    {
+        dismissActivePopup();
+        auto content = new VBox(8, Insets(10));
+        auto header = new HBox(8);
+        auto title = new Label("Preview");
+        title.setScale(2);
+        header.add(title);
+        auto refreshButton = new Button("Refresh", IconKind.refresh);
+        refreshButton.setTextPixelSize(12);
+        refreshButton.onClick = delegate() { showPreviewPopup(); };
+        header.add(refreshButton);
+        auto closeButton = new Button("Close", IconKind.close);
+        closeButton.setTextPixelSize(12);
+        closeButton.onClick = delegate() { dismissActivePopup(); };
+        header.add(closeButton);
+        content.add(header);
+
+        auto preview = buildPreviewWidget(_document);
+        preview.layoutHints().preferredWidth = _document.canvasWidth;
+        preview.layoutHints().preferredHeight = _document.canvasHeight;
+        content.add(preview);
+
+        auto popup = new PopupOverlay(content, _previewButton);
+        popup.setAnchor(Rect.init, PopupPlacement.centered);
+        popup.setRequestedSize(Size(_document.canvasWidth + 20,
+            _document.canvasHeight + 64));
+        popup.setBackdrop(Color.rgba(0, 0, 0, 130));
+        popup.onDismissed = delegate() { _activePopup = null; };
+        openPopup(popup);
+    }
+
+    /// Test hook: open the preview without synthesizing a toolbar click.
+    void showPreviewForTesting()
+    {
+        showPreviewPopup();
     }
 
     private void showAbout()

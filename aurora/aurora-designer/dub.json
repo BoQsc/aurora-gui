@@ -74,6 +74,24 @@
         "gdi32",
         "shell32"
       ]
+    },
+    {
+      "name": "snapshot-test",
+      "targetType": "executable",
+      "targetName": "aurora-designer-snapshot-test",
+      "mainSourceFile": "tests/snapshot_test.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
+    },
+    {
+      "name": "preview-pipeline",
+      "targetType": "executable",
+      "targetName": "aurora-designer-preview-pipeline",
+      "mainSourceFile": "tests/preview_pipeline.d",
+      "versions": [
+        "AuroraHeadless"
+      ]
     }
   ],
   "version": "2.0.0"

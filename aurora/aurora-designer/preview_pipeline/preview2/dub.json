@@ -1,0 +1,8 @@
+{
+  "name": "aurora-generated-preview",
+  "targetType": "executable",
+  "targetName": "preview2",
+  "mainSourceFile": "preview2.d",
+  "dependencies": {"aurora-d": {"path": "C:/Users/windows10/Documents/github_repositories/aurora-gui/aurora/aurora-d"}},
+  "libs-windows": ["user32", "gdi32"]
+}

@@ -7,7 +7,8 @@ import std.file : exists, mkdirRecurse;
 import std.path : dirName;
 import std.stdio : writeln;
 
-private int runScreenshot(string outputPath)
+private int runScreenshot(string outputPath, bool openPreview = false,
+    bool useGpu = false)
 {
     const directory = dirName(outputPath);
     if (directory.length != 0 && directory != "." && !exists(directory))
@@ -19,7 +20,8 @@ private int runScreenshot(string outputPath)
     options.height = 800;
     options.decorated = false;
     options.darkTitleBar = true;
-    options.renderer = RendererPreference.software;
+    options.renderer = useGpu ? RendererPreference.vulkan
+        : RendererPreference.software;
     auto window = new GuiWindow(options, darkDesignerTheme());
     auto root = new DesignerRoot(window);
     window.setRoot(root);
@@ -40,6 +42,8 @@ private int runScreenshot(string outputPath)
     root.designDocument().nodes[label].x = 70;
     root.designDocument().nodes[label].y = 95;
     root.selectNodeForTesting(label);
+    if (openPreview) root.showPreviewForTesting();
+    driver.paint();
     driver.paint();
     window.saveScreenshot(outputPath);
     window.close();
@@ -48,6 +52,10 @@ private int runScreenshot(string outputPath)
 
 int main(string[] args)
 {
+    if (args.length >= 3 && args[1] == "--preview-gpu")
+        return runScreenshot(args[2], true, true);
+    if (args.length >= 3 && args[1] == "--preview")
+        return runScreenshot(args[2], true);
     if (args.length >= 3 && args[1] == "--screenshot")
         return runScreenshot(args[2]);
 
