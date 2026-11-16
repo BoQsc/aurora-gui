@@ -116,18 +116,21 @@ int main()
     root.newChatForTesting();
     send("Implement the fixture stalled task.");
     settled();
-    // Repeating the same no-progress reply must end in a visible bounded
-    // failure, never a ten-round silent stall. The unfinished outcome stays
-    // recorded so Retry resumes it.
-    assert(root.turnStatusForTesting() == "failed" && root.taskStatusForTesting() == "active",
+    // Repeating the same no-progress reply must end in a bounded turn, never a
+    // ten-round silent stall. It must not paint an internal recovery error over
+    // the delivered answer; the unfinished outcome stays recorded so Continue
+    // resumes it.
+    assert(root.turnStatusForTesting() == "completed" &&
+        root.taskStatusForTesting() != "completed" && root.taskStatusForTesting() != "blocked",
         "stalled turn settled as " ~ root.turnStatusForTesting() ~ "/" ~
         root.taskStatusForTesting() ~ " error=" ~ root.lastAssistantErrorForTesting());
-    assert(root.lastAssistantErrorForTesting().indexOf("Execution recovery did not resolve") >= 0);
+    assert(root.lastAssistantErrorForTesting().length == 0,
+        "Internal recovery exhaustion surfaced as a chat-stopping error");
     assert(root.taskStepStatusForTesting(0) == "in_progress");
     assert(!exists(buildPath(workspace, "recovered.md")));
     root.persistForTesting(); root.reloadSessionsForTesting();
-    assert(root.taskStatusForTesting() == "active");
-    writeln("PASS repeated no-progress fails visibly with the unfinished outcome preserved");
+    assert(root.taskStatusForTesting() != "completed" && root.taskStatusForTesting() != "blocked");
+    writeln("PASS repeated no-progress ends normally without an error and preserves the unfinished outcome");
 
     root.newChatForTesting();
     send("Implement the fixture tool recovery task.");

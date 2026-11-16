@@ -51,9 +51,10 @@ int main()
     }
     append(s,"assistant","The requested interaction is fully corrected.");
     auto exhausted = decideTurn(s,p);
-    assert(exhausted.action == TurnAction.failed && exhausted.taskStatus == "active",
-        "Unresolved completion prose must not loop or advertise completed work");
-    writeln("PASS reworded completion, new reads and edits cannot reset unresolved-outcome recovery");
+    assert(exhausted.action == TurnAction.settle && exhausted.turnStatus == "completed" &&
+        exhausted.taskStatus == "verifying" && exhausted.status.indexOf("Execution recovery") < 0,
+        "Exhausted recovery stopped the chat with a failed turn instead of ending normally");
+    writeln("PASS reworded completion, new reads and edits cannot reset unresolved-outcome recovery without stopping the chat");
 
     // A wait consumes its own duration, so the host deadline must include a
     // startup/shutdown margin. The old flat 3 s margin reported an elapsed
@@ -212,6 +213,24 @@ int main()
     s.messages[$-1].toolArgs=`{"program":"python","args":["tests/real.py"]}`;
     assert(executionState(s).remaining.indexOf("has not passed")<0);
     writeln("PASS a different green test cannot erase a recorded behavioral failure");
+
+    // The same command surfaces differently through `run` (program/args) and
+    // `verify` (a recipe step). A passing rerun through the other surface must
+    // clear the recorded failure; otherwise the chat stays pinned to an old
+    // check that was in fact rerun successfully.
+    s=pending();
+    append(s,"tool","Interaction check failed",false,"run",true);
+    s.messages[$-1].verificationCheck="verify:interaction";s.messages[$-1].verificationScope="current";
+    s.messages[$-1].toolArgs=`{"program":"python","args":["-B",".tmp-native-check.py"]}`;
+    assert(executionState(s).remaining.indexOf("has not passed")>=0);
+    append(s,"tool",
+        `{"passed":true,"steps":[{"kind":"interaction","command":{"program":"python","args":["-B",".tmp-native-check.py"]}}]}`,
+        false,"verify");
+    s.messages[$-1].verificationCheck="verify:interaction";s.messages[$-1].verificationScope="current";
+    s.messages[$-1].toolArgs=`{"inputs":["app.d"],"steps":[{"kind":"interaction","command":{"program":"python","args":["-B",".tmp-native-check.py"]}}]}`;
+    assert(executionState(s).remaining.indexOf("has not passed")<0,
+        "A passing verify rerun did not clear the same command's recorded failure");
+    writeln("PASS a passing rerun through verify clears a failure recorded by run");
     foreach (label; ["pytest", "cargo test", "dub test", "verify:interaction"])
     {
         auto failed=pending();append(failed,"tool","Behavior failed",false,"run",true);

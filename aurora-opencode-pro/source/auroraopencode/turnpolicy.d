@@ -190,11 +190,17 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
                     result.settleGoal = "paused";
                 return result;
             }
-            result.action = TurnAction.failed;
-            result.turnStatus = "failed";
-            result.taskStatus = "active";
-            result.status = "Execution recovery did not resolve the recorded outcome. " ~
-                (state.failure.length ? state.failure : state.remaining);
+            // The recovery budget is an internal control boundary, not a
+            // user-facing failure. Ending the turn as failed painted an error
+            // over an answer that was already delivered and stopped the chat on
+            // bookkeeping the user could not act on. Keep the answer and the
+            // recorded work, end normally, and let Continue open the next round.
+            result.turnStatus = "completed";
+            result.taskStatus = state.verificationRequired ? "verifying" : "active";
+            result.status = "Unfinished work remains recorded. Press Continue to resume it.";
+            result.clearDiagnostic = true;
+            if (goalActive(session) && !session.queuedFollowUps.length)
+                result.settleGoal = "paused";
             return result;
         }
         request(state.guidance(), state.attempts ? "Recovering the unresolved outcome…" : "Completing the requested outcome…");

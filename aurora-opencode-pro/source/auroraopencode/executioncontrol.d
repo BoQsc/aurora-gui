@@ -6,6 +6,7 @@ import auroraopencode.taskflow : executionDiagnosisMarker, taskEvidenceIndex, su
 import auroraopencode.taskcontext : taskExcerpt;
 import auroraopencode.planmode : planModeBlockedTool, planModeProposalPending;
 import auroraopencode.tools : diagnosticRefusalPrefix;
+import std.algorithm : canFind, remove, sort;
 import std.conv : to;
 import std.json : JSONValue, JSONType, parseJSON;
 import std.string : startsWith, indexOf, strip;
@@ -122,6 +123,66 @@ struct ExecutionState
     }
 }
 
+private struct FailedCheck
+{
+    string call, category;
+    string[] commands;
+}
+
+/// The commands a check actually ran, normalized across the `run` and `verify`
+/// surfaces. A failed recipe reports its failing step separately, while a later
+/// successful rerun lists every step, so failures are matched by containment
+/// rather than by whole-payload equality.
+private string[] checkCommands(const ref ChatMessage message)
+{
+    string[] commands;
+    void command(JSONValue value)
+    {
+        if (value.type != JSONType.object || !("program" in value.object)) return;
+        string text;
+        if (auto program = "program" in value.object) text ~= program.str;
+        if (auto arguments = "args" in value.object) text ~= "\n" ~ arguments.toString();
+        if (text.length) commands ~= text;
+    }
+    void steps(JSONValue root, string key)
+    {
+        if (auto value = key in root.object)
+            if (value.type == JSONType.object) command(*value);
+        if (auto value = key in root.object)
+            if (value.type == JSONType.array)
+                foreach (step; value.array)
+                    if (step.type == JSONType.object)
+                        if (auto nested = "command" in step.object) command(*nested);
+    }
+    bool loaded;
+    try
+    {
+        const report = parseJSON(message.content);
+        if (report.type == JSONType.object)
+        {
+            loaded = true;
+            if (message.failed) steps(report, "failedStep");
+            if (!commands.length) steps(report, "steps");
+        }
+    }
+    catch (Exception) {}
+    if (!commands.length)
+        try
+        {
+            const arguments = parseJSON(message.toolArgs);
+            if (arguments.type == JSONType.object)
+            {
+                loaded = true;
+                if (message.failed) steps(arguments, "failedStep");
+                if (!commands.length) steps(arguments, "steps");
+                if (!commands.length) command(arguments);
+            }
+        }
+        catch (Exception) {}
+    commands.sort();
+    return loaded ? commands : null;
+}
+
 ExecutionState executionState(const ref ChatSession session, bool strictPlan = false)
 {
     ExecutionState state;
@@ -174,7 +235,7 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
     size_t begin;
     foreach (i, index; path)
         if (session.messages[index].role == "user" && !session.messages[index].internal) begin = i + 1;
-    string[string] failedChecks;
+    FailedCheck[] failedChecks;
     string failureTool;
     foreach (index; path[begin .. $])
     {
@@ -226,16 +287,19 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
             }
             if (message.verificationScope.length && (message.verificationCheck.indexOf("test") >= 0 || message.verificationCheck.indexOf("interaction") >= 0 || message.verificationCheck.indexOf("render") >= 0))
             {
-                string key = message.verificationCheck;
-                try
-                {
-                    auto args = parseJSON(message.toolArgs);
-                    if ("program" in args.object) key ~= args["program"].toString();
-                    if ("args" in args.object) key ~= args["args"].toString();
-                }
-                catch (Exception) {}
-                if (message.failed) failedChecks[key] = message.toolCallId.length ? message.toolCallId : message.id;
-                else failedChecks.remove(key);
+                auto commands = checkCommands(message);
+                if (message.failed)
+                    failedChecks ~= FailedCheck(message.toolCallId.length ? message.toolCallId : message.id,
+                        message.verificationCheck, commands);
+                else
+                    foreach_reverse (i, failed; failedChecks)
+                    {
+                        if (failed.category != message.verificationCheck) continue;
+                        bool rerun = true;
+                        foreach (required; failed.commands)
+                            if (!commands.canFind(required)) { rerun = false; break; }
+                        if (rerun) failedChecks = failedChecks.remove(i);
+                    }
             }
         }
         // A read-only review supplies new information; the main model gets a
@@ -259,8 +323,8 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
         }
         catch (Exception) {}
     }
-    foreach (key, call; failedChecks)
-        state.remaining ~= "Behavioral check " ~ call ~ " failed and has not passed on a subsequent run. Resolve and rerun that check; an unrelated passing check cannot replace it.\n";
+    foreach (failed; failedChecks)
+        state.remaining ~= "Behavioral check " ~ failed.call ~ " failed and has not passed on a subsequent run. Resolve and rerun that check; an unrelated passing check cannot replace it.\n";
     return state;
 }
 

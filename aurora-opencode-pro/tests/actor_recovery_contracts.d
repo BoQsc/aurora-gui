@@ -80,7 +80,8 @@ int main()
             {
                 const status = latest["turnStatus"].str;
                 if (mode == "retry-stop") settled = stopped && status == "interrupted" && MonoTime.currTime >= quietUntil;
-                else if (mode == "budget" || mode == "transient-cap" || mode == "bad-output" || mode == "task-stall" || mode == "unoffered")
+                else if (mode == "task-stall") settled = status == "completed";
+                else if (mode == "budget" || mode == "transient-cap" || mode == "bad-output" || mode == "unoffered")
                     settled = status == "failed" && latest["execution"]["retryRemainingMs"].integer < 0;
                 else settled = status == "completed";
             }
@@ -96,8 +97,14 @@ int main()
         if (persistent && mode != "retry-stop") assert(state["goalStatus"].str == "active", mode ~ " discarded the active goal");
         if (mode == "retry-stop") assert(state["goalStatus"].str == "paused");
         if (mode == "task-stall")
+        {
             assert(state["verificationStatus"].str == "required" && state["objective"].str.length,
                 "No-action recovery discarded the unfinished verification/task");
+            foreach (message; state["messages"].array)
+                if (message["role"].str == "assistant")
+                    assert(!("failed" in message.object) || !message["failed"].boolean,
+                        "Recovery exhaustion marked the delivered answer as failed");
+        }
         if (mode == "unoffered" || mode == "mixed-offer") assert(!exists(buildPath(workspace, "forbidden.txt")), "An unoffered tool executed");
         if (mode == "mixed-offer")
         {
