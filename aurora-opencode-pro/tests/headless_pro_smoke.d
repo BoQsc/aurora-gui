@@ -7613,6 +7613,8 @@ int main(string[] args)
     // provider-neutral runtimes, and must survive independently of sessions.json.
     {
         root.newChatForTesting();
+        root.enableToolsForTesting(workspaceDir);
+        root.clearDiagnosticReviewForTesting();
         // This block exercises the inline plan card's transcript ordering, so
         // turn the detached panel off for it.
         root.setDetachedPlanForTesting(false);
@@ -7725,6 +7727,10 @@ int main(string[] args)
         root.applyPlanForTesting(
             `{"plan":[{"step":"Persist objective","status":"completed"},` ~
             `{"step":"Verify recovery","status":"completed"}]}`);
+        // The shared outcome ledger also needs action evidence before it can
+        // settle an implementation request, even with every step checked off.
+        root.injectToolResultForTesting("edit", "Change implemented", false,
+            `{"filePath":"recovery.d"}`, 1, 1, "@@ -1 +1 @@\n-old\n+new\n");
         root.setTaskStateForTesting("Build durable recovery", "completed",
             "passed");
         assert(!root.completionWouldContinueForTesting(),
@@ -7793,11 +7799,9 @@ int main(string[] args)
         root.setDetachedPlanForTesting(true);
     }
 
-    // Cumulative repetition backstop: repetition must be counted across the
-    // whole conversation, not just the current turn (which the "guides rather
-    // than controls" test above covers). Seed one identical completed call up to
-    // the limit, then prove the next identical request is skipped and the turn
-    // settles instead of looping forever.
+    // Repetition is guidance-only across the whole conversation: it never
+    // blocks a call or forces an answer. Seed one identical completed call many
+    // times and prove the next request still executes as real work.
     {
         root.newChatForTesting();
         root.addConversationForTesting(["user"], ["Loop on one call"]);
@@ -7814,13 +7818,17 @@ int main(string[] args)
         overRepeat.arguments = `{"command":"list"}`;
         root.injectToolCallsForTesting([overRepeat]);
         assert(!root.finalAnswerRequestedForTesting(),
-            "the cumulative repeat guard incorrectly forced a final answer");
-        assert(root.lastToolResultForTesting().indexOf("has already run") >= 0,
-            "the over-limit call was executed instead of skipped: " ~
+            "repetition incorrectly forced a final answer");
+        assert(root.lastToolResultForTesting().indexOf("entries: none") >= 0,
+            "a repeated call was suppressed instead of executed: " ~
             root.lastToolResultForTesting());
-        assert(root.taskStatusForTesting() == "active",
-            "suppressing one repeated call stopped the task");
-        writeln("Cumulative repetition skips only the stuck call and continues");
+        assert(root.lastToolResultForTesting().indexOf("skipped") < 0,
+            "repetition was reported as a skipped call: " ~
+            root.lastToolResultForTesting());
+        assert(root.taskStatusForTesting() != "blocked",
+            "one repeated call blocked the task: " ~
+            root.taskStatusForTesting());
+        writeln("Repeated calls across the conversation execute without blocking work");
     }
 
     // A conversation carries its own model id. Switching to it must not send an

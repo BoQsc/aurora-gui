@@ -35108,6 +35108,15 @@ private void pollButtonSuggestionRequest()
         return taskContinuesAfterDone(false);
     }
 
+    /// Test-only: a synthetic user turn bypasses the send path, so clear the
+    /// per-turn diagnostic reviewer exactly as a real new request does.
+    public void clearDiagnosticReviewForTesting()
+    {
+        _execution.diagnosticActive = false;
+        _execution.diagnosticRequestsRemaining = 0;
+    }
+
+
     public void settleTaskAfterDoneForTesting()
     {
         _activeRequestId = 0;

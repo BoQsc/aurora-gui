@@ -147,7 +147,7 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId, b
         const askedQuestion = stripped.length && stripped[$ - 1] == '?';
         const suppliedFact = session.taskStatus == "waiting_input" && !askedQuestion;
         if (session.objective.length && session.taskStatus != "completed" &&
-            (suppliedFact || actionApprovalRequest(text)))
+            (suppliedFact || actionApprovalRequest(text) || steering))
         {
             if (session.contract.intent == "analysis")
                 session.contract.intent = "implementation";

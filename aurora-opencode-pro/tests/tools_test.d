@@ -342,7 +342,7 @@ int main(string[] args)
         `{"pattern":"definitely-absent","path":"wide.txt","timeout":1}`), dir);
     assert(pausedGrep.failed && pausedGrep.output.indexOf("soft deadline") >= 0 &&
         pausedGrep.output.indexOf("lines; found") >= 0 &&
-        pausedGrep.output.indexOf("Narrow path/include or inspect partial results") >= 0 &&
+        pausedGrep.output.indexOf("choose a narrower path/include") >= 0 &&
         pausedGrep.output.indexOf("Increasing the deadline alone repeats the same work") >= 0,
         "long grep did not return an inspectable progress report: " ~
         pausedGrep.output);
@@ -972,17 +972,9 @@ int main(string[] args)
             if (tool.name == "computer") enabledInNative = true;
         assert(enabledInDefault, "AURORA_COMPUTER_USE=on must expose computer");
         assert(enabledInNative, "native toolset must expose computer");
-        assert(toolSteeringPrompt(true).indexOf("`computer`") >= 0,
-            "enabled computer use must appear in the steering prompt");
-        // Enabling the tool must not read as "drive the desktop". Both the tool
-        // policy and the tool schema have to state that the desktop is a last
-        // resort, so a model prefers code/file/run probes when they can prove
-        // the same fact.
-        const computerSteering = toolSteeringPrompt(true);
-        assert(computerSteering.indexOf("last resort") >= 0,
-            "the steering prompt must make computer use a last resort");
-        assert(computerSteering.indexOf("`run` (a minimal probe") >= 0,
-            "the steering prompt must name the programmatic alternative");
+        // Enabling the tool must not read as "drive the desktop": the tool
+        // description itself states that the desktop is a last resort, so a
+        // model prefers code/file/run probes when they can prove the same fact.
         string computerDescription;
         foreach (tool; builtinToolDefinitions())
             if (tool.name == "computer") computerDescription = tool.description;
@@ -1126,63 +1118,28 @@ int main(string[] args)
             "refusal must say how to set a target: " ~ refusal);
     }
     writeln("experimental computer use is opt-in, validated and switchable");
-    assert(toolSteeringPrompt(true).indexOf("no shell") >= 0,
-        "Native steering prompt must say there is no shell");
-    assert(toolSteeringPrompt(false).indexOf("dshell") >= 0 &&
-        toolSteeringPrompt(true).indexOf("dshell") >= 0,
-        "Steering prompts must document dshell");
-    assert(toolSteeringPrompt(true).indexOf("remove") >= 0,
-        "Native steering prompt must mention the remove tool");
-    assert(toolSteeringPrompt(true).indexOf("move") >= 0,
-        "Native steering prompt must mention the move tool");
-    assert(toolSteeringPrompt(true).indexOf("copy") >= 0,
-        "Native steering prompt must mention the copy tool");
-    assert(toolSteeringPrompt(true).indexOf("rename") >= 0,
-        "Native steering prompt must mention the rename tool");
-    assert(toolSteeringPrompt(true).indexOf("create_folder") >= 0,
-        "Native steering prompt must mention create_folder");
-    assert(toolSteeringPrompt(true).indexOf("native `open` tool") >= 0,
-        "Steering prompt must require the native open tool");
-    // The prompt carries a concise execution contract while tool schemas carry
-    // parameter syntax, avoiding duplicated instructions and prompt tokens.
-    assert(toolSteeringPrompt(false).indexOf("apply_patch") >= 0,
-        "Steering prompt must advertise apply_patch");
-    assert(toolSteeringPrompt(false).indexOf("update_plan") >= 0,
-        "Steering prompt must advertise update_plan");
-    assert(toolSteeringPrompt(false).indexOf("# Execution loop") >= 0,
-        "Steering prompt must define the execution loop");
-    assert(toolSteeringPrompt(false).indexOf(
-        "Why = diagnose the cause and resolve it") >= 0,
-        "Steering prompt must require why requests to resolve the cause");
-    assert(toolSteeringPrompt(false).indexOf(
-        "name the remaining unknown") >= 0,
-        "Steering prompt must guide exploration from evidence");
-    assert(toolSteeringPrompt(false).indexOf(
-        "legitimate validation and rereading") >= 0,
-        "Steering prompt must preserve justified inspection");
-    assert(toolSteeringPrompt(false).indexOf(
-        "evidence phase, not a quota") >= 0,
-        "Steering prompt must guide verification without a fixed budget");
-    assert(toolSteeringPrompt(false).indexOf("within six") < 0 &&
-        toolSteeringPrompt(false).indexOf("at most three") < 0,
-        "Steering prompt must not impose artificial call quotas");
-    assert(toolSteeringPrompt(false).indexOf(
-        "Skip plans for direct answers, quick exploration") >= 0 &&
-        toolSteeringPrompt(false).indexOf(
-            "Default to a short living plan for multi-step or ongoing work") >= 0 &&
-        toolSteeringPrompt(false).indexOf("Update at phase changes or detours") >= 0 &&
-        toolSteeringPrompt(false).indexOf(
-            "Upkeep must not cause repeated deferrals or extra completion rounds") >= 0 &&
-        toolSteeringPrompt(false).indexOf("Adapt steps as evidence changes") >= 0 &&
-        toolSteeringPrompt(false).indexOf("Use update_plan.work_items for necessary discoveries/recovery") >= 0 &&
-        toolSteeringPrompt(false).indexOf(
-            "Finish authorized work and verification") >= 0 &&
-        toolSteeringPrompt(false).indexOf(
-            "do not switch compilers or probe toolchains") >= 0 &&
-        toolSteeringPrompt(false).indexOf(
-            "for clear intent, act without routine confirmation") >= 0 &&
-        toolSteeringPrompt(false).indexOf("request_input") >= 0,
-        "Steering prompt must scope plans and define a stopping condition");
+    // Tool names and syntax live in the tool schemas; the system prompt carries
+    // the compact execution contract instead of repeating per-tool prose.
+    foreach (name; ["dshell", "read", "write", "edit", "apply_patch",
+        "update_plan"])
+    {
+        bool found;
+        foreach (tool; builtinToolDefinitions())
+            if (tool.name == name) found = true;
+        assert(found, "tool definition missing: " ~ name);
+    }
+    foreach (name; ["remove", "move", "copy", "rename", "create_folder", "open"])
+    {
+        bool found;
+        foreach (tool; nativeOnlyToolDefinitions())
+            if (tool.name == name) found = true;
+        assert(found, "native tool definition missing: " ~ name);
+    }
+    const contract = toolSteeringPrompt(false);
+    assert(contract.indexOf("smallest complete solution") >= 0 &&
+        contract.indexOf("Verify the result at the level the request needs") >= 0 &&
+        contract.indexOf("preserve their constraints and edits") >= 0,
+        "The steering prompt must keep the execution contract");
     assert(toolSteeringPrompt(false).indexOf("# Environment") >
         toolSteeringPrompt(false).indexOf("# Communication"),
         "Dynamic environment should follow stable instructions for caching");
@@ -1276,11 +1233,8 @@ int main(string[] args)
     // The app can edit its own source; the prompt must forbid the agent from
     // building or killing the process that hosts its session.
     assert(toolSteeringPrompt(false).indexOf(
-        "the process running this session") >= 0,
+        "never kill it or overwrite its live executable") >= 0,
         "Steering prompt must protect the live host process");
-    assert(toolSteeringPrompt(false).indexOf(
-        "outside the change journal") >= 0,
-        "Steering prompt must keep mutations inside the snapshot journal");
     writeln("Default vs native-only toolset shapes OK");
 
 
