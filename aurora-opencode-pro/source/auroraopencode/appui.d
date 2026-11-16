@@ -9227,6 +9227,9 @@ private final class ChatInput : TextArea
     // generation is already running or was just requested, so Tab is consumed;
     // false lets the key keep its normal behaviour (nothing to guess from).
     bool delegate() onSuggestionRequested;
+    // Fired whenever the offered guess changes, so the owner can keep it with
+    // the conversation it was generated for instead of this shared input.
+    void delegate(string value) onSuggestionChanged;
     // experimental: attachments - invoked with the text box before and after a
     // Ctrl+V paste. Return true when the paste was diverted into an attachment
     // (and the box was already reverted by the handler).
@@ -9260,6 +9263,7 @@ private final class ChatInput : TextArea
         // The base class paints its unfocused placeholder in the same spot, so
         // suppress it while a suggestion occupies the empty box.
         super.setPlaceholder(_suggestion.length ? "" : _wantedPlaceholder);
+        if (onSuggestionChanged !is null) onSuggestionChanged(value);
         invalidate();
     }
 
@@ -9314,8 +9318,7 @@ private final class ChatInput : TextArea
             if (suggestionReady())
             {
                 const accepted = _suggestion;
-                _suggestion = "";
-                super.setPlaceholder(_wantedPlaceholder);
+                setSuggestion("");
                 setText(accepted); // setText leaves the caret after the text
                 return true;
             }
@@ -17791,6 +17794,12 @@ private string _suggestExcludeId;
         {
             return requestComposerSuggestion();
         };
+        // The offered guess is per conversation: mirror it into the selected
+        // conversation's runtime so another chat can never show it.
+        _input.onSuggestionChanged = delegate(string value)
+        {
+            if (_execution !is null) _execution.suggestionText = value;
+        };
         // experimental: attachments - turn a large paste into a text chip.
         _input.onLargePaste = delegate(string before, string after)
         {
@@ -19047,7 +19056,13 @@ private string _suggestExcludeId;
         _sessions ~= session;
         _current = cast(int) _sessions.length - 1;
         loadRuntime(_current);
-        if (_input !is null) _input.setText("", false);
+        if (_input !is null)
+        {
+            _input.setText("", false);
+            // A brand-new conversation starts without a guess; the outgoing
+            // conversation keeps its own.
+            _input.setSuggestion("");
+        }
         publishRuntimeEvent(AgentEventKind.threadStarted, session,
             "", "", "", runtimeThreadPayload(session));
         _visibleMessageLimit = messageHistoryPageSize;
@@ -19091,7 +19106,13 @@ private string _suggestExcludeId;
         _visibleMessageLimit = messageHistoryPageSize;
         _editMessageIndex = -1;
         cancelInlineMessageEdit();
-        if (_input !is null) _input.setText(_sessions[index].draft, false);
+        if (_input !is null)
+        {
+            _input.setText(_sessions[index].draft, false);
+            // Restore the guess this conversation was offered; another chat's
+            // guess is never carried into this composer.
+            _input.setSuggestion(_execution.suggestionText);
+        }
         // Opening a conversation is the "attention" its unread dot waits for.
         bool clearedUnread;
         if (_sessions[index].unread)
@@ -26103,6 +26124,9 @@ private void pollButtonSuggestionRequest()
         runtime.suggestionOutput = "";
         const sessionId = runtime.suggestionSessionId;
         runtime.suggestionSessionId = "";
+        // Store the guess with its conversation even when the user has already
+        // switched away, so returning to it still finds the answer.
+        runtime.suggestionText = _settings.composerSuggestion ? candidate : "";
         if (candidate.length == 0 || !_settings.composerSuggestion) return;
         if (_current < 0 || _sessions[_current].id != sessionId) return;
         if (_input is null || _input.textUtf8().strip().length > 0) return;
@@ -28996,6 +29020,11 @@ private void pollButtonSuggestionRequest()
         {
             _settings.composerSuggestion = value;
             saveSettingsNow();
+            // Turning the feature off also drops guesses kept for conversations
+            // that are not currently open, so re-enabling starts fresh.
+            if (!value)
+                foreach (runtime; _conversationRuntimes)
+                    runtime.suggestionText = "";
             if (_input is null) return;
             if (value) queueComposerSuggestion(_current);
             else _input.setSuggestion("");

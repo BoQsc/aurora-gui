@@ -84,6 +84,10 @@ public class ThreadEngine
     bool suggestionPending;
     // The settled reply this suggestion belongs to, so a reload never re-asks.
     string suggestionAnchor;
+    // The dimmed next-message guess offered in this conversation's composer.
+    // Kept with the conversation so switching chats never shows another chat's
+    // guess in the one shared input widget.
+    string suggestionText;
     ToolCancellation cancellation;
     private ToolCancellation _effectCancellation;
     private ulong _effectRequestId;

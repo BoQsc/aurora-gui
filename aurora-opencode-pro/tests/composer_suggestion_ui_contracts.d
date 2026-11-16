@@ -76,13 +76,35 @@ int main()
     root.projectTranscriptForTesting();
     assert(driver.paint(), "the composer's generation pulse did not paint");
 
-    // Drop the pending job with its conversation before any tick can start it,
-    // then prove the same key still accepts an offered guess.
+    // Drop the pending job with its conversation before any tick can start it.
     root.newChatForTesting();
     root.tickTree(0.02);
     assert(!root.composerSuggestionBusyForTesting(),
         "the generation pulse outlived its conversation");
+
+    // A guess belongs to the conversation it was offered in: creating another
+    // chat must not carry it over, and returning to it restores it.
     root.offerComposerSuggestionForTesting("Run the tests again");
+    assert(root.composerSuggestionForTesting() == "Run the tests again");
+    root.newChatForTesting();
+    root.tickTree(0.02);
+    assert(root.composerSuggestionForTesting().length == 0,
+        "a new chat inherited the previous conversation's suggestion: " ~
+        root.composerSuggestionForTesting());
+    root.selectSessionForTesting(1);
+    root.tickTree(0.02);
+    assert(root.composerSuggestionForTesting() == "Run the tests again",
+        "the conversation's own suggestion was not restored: " ~
+        root.composerSuggestionForTesting());
+    root.selectSessionForTesting(2);
+    root.tickTree(0.02);
+    assert(root.composerSuggestionForTesting().length == 0,
+        "another conversation still shows this suggestion: " ~
+        root.composerSuggestionForTesting());
+
+    // Back in the conversation that owns the guess, Tab still accepts it.
+    root.selectSessionForTesting(1);
+    root.tickTree(0.02);
     root.focusComposerForTesting();
     driver.pressKey(Key.tab);
     assert(root.inputTextForTesting() == "Run the tests again",
