@@ -6162,6 +6162,25 @@ private struct TooltipBubble
         return rect.contains(point);
     }
 
+    /// The height `place` would give `value` in `availableWidth`, measured
+    /// through the same engine and layout options `place` uses. Layout calls
+    /// this before painting so an owner can reserve room for the whole panel.
+    static int heightFor(FontSystem fonts, string value, int availableWidth)
+    {
+        if (fonts is null || value.length == 0 ||
+            availableWidth <= 2 * padH) return 0;
+        const wrap = clampInt(
+            minInt(maxWrap, maxInt(minWrap, availableWidth / 2)),
+            1, availableWidth - 2 * padH);
+        TextLayoutOptions options;
+        options.role = FontRole.ui;
+        options.pixelSize = fontPixelSize(1);
+        options.maxWidth = wrap;
+        options.wrap = true;
+        return fonts.textEngine.layout(toUTF32(value), options)
+            .measuredSize().height + 2 * padV;
+    }
+
     /// Lay the text out with the same word wrapping the panel measured with.
     /// `Canvas.layoutText` is the toolkit's own entry point, so the measure and
     /// the later paint share one implementation and cannot disagree.
@@ -6201,6 +6220,15 @@ private struct SubagentEntry
     string id;
     string name;
     string status;
+}
+
+/// One painted plan row: its card-local rectangle and the step's full text.
+/// The row itself is clipped to a single line, so a click on it opens a tooltip
+/// with `text` instead of repeating the clipped string.
+private struct PlanStepRow
+{
+    Rect rect;
+    string text;
 }
 
 private final class PlanCard : Widget
@@ -6284,6 +6312,19 @@ private final class PlanCard : Widget
     // The listed step rows. Hover expansion is limited to the step rows and the
     // objective row, where clipped text actually needs the wider card.
     private Rect _stepsRect;
+    // Row rectangles recorded by the last paint, with each row's full text, so
+    // a click can be matched to the step under the pointer. A clicked row opens
+    // a floating tooltip with its whole text; the tooltip closes on another
+    // step click, a repeat click, a click elsewhere on the card, or leaving it.
+    private PlanStepRow[] _stepRows;
+    private int _stepTipIndex = -1;
+    private string _stepTipText;
+    private TooltipBubble _stepTip;
+    private Rect _stepTipRect;
+    // Extra card height reserved while the tooltip is open, so the panel that
+    // paints inside the card can contain the whole bubble instead of clipping
+    // its last lines.
+    private int _stepTipReserve;
 
     /// Notified when the pointer enters or leaves the card, so the detached
     /// panel can expand the card while the user reads it.
@@ -6494,6 +6535,47 @@ private final class PlanCard : Widget
         return -1;
     }
 
+    /// The painted plan row under the pointer, or -1. Recorded by the last
+    /// paint, so the hit area matches the visible row exactly.
+    private int stepAt(Point point) const
+    {
+        if (_railOnly) return -1;
+        foreach (i, row; _stepRows)
+            // Only the row's vertical band is taken from the paint: hovering
+            // expands the card leftward, and the press can arrive before the
+            // next paint refreshes the row's width.
+            if (point.y >= row.rect.y && point.y < row.rect.bottom() &&
+                point.x >= 0 && point.x < bounds().width)
+                return cast(int) i;
+        return -1;
+    }
+
+    /// Show the clicked step's full text, switch to another step, or close the
+    /// tooltip when the same row is clicked again.
+    private void toggleStepTip(int index)
+    {
+        if (index < 0 || index >= cast(int) _stepRows.length) return;
+        if (_stepTipIndex == index)
+        {
+            clearStepTip();
+            return;
+        }
+        _stepTipIndex = index;
+        _stepTipText = _stepRows[index].text;
+        invalidate();
+    }
+
+    private void clearStepTip()
+    {
+        if (_stepTipIndex < 0) return;
+        _stepTipIndex = -1;
+        _stepTipText = "";
+        _stepTipRect = Rect.init;
+        _stepTipReserve = 0;
+        _stepTip.rect = Rect.init;
+        invalidate();
+    }
+
     /// Collapse to the left-border handle alone (detached panel): the card
     /// keeps its frame and handle but drops the title, objective, progress bar
     /// and steps until the handle is clicked again.
@@ -6505,6 +6587,11 @@ private final class PlanCard : Widget
         {
             _handleHot = false;
             _expandWanted = false;
+            _stepTipIndex = -1;
+            _stepTipText = "";
+            _stepTipRect = Rect.init;
+            _stepTipReserve = 0;
+            _stepTip.rect = Rect.init;
         }
         invalidate();
     }
@@ -6531,6 +6618,22 @@ private final class PlanCard : Widget
     bool stripShown() const { return historyStripVisible(); }
     Rect objectiveRectForTesting() const { return _objectiveRect; }
     Rect stepsRectForTesting() const { return _stepsRect; }
+    Rect stepRectForTesting(size_t index) const
+    {
+        return index < _stepRows.length ? _stepRows[index].rect : Rect.init;
+    }
+    bool stepTipVisibleForTesting() const
+    {
+        return _stepTipIndex >= 0 && !_stepTipRect.empty();
+    }
+    string stepTipTextForTesting() const
+    {
+        return stepTipVisibleForTesting() ? _stepTipText : "";
+    }
+    Rect stepTipRectForTesting() const
+    {
+        return stepTipVisibleForTesting() ? _stepTipRect : Rect.init;
+    }
 
     private bool hasObjective() const { return _objective.length > 0; }
 
@@ -6591,7 +6694,8 @@ private final class PlanCard : Widget
             ? progressTopGap + progressH + progressBottomGap : 0;
     }
 
-    private int totalHeight() const
+    /// Height of the plan content alone, without any step-tooltip reserve.
+    private int contentHeight() const
     {
         int rows = cast(int) _texts.length;
         // A history preview shows only the revision's own steps, so live
@@ -6606,6 +6710,28 @@ private final class PlanCard : Widget
             subagentRows = 1 + cast(int) _subagents.length;
         return 2 * padV + lineH * (1 + (hasObjective() ? 1 : 0) + rows +
             subagentRows) + progressBlock();
+    }
+
+    private int totalHeight() const
+    {
+        return contentHeight() + _stepTipReserve;
+    }
+
+    /// Reserve exactly the extra height the open tooltip needs at `width`, so
+    /// the card is measured large enough before it paints. The detached panel
+    /// sizes the card itself and calls this through `computeCardRect`.
+    int totalHeightForWidth(int width)
+    {
+        _stepTipReserve = stepTipReserveFor(width);
+        return totalHeight();
+    }
+
+    private int stepTipReserveFor(int width)
+    {
+        if (_stepTipIndex < 0 || _stepTipText.length == 0) return 0;
+        const tipHeight = TooltipBubble.heightFor(fontSystem(),
+            _stepTipText, maxInt(0, width));
+        return maxInt(0, tipHeight - contentHeight());
     }
 
     /// The strip appears only for more than one conversation plan, and never
@@ -6685,6 +6811,7 @@ private final class PlanCard : Widget
     protected override Size onMeasure(Size available)
     {
         const width = maxInt(0, available.width);
+        _stepTipReserve = stepTipReserveFor(width);
         const height = totalHeight();
         layoutHints().preferredWidth = width;
         layoutHints().preferredHeight = height;
@@ -6783,10 +6910,12 @@ private final class PlanCard : Widget
             y += progressH + progressBottomGap;
         }
         const int stepsTop = y;
+        PlanStepRow[] rows;
         foreach (index, text; _texts)
         {
             const status = index < _statuses.length
                 ? _statuses[index] : "pending";
+            rows ~= PlanStepRow(Rect(padH, y, textWidth, lineH), text);
             drawStepGlyph(canvas, y, status);
             const textX = padH + glyphSize + glyphGap;
             const plan = nestedFor(index);
@@ -6812,6 +6941,10 @@ private final class PlanCard : Widget
                 foreach (child; plan.steps)
                 {
                     enum childIndent = 18;
+                    rows ~= PlanStepRow(
+                        Rect(padH + childIndent, y,
+                            maxInt(0, textWidth - childIndent), lineH),
+                        child.text);
                     drawStepGlyph(canvas, y, child.status, childIndent);
                     const childTextX = textX + childIndent;
                     canvas.drawTextInRect(Rect(childTextX, y,
@@ -6822,6 +6955,7 @@ private final class PlanCard : Widget
                     y += lineH;
                 }
         }
+        _stepRows = rows;
         _stepsRect = _texts.length > 0
             ? Rect(padH, stepsTop, textWidth, y - stepsTop) : Rect.init;
         // experimental: orchestrator - named subagents under the plan. Clicking
@@ -6865,6 +6999,9 @@ private final class PlanCard : Widget
         // overlaps; gated on the hover flag so it disappears on unhover instead
         // of lingering until the card is rebuilt.
         if (_objectiveHot) _objectiveTip.paint(canvas);
+        layoutStepTip(canvas);
+        if (_stepTipRect.width > 0 && _stepTipRect.height > 0)
+            _stepTip.paint(canvas);
     }
 
     /// Place the full-objective panel while the pointer sits on the objective
@@ -6886,6 +7023,44 @@ private final class PlanCard : Widget
             maxInt(1, bounds().height));
         _objectiveTip.place(canvas, label, anchor, available);
         _objectiveTipRect = _objectiveTip.rect;
+    }
+
+    /// Place the clicked step's full-text panel under (or above) its row. The
+    /// row is looked up by text on every paint so a plan update that drops the
+    /// step also closes the panel instead of leaving it floating over a row
+    /// that no longer exists.
+    private void layoutStepTip(ref Canvas canvas)
+    {
+        if (_stepTipIndex < 0 || _stepTipText.length == 0)
+        {
+            _stepTipRect = Rect.init;
+            return;
+        }
+        Rect anchor;
+        bool found;
+        foreach (row; _stepRows)
+            if (row.text == _stepTipText)
+            {
+                anchor = row.rect;
+                found = true;
+                break;
+            }
+        if (!found)
+        {
+            _stepTipIndex = -1;
+            _stepTipText = "";
+            _stepTipRect = Rect.init;
+            if (_stepTipReserve != 0)
+            {
+                _stepTipReserve = 0;
+                invalidate();
+            }
+            return;
+        }
+        const available = Rect(0, 0, maxInt(1, bounds().width),
+            maxInt(1, bounds().height));
+        _stepTip.place(canvas, _stepTipText, anchor, available);
+        _stepTipRect = _stepTip.rect;
     }
 
     /// The left border: an accent rail that doubles as the collapse handle.
@@ -6963,12 +7138,18 @@ private final class PlanCard : Widget
     protected override void onMouseLeave()
     {
         const changed = _handleHot || _expandWanted || _hideHot ||
-            _objectiveHot || _subagentHot >= 0 || _previewIndex >= 0;
+            _objectiveHot || _subagentHot >= 0 || _previewIndex >= 0 ||
+            _stepTipIndex >= 0;
         _handleHot = false;
         _expandWanted = false;
         _hideHot = false;
         _objectiveHot = false;
         _subagentHot = -1;
+        _stepTipIndex = -1;
+        _stepTipText = "";
+        _stepTipRect = Rect.init;
+        _stepTipReserve = 0;
+        _stepTip.rect = Rect.init;
         _objectiveTipRect = Rect(0, 0, 0, 0);
         // Leaving the card ends a history preview; hovering the card itself
         // keeps it open so the previewed steps stay inspectable.
@@ -7042,7 +7223,8 @@ private final class PlanCard : Widget
             invalidate();
         }
         setCursor(onHandle || overIcon || hotSubagent >= 0 || hotEntry >= 0 ||
-            nestedParentAt(event.position.y) != size_t.max
+            nestedParentAt(event.position.y) != size_t.max ||
+            stepAt(event.position) >= 0
             ? CursorKind.hand : CursorKind.arrow);
         // On the border the layout is frozen (the flag keeps its value), so the
         // border stays under the pointer and can be clicked; anywhere else in
@@ -7066,6 +7248,7 @@ private final class PlanCard : Widget
         // The bent arrow in the bottom-right corner hides the whole panel.
         if (!_railOnly && hideIconRect().contains(event.position))
         {
+            clearStepTip();
             if (onHideRequested !is null) onHideRequested();
             return true;
         }
@@ -7076,6 +7259,7 @@ private final class PlanCard : Widget
             const subagent = subagentAt(event.position);
             if (subagent >= 0 && subagent < cast(int) _subagents.length)
             {
+                clearStepTip();
                 if (onOpenSubagent !is null)
                     onOpenSubagent(_subagents[subagent].id);
                 return true;
@@ -7086,9 +7270,21 @@ private final class PlanCard : Widget
             (event.position.x < 0 || event.position.x >= handleHitWidth))
         {
             const parent = nestedParentAt(event.position.y);
-            if (parent == size_t.max) return false;
-            if (onToggleNested !is null) onToggleNested(parent);
-            return true;
+            if (parent != size_t.max)
+            {
+                clearStepTip();
+                if (onToggleNested !is null) onToggleNested(parent);
+                return true;
+            }
+            // A click on a listed step reveals its whole, unclipped text.
+            const step = stepAt(event.position);
+            if (step >= 0)
+            {
+                toggleStepTip(step);
+                return true;
+            }
+            clearStepTip();
+            return false;
         }
         if (onHandleActivated !is null) onHandleActivated();
         return true;
@@ -7253,7 +7449,8 @@ private final class DetachedPlanPanel : Widget
             ? minInt(collapsedWidth, available)
             : minInt((_hoverExpanded ? hoverCardWidth : cardWidth) +
                 (_card.stripShown() ? stripExtraWidth : 0), available);
-        const height = _collapsed ? collapsedHeight : _card.totalHeight();
+        const height = _collapsed
+            ? collapsedHeight : _card.totalHeightForWidth(width);
         return Rect(maxInt(margin, bounds().width - rightMargin - width), margin,
             width, height);
     }
@@ -7302,6 +7499,26 @@ private final class DetachedPlanPanel : Widget
     Rect stepsRectForTesting() const
     {
         const local = _card.stepsRectForTesting();
+        return Rect(_cardRect.x + local.x, _cardRect.y + local.y,
+            local.width, local.height);
+    }
+    Rect stepRectForTesting(size_t index)
+    {
+        const local = _card.stepRectForTesting(index);
+        return Rect(_cardRect.x + local.x, _cardRect.y + local.y,
+            local.width, local.height);
+    }
+    bool stepTipVisibleForTesting() const
+    {
+        return _card.stepTipVisibleForTesting();
+    }
+    string stepTipTextForTesting() const
+    {
+        return _card.stepTipTextForTesting();
+    }
+    Rect stepTipRectForTesting()
+    {
+        const local = _card.stepTipRectForTesting();
         return Rect(_cardRect.x + local.x, _cardRect.y + local.y,
             local.width, local.height);
     }
@@ -38227,6 +38444,31 @@ private void pollButtonSuggestionRequest()
     public string detachedPlanStepTextForTesting(size_t index)
     {
         return _planPanel is null ? "" : _planPanel.stepTextForTesting(index);
+    }
+
+    /// Test-only: a listed step row's rectangle in transcript coordinates.
+    public Rect detachedPlanStepRectForTesting(size_t index)
+    {
+        if (_planPanel is null || !_planPanel.visible()) return Rect.init;
+        return _planPanel.stepRectForTesting(index);
+    }
+
+    /// Test-only: whether a clicked step's full-text tooltip is showing, its
+    /// text, and its rectangle in transcript coordinates.
+    public bool detachedPlanStepTipVisibleForTesting()
+    {
+        return _planPanel !is null && _planPanel.stepTipVisibleForTesting();
+    }
+
+    public string detachedPlanStepTipTextForTesting()
+    {
+        return _planPanel is null ? "" : _planPanel.stepTipTextForTesting();
+    }
+
+    public Rect detachedPlanStepTipRectForTesting()
+    {
+        if (_planPanel is null || !_planPanel.visible()) return Rect.init;
+        return _planPanel.stepTipRectForTesting();
     }
 
     /// Test-only: the detached plan panel's card rect relative to the

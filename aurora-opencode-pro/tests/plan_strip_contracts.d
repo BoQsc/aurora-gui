@@ -265,6 +265,57 @@ int main(string[] args)
     assert(last.x + last.width <= cardRect.x + cardRect.width,
         "the newest history rectangle is clipped");
 
+    // Clicking a step row reveals its whole text in a tooltip: the row itself
+    // is clipped to one line, so this is where a long sentence can be read.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Show a long step"]);
+    const longStep =
+        "Persist the complete durable objective with every acceptance detail " ~
+        "so the full sentence can be read in the tooltip instead of the " ~
+        "clipped row";
+    root.applyPlanForTesting(`{"plan":[{"step":"` ~ longStep ~
+        `","status":"in_progress"}]}`);
+    root.rebuildForTesting();
+    assert(paint(root, driver), "the long-step plan did not paint");
+    const tipPanel = requireWidget!Widget(root, "oc-plan-panel");
+    const stepRow = root.detachedPlanStepRectForTesting(0);
+    assert(stepRow.width > 0 && stepRow.height > 0,
+        "the plan step has no click region");
+    const stepPoint = tipPanel.localToGlobal(Point(
+        stepRow.x + stepRow.width / 2, stepRow.y + stepRow.height / 2));
+    driver.click(stepPoint);
+    assert(paint(root, driver), "clicking the step did not paint");
+    assert(root.detachedPlanStepTipVisibleForTesting(),
+        "clicking a plan step did not reveal its full text");
+    assert(root.detachedPlanStepTipTextForTesting() == longStep,
+        "the step tooltip truncated the text: " ~
+        root.detachedPlanStepTipTextForTesting());
+    // The reserve grows the card on the next frame, so by the second paint the
+    // bubble must sit inside the card instead of being clipped by it.
+    assert(paint(root, driver), "the step tooltip did not settle");
+    const tip = root.detachedPlanStepTipRectForTesting();
+    const tippedCard = root.detachedPlanRectForTesting();
+    assert(tip.width > 0 && tip.height > 0,
+        "the step tooltip had no visible rect");
+    assert(tip.y >= tippedCard.y &&
+        tip.y + tip.height <= tippedCard.y + tippedCard.height,
+        "the step tooltip is clipped by the plan card: " ~
+        to!string(tip) ~ " vs " ~ to!string(tippedCard));
+    // Clicking the same row again closes the tooltip.
+    driver.click(stepPoint);
+    assert(paint(root, driver), "closing the step tooltip did not paint");
+    assert(!root.detachedPlanStepTipVisibleForTesting(),
+        "a second click on the step kept the tooltip open");
+    // Reopen it, then leave the card: the tooltip closes with the hover state.
+    driver.click(stepPoint);
+    assert(paint(root, driver), "reopening the step tooltip did not paint");
+    assert(root.detachedPlanStepTipVisibleForTesting(),
+        "the step tooltip did not reopen on a second click");
+    driver.moveTo(Point(4, 700));
+    assert(paint(root, driver), "leaving the card did not paint");
+    assert(!root.detachedPlanStepTipVisibleForTesting(),
+        "the step tooltip lingered after the pointer left the card");
+
     driver.moveTo(Point(4, 700));
     writeln("Plan history strip lists one rectangle per conversation plan");
     return 0;
