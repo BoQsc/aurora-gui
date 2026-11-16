@@ -7,7 +7,7 @@ import auroraopencode.taskcontext : taskContext;
 import auroraopencode.taskpolicy : requiredEvidence;
 import auroraopencode.taskflow : taskInvestigation;
 import auroraopencode.requestintent : RequestIntent, answerOnlyRequest, requestIntent,
-    controlInstructionText;
+    controlInstructionText, continuationFragment;
 import auroraopencode.goalmode : goalActive, goalAnswerDelivered, goalPromptBlock;
 import std.array : appender, join, split;
 import std.algorithm : canFind, min, max;
@@ -21,10 +21,22 @@ public string latestActualUserRequest(const ref ChatSession session)
     if (session.queuedGuidance.length > 0)
         foreach_reverse (text; session.queuedGuidance)
             if (!controlInstructionText(text)) return text;
+    string latest;
     foreach_reverse (index; activeMessagePath(session))
-        if (session.messages[index].role == "user" && !session.messages[index].internal)
-            return session.messages[index].content;
-    return "";
+    {
+        const ref message = session.messages[index];
+        if (message.role != "user" || message.internal) continue;
+        if (!latest.length)
+        {
+            latest = message.content;
+            continue;
+        }
+        // "at all" after "you are not fixing what was asked" continues that
+        // correction. Returning the fragment alone hid the actual instruction.
+        if (continuationFragment(latest)) return message.content ~ "\n" ~ latest;
+        break;
+    }
+    return latest;
 }
 
 /// Machine-readable task state supplied on every request. Compaction and
@@ -65,6 +77,11 @@ public string durableTaskPrompt(const ref ChatSession session,
         prompt.put("The latest request asks why. Diagnose the cause from evidence and resolve it with the correct change; " ~
             "do not stop at an explanation. Preserve the current objective and unfinished checklist, and do not " ~
             "resume desktop input that the user stopped. State the cause and the fix you applied, or the concrete blocker.\n");
+    else if (session.contract.currentIntent == "continuation")
+        prompt.put("The latest user message continues or corrects the current work. Treat its wording as authoritative " ~
+            "over the older objective: adopt the correction, retire the rejected approach, reproduce the reported " ~
+            "behavior, and continue until the requested outcome and its relevant checks are complete. Do not stop at " ~
+            "an explanation or mark the work complete while the user reports the same failure.\n");
     else
         prompt.put("The current request owns the work. Background tasks and paused goals add no obligations. " ~
             "Preserve applicable requirements; complete the deliverable and its relevant checks before the final reply.\n");

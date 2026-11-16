@@ -123,6 +123,21 @@ bool initializeLegacyTask(ref ChatSession session)
     return true;
 }
 
+/// The real user message immediately before the current one. A terse fragment
+/// such as "at all" inherits the correction it continues instead of replacing
+/// it with a meaningless standalone objective.
+private string previousUserRequest(const ref ChatSession session)
+{
+    size_t seen;
+    foreach_reverse (index; activeMessagePath(session))
+    {
+        const ref message = session.messages[index];
+        if (message.role != "user" || message.internal) continue;
+        if (++seen == 2) return message.content;
+    }
+    return "";
+}
+
 void acceptTaskRequest(ref ChatSession session, string text, string messageId, bool steering = false)
 {
     // Control records are part of the current turn, not a new user request.
@@ -130,7 +145,14 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId, b
     // next objective and started an unrelated verification loop.
     if (controlInstructionText(text)) return;
     initializeLegacyTask(session);
-    scope(exit) if (reportedFailureRequest(text) && session.objective.length)
+    // A correction or failure report invalidates an earlier passing check for
+    // the same work. A suffix fragment inherits that correction from the
+    // message it continues.
+    const corrective = correctiveFollowUpRequest(text) ||
+        (continuationFragment(text) &&
+         correctiveFollowUpRequest(previousUserRequest(session)));
+    scope(exit) if ((reportedFailureRequest(text) || corrective) &&
+        !workRestrictionRequest(text) && session.objective.length)
     {
         session.verificationStatus = "required";
         session.taskStatus = "active";
@@ -146,8 +168,9 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId, b
         const stripped = text.strip;
         const askedQuestion = stripped.length && stripped[$ - 1] == '?';
         const suppliedFact = session.taskStatus == "waiting_input" && !askedQuestion;
-        if (session.objective.length && session.taskStatus != "completed" &&
-            (suppliedFact || actionApprovalRequest(text) || steering))
+        if (session.objective.length &&
+            (corrective || (session.taskStatus != "completed" &&
+             (suppliedFact || actionApprovalRequest(text) || steering))))
         {
             if (session.contract.intent == "analysis")
                 session.contract.intent = "implementation";
@@ -167,6 +190,13 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId, b
     if (intent == RequestIntent.continuation &&
         (session.taskStatus == "completed" || !session.objective.length))
     {
+        if (corrective && session.objective.length)
+        {
+            session.contract.currentIntent = "continuation";
+            session.taskStatus = "active";
+            session.contract.blocker = "";
+            return;
+        }
         session.contract.currentIntent = "conversation";
         return;
     }

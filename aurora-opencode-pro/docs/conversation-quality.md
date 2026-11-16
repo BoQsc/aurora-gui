@@ -7,6 +7,13 @@ objective on the next action request. Continuation can restore archived work.
 Intent recognition is conservative local English parsing; the full instruction
 remains available to the model. It is not a general natural-language classifier.
 
+Corrections own the work. A failure report or direction change ("I said ...",
+"still not ...", "you are not fixing ...") keeps the active task running and
+invalidates an earlier passing check, even after a completed turn. A terse
+suffix such as "at all" inherits the correction it continues. A yes/no status
+question ("is it all done and complete?") is answer-only and never becomes a new
+implementation objective.
+
 Plans keep stable IDs, acceptance conditions (`done`), categories, evidence and
 blockers. Updates preserve omitted metadata, restore omitted completed steps in their original relative order, and reject dropped unfinished
 outcomes at every plan size. Completed steps need compatible successful tool

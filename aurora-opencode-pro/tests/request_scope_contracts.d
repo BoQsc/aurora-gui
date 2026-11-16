@@ -3,6 +3,7 @@ module request_scope_contracts;
 import auroraopencode.core;
 import auroraopencode.taskflow;
 import auroraopencode.taskcontinuation;
+import auroraopencode.requestintent;
 import auroraopencode.contextpolicy : durableTaskPrompt, latestActualUserRequest;
 import auroraopencode.taskpolicy : requiredEvidence;
 import auroraopencode.turnpolicy;
@@ -104,6 +105,60 @@ int main()
     goal.taskStatus = "waiting_input";
     request(goal, "The customer rate is 0.0175.");
     assert(goal.contract.id == goalId && goal.taskStatus == "active");
+
+    // A status question must not become a new implementation task whose
+    // objective is the question itself.
+    ChatSession status;
+    request(status, "Implement the panel drag fix.");
+    const statusObjective = status.objective;
+    request(status, "so is all done and complete?");
+    assert(status.objective == statusObjective &&
+        status.contract.currentIntent == "clarification",
+        "a status question replaced the task objective");
+
+    // Corrections and failure reports continue the work, including after a
+    // completed turn with a passing check, and invalidate that passing check.
+    ChatSession corrective;
+    request(corrective, "Fix the second panel drag.");
+    corrective.taskStatus = "completed";
+    corrective.verificationStatus = "passed";
+    const correctiveObjective = corrective.objective;
+    request(corrective, "you are not fixing what was asked");
+    assert(corrective.objective == correctiveObjective &&
+        corrective.contract.currentIntent == "continuation" &&
+        corrective.taskStatus == "active" &&
+        corrective.verificationStatus == "required",
+        "a correction did not resume and invalidate the completed work");
+    corrective.taskStatus = "active";
+    corrective.verificationStatus = "passed";
+    request(corrective, "I said second time dragging of panel");
+    assert(corrective.contract.currentIntent == "continuation" &&
+        corrective.taskStatus == "active" &&
+        corrective.verificationStatus == "required",
+        "a terse clarification stopped the work");
+    // A suffix fragment continues the correction it belongs to instead of
+    // becoming the whole current request.
+    corrective.taskStatus = "completed";
+    corrective.verificationStatus = "passed";
+    request(corrective, "at all");
+    assert(corrective.contract.currentIntent == "continuation" &&
+        corrective.taskStatus == "active" &&
+        corrective.verificationStatus == "required",
+        "a suffix fragment replaced the correction");
+    assert(latestActualUserRequest(corrective) ==
+        "I said second time dragging of panel\nat all",
+        "a suffix fragment hid the correction it continues");
+
+    assert(requestIntent("so is all done and complete?") == RequestIntent.clarification);
+    assert(requestIntent("I said second time dragging of panel") == RequestIntent.continuation);
+    assert(requestIntent("you are not fixing what was asked") == RequestIntent.continuation);
+    assert(requestIntent("check latest messages and you will see that it keeps failing too") ==
+        RequestIntent.continuation);
+    assert(requestIntent("so why you are not doing anythign about it") == RequestIntent.continuation);
+    assert(requestIntent("Why is it still not switching immediately?") == RequestIntent.diagnosis,
+        "a genuine why-question must remain a diagnosis");
+    assert(requestIntent("Can you complete it?") == RequestIntent.implementation);
+
     writeln("PASS current-request ownership; exact background preservation; pause, explanation, resume, restart, completed-continue, casual reply and active-goal amendment");
     return 0;
 }

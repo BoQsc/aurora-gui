@@ -115,6 +115,79 @@ private bool requestedVerb(const(string)[] words, const(string)[] raw, size_t i)
     return false;
 }
 
+/// A yes/no status question ("so is all done and complete?") mentions
+/// completion but asks for state. Treating it as an implementation request
+/// created a task whose objective was the question, which then anchored later
+/// corrections to a stale objective.
+private bool statusQuestion(const(string)[] words)
+{
+    size_t i;
+    while (i < words.length &&
+        ["so", "now", "then", "please", "just", "and", "but"].canFind(words[i])) ++i;
+    if (i >= words.length) return false;
+    if (!["is", "are", "was", "were", "am", "do", "does", "did",
+            "has", "have", "had"].canFind(words[i]))
+        return false;
+    // "Can you complete it?" is an action request with a modal actor, not a
+    // status question about the work.
+    foreach (j; i + 1 .. words.length)
+        if (["can", "could", "would", "will", "should"].canFind(words[j]) &&
+            j + 1 < words.length && ["you", "we"].canFind(words[j + 1]))
+            return false;
+    return true;
+}
+
+/// Feedback that the work in progress is still wrong. It often has no action
+/// verb of its own, so the generic parser would classify it as casual
+/// conversation and stop the turn before the correction was applied.
+bool correctiveFollowUpRequest(string text)
+{
+    const normalized = " " ~ text.toLower.split().join(" ") ~ " ";
+    foreach (phrase; [" i said ", " i meant ", " i told you ",
+            " second time ", " third time ",
+            " not fixing ", " not doing anything ", " not doing anythign ",
+            " not what i asked ", " not what was asked ", " not what i wanted ",
+            " keeps failing ", " keeps happening ", " failed again ",
+            " still not ", " still broken ", " still failing ", " still not working ",
+            " still does not ", " still doesn't ", " still cannot ", " still can't ",
+            " does not work ", " doesn't work ", " not working ", " not fixed ",
+            " problem persists ", " same problem ", " same issue ",
+            " impossible to click ", " impossible to drag ", " impossible to select ",
+            " impossible to move ",
+            " testing things that are already known ", " you keep testing "])
+        if (normalized.canFind(phrase)) return true;
+    return false;
+}
+
+/// A complaint that the agent is not acting is a demand to continue the work,
+/// even when it is phrased as a why-question ("so why you are not doing
+/// anything about it"). A genuine why-question about a failure stays a
+/// diagnosis and does not match these inaction phrases.
+bool inactionComplaint(string text)
+{
+    const normalized = " " ~ text.toLower.split().join(" ") ~ " ";
+    foreach (phrase; [" you are not fixing ", " you're not fixing ",
+            " not fixing what ", " you are not doing ", " you're not doing ",
+            " not doing anything ", " not doing anythign ",
+            " you are testing ", " you're testing ", " you keep testing ",
+            " testing things that are already known "])
+        if (normalized.canFind(phrase)) return true;
+    return false;
+}
+
+/// A terse suffix such as "at all" continues the previous user message rather
+/// than becoming a new request on its own. It inherits that message's intent.
+bool continuationFragment(string text)
+{
+    const words = requestWords(text);
+    if (!words.length || (text.length && text[$ - 1] == '?')) return false;
+    const normalized = words.join(" ");
+    foreach (phrase; ["at all", "not at all", "still", "still not", "again",
+            "same", "not yet", "and", "too"])
+        if (normalized == phrase) return true;
+    return false;
+}
+
 /// This conservative local classifier controls continuation, not authorization
 /// for arbitrary tools. The model still sees the complete current instruction.
 RequestIntent requestIntent(string text)
@@ -146,7 +219,13 @@ RequestIntent requestIntent(string text)
                 "investigate", "research", "audit", "find", "look", "examine"].canFind(word)) analysis = true;
     }
     if (continuation) return RequestIntent.continuation;
-    if (completion) return RequestIntent.implementation;
+    // An explicit answer-only restriction wins over a correction so the
+    // requested scope is preserved ("explain why it is still broken; do not
+    // change anything").
+    if (!explicitExplanationOnly(text) && correctiveFollowUpRequest(text) &&
+        (!leadingQuestion(words) || inactionComplaint(text)))
+        return RequestIntent.continuation;
+    if (completion && !statusQuestion(words)) return RequestIntent.implementation;
     if (analysis) return RequestIntent.analysis;
     if (correctiveActionRequest(text)) return RequestIntent.implementation;
     if (clarification) return RequestIntent.clarification;
