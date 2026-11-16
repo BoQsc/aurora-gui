@@ -1137,6 +1137,7 @@ int main(string[] args)
     }
     const contract = toolSteeringPrompt(false);
     assert(contract.indexOf("smallest complete solution") >= 0 &&
+        contract.indexOf("A pre-existing failing test") >= 0 &&
         contract.indexOf("Verify the result at the level the request needs") >= 0 &&
         contract.indexOf("preserve their constraints and edits") >= 0,
         "The steering prompt must keep the execution contract");

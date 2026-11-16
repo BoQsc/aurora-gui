@@ -94,7 +94,7 @@ for fixture in ['filesystem_host', *args.fixtures]:
     build_log = directory / (fixture + '.build.log')
     with build_log.open('w', encoding='utf-8') as log:
         result = subprocess.run(compile_command, cwd=directory,
-                                timeout=300,
+                                timeout=900 if args.release else 300,
                                 stdout=log, stderr=subprocess.STDOUT)
     if result.returncode:
         (directory / (fixture + '.result.json')).write_text(json.dumps({

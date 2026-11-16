@@ -181,6 +181,9 @@ private string coreSection(in SystemPromptContext ctx)
         "describe their contents: do not transcribe their internal structure into new inventories, schemas or reports. " ~
         "Do not inspect unrelated runtime systems to document how hypothetical future changes might integrate. " ~
         "Complete the requested artifact before polishing optional documentation; stop when its required checks pass.\n" ~
+        "A pre-existing failing test, unrelated suite maintenance or a harness defect is not part of the user's request " ~
+        "unless it blocks the requested deliverable or the user asks for it. Stay inside the requested outcome and " ~
+        "report it briefly; once the feature is delivered and its relevant checks pass, stop.\n" ~
         "Verify the result at the level the request needs. For unchanged assets in an archive, verify required entries, " ~
         "archive integrity and source-byte preservation; don't re-test the asset's original design, recreate its toolchain, " ~
         "or implement and test hypothetical returned revisions. For code changes, run relevant behavior checks. " ~
