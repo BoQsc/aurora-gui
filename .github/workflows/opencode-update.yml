@@ -3,7 +3,7 @@ name: Publish OpenCode update
 on:
   workflow_dispatch:
   push:
-    branches: [codex/portable-crt-experiment]
+    branches: [main]
     tags: ['v*']
     paths:
       - .github/workflows/opencode-update.yml

@@ -45,10 +45,10 @@ source updates in Developer mode, regardless of this preference.
 
 `assets/maintainer-source-branch.txt` selects the public source branch for the
 app update channel. Source downloads, update notices, sync, the rebuild check,
-and contribution PR bases all use this branch. Currently the shipped app's
-source is on `codex/portable-crt-experiment`; `main` contains an older app.
-Publish source commits to the selected branch before delivering the binary
-update. Change the asset when moving the release channel to a different branch.
+and contribution PR bases all use this branch. The shipped app's source is on
+`main`. Publish source commits to the selected branch before delivering the
+binary update. Change the asset when moving the release channel to a different
+branch.
 
 Update remains visible in Developer mode and installs the maintainer's published
 executable. It first synchronizes the selected source with the maintainer branch,
