@@ -22,6 +22,7 @@ module thinking_mode_switch_contracts;
 //   build/thinking_mode_switch_contracts.exe
 
 import aurora;
+import aurora.event : Key;
 import auroraopencode.appui : OpenCodeRoot, SessionListView;
 import auroraopencode.conversationcodec : decodeSessionMetadata;
 import auroraopencode.conversationencode : sessionMetaToJson;
@@ -106,6 +107,26 @@ int main()
         return menu;
     }
 
+    /// Open the dropdown with a right click and pick a mode with real keyboard
+    /// input (Down to move, Enter to activate), not by invoking its action.
+    void chooseThinkingMode(string mode)
+    {
+        auto menu = openThinkingMenu();
+        assert(menu.items().length >= 5, "Thinking menu lost its mode rows");
+        // Row 0 is a disabled title, so the first Down lands on Off.
+        const steps = mode == "off" ? 1 : mode == "low" ? 2
+            : mode == "medium" ? 3 : 4;
+        foreach (_; 0 .. steps)
+        {
+            driver.pressKey(Key.down);
+            settle();
+        }
+        driver.pressKey(Key.enter);
+        settle();
+        assert(currentTransientPopup(root) is null,
+            "choosing a Thinking mode left its menu open");
+    }
+
     settle();
 
     // Click New chat, then choose High through the real dropdown. This mode
@@ -114,10 +135,7 @@ int main()
     settle();
     const chatA = root.currentSessionForTesting();
     assert(chatA >= 0, "the New chat button did not create chat A");
-    auto menu = openThinkingMenu();
-    assert(menu.items().length >= 5, "Thinking menu lost its mode rows");
-    menu.items()[4].action(); // High
-    settle();
+    chooseThinkingMode("high");
     assert(root.thinkingControlTextForTesting() == "Thinking: High",
         "selector did not render the clicked High mode: " ~
         root.thinkingControlTextForTesting());
@@ -138,10 +156,11 @@ int main()
     assert(root.thinkingControlTextForTesting() == "Thinking: High",
         "a new chat did not start at High: " ~
         root.thinkingControlTextForTesting());
-    menu = openThinkingMenu();
+    auto menu = openThinkingMenu();
     assert(menu.items()[4].checked, "the dropdown did not mark the inherited High mode");
-    menu.items()[1].action(); // Off
+    dismissContextMenus(root);
     settle();
+    chooseThinkingMode("off");
     assert(root.thinkingControlTextForTesting() == "Thinking: Off",
         "selector did not render Off after clicking it: " ~
         root.thinkingControlTextForTesting());
@@ -206,9 +225,7 @@ int main()
 
     // Change chat A to Medium, then visit chat B and come back. B must remain
     // Off and A must show the Medium that was set for it.
-    menu = openThinkingMenu();
-    menu.items()[3].action(); // Medium
-    settle();
+    chooseThinkingMode("medium");
     assert(root.sessionThinkingModeForTesting(chatA) == "medium",
         "chat A did not store the newly chosen Medium mode");
     assert(root.sessionThinkingModeForTesting(chatB) == "off",
