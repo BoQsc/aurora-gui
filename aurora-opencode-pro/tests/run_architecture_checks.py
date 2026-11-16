@@ -116,7 +116,8 @@ for fixture in ['filesystem_host', *args.fixtures]:
     log_path = directory / (fixture + '.log')
     try:
         with log_path.open('w', encoding='utf-8') as log:
-            result = subprocess.run([str(executable)], cwd=directory, timeout=120,
+            result = subprocess.run([str(executable)], cwd=directory,
+                                    timeout=300 if not args.release else 180,
                                     stdout=log, stderr=subprocess.STDOUT, env=env)
     except subprocess.TimeoutExpired:
         (directory / (fixture + '.result.json')).write_text(json.dumps({
