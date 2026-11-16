@@ -64,6 +64,10 @@ final class DesignerRoot : VBox
     // History (serialized document snapshots).
     private string[] _undoStack;
     private string[] _redoStack;
+    private string _propertyEditKey;
+    private int _outlineDragIndex = -1;
+    private int _outlineDropTarget = -1;
+    private int _outlineDropMode;
     private static immutable size_t HistoryLimit = 50;
 
     this(GuiWindow window)
@@ -363,7 +367,16 @@ final class DesignerRoot : VBox
         if (_undoStack.length > HistoryLimit)
             _undoStack = _undoStack[$ - HistoryLimit .. $];
         _redoStack.length = 0;
+        _propertyEditKey = null;
         updateHistoryButtons();
+    }
+
+    /// One undo step per field editing session, not one per keystroke.
+    private void beginPropertyEdit(string key)
+    {
+        if (_propertyEditKey == key) return;
+        commitHistory();
+        _propertyEditKey = key;
     }
 
     private void undo()
@@ -372,9 +385,11 @@ final class DesignerRoot : VBox
         _redoStack ~= serializeDocument(_document);
         if (_redoStack.length > HistoryLimit)
             _redoStack = _redoStack[$ - HistoryLimit .. $];
+        const snapshot = _undoStack[$ - 1];
         _undoStack = _undoStack[0 .. $ - 1];
-        _document = deserializeDocument(_undoStack[$ - 1]);
+        _document = deserializeDocument(snapshot);
         if (_document.findNode(_selected) < 0) _selected = -1;
+        _propertyEditKey = null;
         setDirty(true);
         refreshAll();
     }
@@ -387,6 +402,7 @@ final class DesignerRoot : VBox
         _redoStack = _redoStack[0 .. $ - 1];
         _document = deserializeDocument(snapshot);
         if (_document.findNode(_selected) < 0) _selected = -1;
+        _propertyEditKey = null;
         setDirty(true);
         refreshAll();
     }
@@ -600,6 +616,7 @@ final class DesignerRoot : VBox
 
     void selectNode(int index)
     {
+        _propertyEditKey = null;
         _selected = _document.findNode(index);
         foreach (row; _outlineRows)
             row.setSelected(row.index() == _selected);
@@ -639,6 +656,9 @@ final class DesignerRoot : VBox
     private void rebuildOutline()
     {
         if (_outline is null) return;
+        _outlineDragIndex = -1;
+        _outlineDropTarget = -1;
+        _outlineDropMode = 0;
         _outline.clearChildren();
         _outlineRows = null;
         if (_document.findNode(_document.root) < 0) return;
@@ -677,6 +697,101 @@ final class DesignerRoot : VBox
         const id = _document.nodes[index].id;
         _collapsed[id] = !(id in _collapsed ? _collapsed[id] : false);
         rebuildOutline();
+    }
+
+    void updateOutlineDrag(int dragged, Point globalPosition)
+    {
+        auto row = outlineRowAt(globalPosition);
+        if (_outlineDropTarget >= 0)
+        {
+            foreach (candidate; _outlineRows)
+                if (candidate.index() == _outlineDropTarget)
+                {
+                    candidate.setDropMode(0);
+                    break;
+                }
+        }
+        _outlineDragIndex = dragged;
+        _outlineDropTarget = -1;
+        _outlineDropMode = 0;
+        if (row is null) return;
+        const target = row.index();
+        if (target == dragged || _document.isDescendant(dragged, target))
+            return;
+        const localY = globalPosition.y - row.globalOrigin().y;
+        const height = maxInt(1, row.bounds().height);
+        int mode;
+        if (target == _document.root)
+            mode = 2;
+        else if (row.isContainer() && localY >= height / 3 &&
+            localY < height * 2 / 3)
+            mode = 2;
+        else
+            mode = localY < height / 2 ? 1 : 3;
+        _outlineDropTarget = target;
+        _outlineDropMode = mode;
+        row.setDropMode(mode);
+    }
+
+    void finishOutlineDrag(int dragged, Point globalPosition)
+    {
+        updateOutlineDrag(dragged, globalPosition);
+        const target = _outlineDropTarget;
+        const mode = _outlineDropMode;
+        foreach (row; _outlineRows)
+            row.setDropMode(0);
+        _outlineDragIndex = -1;
+        _outlineDropTarget = -1;
+        _outlineDropMode = 0;
+        if (target < 0 || target == dragged ||
+            _document.isDescendant(dragged, target))
+            return;
+        if (dragged == _document.root) return;
+
+        const current = _document.absoluteRect(dragged);
+        commitHistory();
+        bool changed;
+        if (mode == 2)
+        {
+            changed = _document.reparent(dragged, target, current.x, current.y);
+        }
+        else
+        {
+            int parent = _document.parentOf(target);
+            if (parent < 0) parent = _document.root;
+            if (parent >= 0 && !_document.isDescendant(dragged, parent))
+            {
+                if (_document.parentOf(dragged) != parent)
+                    _document.reparent(dragged, parent, current.x, current.y);
+                const at = _document.childIndex(parent, target);
+                if (at >= 0)
+                {
+                    const insert = at + (mode == 3 ? 1 : 0);
+                    changed = _document.moveChild(parent, dragged, insert);
+                }
+            }
+        }
+        if (changed)
+        {
+            _selected = dragged;
+            setDirty(true);
+            refreshAll();
+        }
+    }
+
+    private OutlineRow outlineRowAt(Point globalPosition)
+    {
+        foreach (row; _outlineRows)
+        {
+            const origin = row.globalOrigin();
+            const size = row.bounds();
+            if (globalPosition.x >= origin.x &&
+                globalPosition.x < origin.x + size.width &&
+                globalPosition.y >= origin.y &&
+                globalPosition.y < origin.y + size.height)
+                return row;
+        }
+        return null;
     }
 
     private void addChildFromInspector(int parent, NodeKind kind)
@@ -949,6 +1064,7 @@ final class DesignerRoot : VBox
         field.layoutHints().flex = 1.0;
         field.onChanged = delegate()
         {
+            beginPropertyEdit(to!string(_selected) ~ ":" ~ label);
             const value = field.textUtf8();
             action(value);
             noteChange();
@@ -986,6 +1102,7 @@ final class DesignerRoot : VBox
         const id = value.strip();
         if (id.length == 0 || _document.idExists(id, current))
             return false;
+        beginPropertyEdit("id:" ~ to!string(current));
         _document.nodes[current].id = id;
         rebuildOutline();
         noteChange();
@@ -1019,6 +1136,7 @@ final class DesignerRoot : VBox
     {
         const selected = _document.findNode(_selected);
         if (selected < 0) return;
+        beginPropertyEdit("name:" ~ to!string(selected));
         _document.nodes[selected].name = _nameField.textUtf8();
         noteChange();
     }
@@ -1037,6 +1155,7 @@ final class DesignerRoot : VBox
             field.setText(to!string(valueFor(field)), false);
             return;
         }
+        beginPropertyEdit("coord:" ~ to!string(selected) ~ ":" ~ to!string(which));
         if (which == 0) _document.nodes[selected].x = value;
         else if (which == 1) _document.nodes[selected].y = value;
         else if (which == 2) _document.nodes[selected].width = maxInt(8, value);
@@ -1548,6 +1667,24 @@ final class DesignCanvas : Widget
 
         // Ancestor path, then selection outline + resize handles.
         const selected = doc.findNode(_root.selectedIndex());
+        foreach (index; doc.paintOrder())
+        {
+            const header = containerHeaderRect(index);
+            if (header.width <= 0) continue;
+            const active = index == selected;
+            canvas.fillRect(header, palette.accent.withAlpha(active ? 70 : 35));
+            canvas.fillRect(Rect(header.x, header.y + header.height - 1,
+                header.width, 1), palette.accent.withAlpha(active ? 180 : 70));
+            foreach (dotY; 0 .. 2)
+                foreach (dotX; 0 .. 2)
+                    canvas.fillRect(Rect(header.x + 4 + dotX * 5,
+                        header.y + 5 + dotY * 5, 2, 2),
+                        palette.textMuted);
+            canvas.drawTextInRect(Rect(header.x + 20, header.y,
+                maxInt(0, header.width - 20), header.height),
+                to!dstring(doc.nodes[index].id), palette.text, 1,
+                HorizontalAlign.left, VerticalAlign.middle, true);
+        }
         if (selected >= 0)
         {
             int ancestor = doc.parentOf(selected);
@@ -1561,17 +1698,6 @@ final class DesignCanvas : Widget
             const rect = doc.absoluteRect(selected).translated(art.x, art.y);
             canvas.strokeRect(rect, palette.accent, 1);
             paintResizeHandles(canvas, rect, palette.accent);
-            const grip = moveGripRect();
-            if (grip.width > 0)
-            {
-                canvas.fillRect(grip, palette.accent);
-                canvas.strokeRect(grip, palette.windowBackground, 1);
-                foreach (dotY; 0 .. 2)
-                    foreach (dotX; 0 .. 2)
-                        canvas.fillRect(Rect(grip.x + 5 + dotX * 5,
-                            grip.y + 5 + dotY * 5, 2, 2),
-                            palette.windowBackground);
-            }
         }
 
         if (_marqueeActive)
@@ -1655,9 +1781,6 @@ final class DesignCanvas : Widget
                 Color fill = node.transparent ? Color.rgba(0, 0, 0, 0) :
                     nodeColor(node, palette.buttonBackground);
                 canvas.drawRoundedRect(rect, 2, fill, palette.border, 1);
-                if (!node.transparent)
-                    canvas.drawTextInRect(rect, to!dstring(node.id), palette.textMuted,
-                        1, HorizontalAlign.left, VerticalAlign.top, true);
                 break;
             }
             case NodeKind.hbox:
@@ -1686,9 +1809,6 @@ final class DesignCanvas : Widget
                     canvas.drawRoundedRect(slot, 2, palette.fieldBackground,
                         palette.border, 1);
                 }
-                canvas.drawTextInRect(Rect(rect.x + 0, rect.y + 2, rect.width, maxInt(0, rect.height - 2)), to!dstring(node.id),
-                    palette.textMuted, 1, HorizontalAlign.center,
-                    VerticalAlign.top, true);
                 break;
             }
             case NodeKind.button:
@@ -1753,9 +1873,6 @@ final class DesignCanvas : Widget
                 const bar = Rect(rect.right() - 12, rect.y + 4, 8,
                     maxInt(8, rect.height / 3));
                 canvas.fillRoundedRect(bar, 2, palette.textMuted.withAlpha(120));
-                canvas.drawTextInRect(Rect(rect.x + 6, rect.y + 2, rect.width - 20,
-                    18), to!dstring(node.id ~ " (scroll)"), palette.textMuted, 1,
-                    HorizontalAlign.left, VerticalAlign.top, true);
                 break;
             }
             case NodeKind.listview:
@@ -1855,23 +1972,45 @@ final class DesignCanvas : Widget
         return ResizeHandle.none;
     }
 
-    /// Canvas-local move grip for the selected node. It works even when a
-    /// child covers the selected container's interior.
-    Rect moveGripRect() const
+    /// A container-owned header, drawn above its children and hit-tested
+    /// before children. This is the normal click/drag target for a panel.
+    Rect containerHeaderRect(int index) const
     {
-        const selected = document().findNode(_root.selectedIndex());
-        if (selected < 0) return Rect(0, 0, 0, 0);
+        const doc = document();
+        if (doc.findNode(index) < 0) return Rect(0, 0, 0, 0);
+        const node = doc.nodes[index];
+        if (!doc.canHostChildren(node.kind) || node.kind == NodeKind.window)
+            return Rect(0, 0, 0, 0);
+        if (node.width <= 24 || node.height < 24)
+            return Rect(0, 0, 0, 0);
         const art = artboardRect();
-        const abs = document().absoluteRect(selected);
-        const rect = Rect(abs.x + art.x, abs.y + art.y, abs.width, abs.height);
-        const size = 18;
-        int x = rect.x + 3;
-        int y = rect.y - size - 3;
-        if (y < art.y) y = rect.y + 3;
-        x = min(x, art.x + art.width - size);
-        y = min(y, art.y + art.height - size);
-        return Rect(x, y, size, size);
+        const abs = doc.absoluteRect(index);
+        // Never reach past the container itself: a child that spills over the
+        // top edge must stay clickable.
+        const top = maxInt(abs.y, 0);
+        const height = minInt(18, abs.y + abs.height - top);
+        if (height <= 0) return Rect(0, 0, 0, 0);
+        // Restrict the band to its visible title chip so the rest of a
+        // child's top edge stays clickable.
+        const width = minInt(maxInt(0, node.width - 16), 140);
+        if (width <= 0) return Rect(0, 0, 0, 0);
+        return Rect(abs.x + art.x + 8, art.y + top,
+            width, height);
     }
+
+    private int containerHeaderAt(Point local) const
+    {
+        const doc = document();
+        const order = doc.paintOrder();
+        for (int i = cast(int) order.length - 1; i >= 0; --i)
+        {
+            const header = containerHeaderRect(order[i]);
+            if (header.width > 0 && header.contains(local))
+                return order[i];
+        }
+        return -1;
+    }
+
 
     private CursorKind cursorForHandle(ResizeHandle handle)
     {
@@ -1933,10 +2072,15 @@ final class DesignCanvas : Widget
 
         auto doc = _root.designDocument();
         const art = toArtboard(event.position);
-        const hit = doc.findNode(doc.root) >= 0 ? doc.hitTest(art.x, art.y) : -1;
-        const grip = moveGripRect();
-        if (grip.width > 0 && grip.contains(event.position))
+        const hit = doc.findNode(doc.root) >= 0
+            ? leafHitTest(doc, art.x, art.y) : -1;
+        if (containerHeaderAt(event.position) >= 0)
         {
+            if (_hovered >= 0)
+            {
+                _hovered = -1;
+                invalidate();
+            }
             setCursor(CursorKind.move);
             return true;
         }
@@ -1958,23 +2102,24 @@ final class DesignCanvas : Widget
 
         auto doc = _root.designDocument();
         const art = toArtboard(event.position);
-        const hit = doc.findNode(doc.root) >= 0 ? doc.hitTest(art.x, art.y) : -1;
+        const hit = doc.findNode(doc.root) >= 0
+            ? leafHitTest(doc, art.x, art.y) : -1;
 
         if (event.button == MouseButton.left)
         {
-            const grip = moveGripRect();
-            if (grip.width > 0 && grip.contains(event.position) &&
-                doc.findNode(_root.selectedIndex()) >= 0)
+            const header = containerHeaderAt(event.position);
+            if (header >= 0)
             {
-                const selected = _root.selectedIndex();
-                _dragging = selected;
-                _dragParent = doc.parentOf(selected);
+                _root.selectNode(header);
+                _root.rebuildInspector();
+                _dragging = header;
+                _dragParent = doc.parentOf(header);
                 _dropParent = _dragParent;
                 _geometryStarted = false;
                 _dragStart = event.position;
-                _dragStartNode = Point(doc.nodes[selected].x, doc.nodes[selected].y);
-                _dragStartSize = Size(doc.nodes[selected].width,
-                    doc.nodes[selected].height);
+                _dragStartNode = Point(doc.nodes[header].x, doc.nodes[header].y);
+                _dragStartSize = Size(doc.nodes[header].width,
+                    doc.nodes[header].height);
                 captureMouse();
                 invalidate();
                 return true;
@@ -2061,10 +2206,11 @@ final class DesignCanvas : Widget
         if (_resizing >= 0)
         {
             const node = _resizing;
+            const resized = _geometryStarted;
             _resizing = -1;
             _geometryStarted = false;
             releaseMouse();
-            _root.noteGeometryChange();
+            if (resized) _root.noteGeometryChange();
             invalidate();
             return true;
         }
@@ -2073,14 +2219,15 @@ final class DesignCanvas : Widget
             const dragged = _dragging;
             const target = _dropParent;
             const previousParent = _dragParent;
+            const moved = _geometryStarted;
             _dragging = -1;
             _dropParent = -1;
             _dragParent = -1;
             _geometryStarted = false;
             releaseMouse();
-            if (target >= 0 && target != previousParent)
+            auto doc = _root.designDocument();
+            if (moved && target >= 0 && target != previousParent)
             {
-                auto doc = _root.designDocument();
                 const current = doc.absoluteRect(dragged);
                 if (doc.reparent(dragged, target, current.x, current.y))
                 {
@@ -2090,7 +2237,7 @@ final class DesignCanvas : Widget
                 else
                     _root.noteGeometryChange();
             }
-            else
+            else if (moved)
                 _root.noteGeometryChange();
             invalidate();
             return true;
@@ -2120,22 +2267,52 @@ final class DesignCanvas : Widget
         return false;
     }
 
+    /// The deepest node under an artboard point. A leaf child clipped by its
+    /// container's box still wins over the container, so clicking the visible
+    /// widget always selects it.
+    private static int leafHitTest(const ref DesignDocument doc, int x, int y)
+    {
+        if (doc.findNode(doc.root) < 0) return -1;
+        // Exactly what is painted wins: the topmost leaf under the point, or
+        // else the topmost container. No ancestor needs to contain the point,
+        // because the canvas does not clip children to their parents.
+        const order = doc.paintOrder();
+        for (int i = cast(int) order.length - 1; i >= 0; --i)
+        {
+            const index = order[i];
+            if (doc.nodes[index].children.length == 0 &&
+                doc.containsPoint(index, x, y))
+                return index;
+        }
+        for (int i = cast(int) order.length - 1; i >= 0; --i)
+        {
+            const index = order[i];
+            if (index != doc.root && doc.containsPoint(index, x, y))
+                return index;
+        }
+        return -1;
+    }
+
     private int hitTestRect(const ref DesignDocument doc, int x, int y,
         int w, int h)
     {
         return doc.hitTestRect(x, y, w, h);
     }
 
+
     private void updateDrag(Point local)
     {
         auto doc = _root.designDocument();
         if (doc.findNode(_dragging) < 0) return;
+        const delta = local - _dragStart;
+        if (!_geometryStarted && delta.x >= -3 && delta.x <= 3 &&
+            delta.y >= -3 && delta.y <= 3)
+            return;
         if (!_geometryStarted)
         {
             _root.beginGeometryChange();
             _geometryStarted = true;
         }
-        const delta = local - _dragStart;
         doc.nodes[_dragging].x = _dragStartNode.x + delta.x;
         doc.nodes[_dragging].y = _dragStartNode.y + delta.y;
         _root.noteChange();
@@ -2295,6 +2472,10 @@ final class OutlineRow : Widget
     private bool _container;
     private bool _selected;
     private bool _hovered;
+    private bool _pressed;
+    private bool _dragging;
+    private Point _pressGlobal;
+    private int _dropMode;
     private string _label;
     private string _detail;
 
@@ -2314,6 +2495,14 @@ final class OutlineRow : Widget
     }
 
     int index() const @safe pure nothrow @nogc { return _index; }
+    bool isContainer() const @safe pure nothrow @nogc { return _container; }
+
+    void setDropMode(int mode)
+    {
+        if (_dropMode == mode) return;
+        _dropMode = mode;
+        invalidate();
+    }
 
     void setSelected(bool value)
     {
@@ -2347,6 +2536,10 @@ final class OutlineRow : Widget
             }
             _owner.selectNode(_index);
             _owner.rebuildInspector();
+            _pressed = true;
+            _dragging = false;
+            _pressGlobal = event.globalPosition;
+            captureMouse();
             return true;
         }
         if (event.button == MouseButton.right)
@@ -2359,6 +2552,38 @@ final class OutlineRow : Widget
         return false;
     }
 
+    override bool onMouseMove(ref Event event)
+    {
+        if (!_pressed) return false;
+        const dx = event.globalPosition.x - _pressGlobal.x;
+        const dy = event.globalPosition.y - _pressGlobal.y;
+        if (!_dragging && dx * dx + dy * dy >= 16)
+        {
+            _dragging = true;
+            setCursor(CursorKind.move);
+        }
+        if (_dragging)
+        {
+            _owner.updateOutlineDrag(_index, event.globalPosition);
+            return true;
+        }
+        return false;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (event.button != MouseButton.left || !_pressed)
+            return false;
+        const wasDragging = _dragging;
+        _pressed = false;
+        _dragging = false;
+        releaseMouse();
+        setCursor(CursorKind.hand);
+        if (wasDragging)
+            _owner.finishOutlineDrag(_index, event.globalPosition);
+        return true;
+    }
+
     protected override void onPaint(ref Canvas canvas)
     {
         const palette = theme();
@@ -2368,6 +2593,18 @@ final class OutlineRow : Widget
         else if (_hovered)
             canvas.fillRect(Rect(0, 0, bounds().width, bounds().height),
                 palette.buttonHover.withAlpha(90));
+        if (_dropMode == 2)
+        {
+            canvas.fillRect(Rect(0, 0, bounds().width, bounds().height),
+                palette.accent.withAlpha(35));
+            canvas.strokeRect(Rect(0, 0, bounds().width, bounds().height),
+                palette.accent, 1);
+        }
+        else if (_dropMode == 1)
+            canvas.fillRect(Rect(0, 0, bounds().width, 2), palette.accent);
+        else if (_dropMode == 3)
+            canvas.fillRect(Rect(0, bounds().height - 2,
+                bounds().width, 2), palette.accent);
 
         const textColor = _selected ? palette.selectionText : palette.text;
         for (int level = 0; level < _depth; ++level)

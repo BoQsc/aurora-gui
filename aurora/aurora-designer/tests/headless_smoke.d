@@ -374,25 +374,48 @@ int main()
     assert(root.document().parentOf(root.selectedIndex()) == panel,
         "Palette drop ignored the selected panel and used the window");
 
-    // --- A selected panel can be moved by its grip, even over its children. ---
+    // --- A selected panel can be moved by its header, even over its children. ---
     root.selectNodeForTesting(panel);
-    assert(driver.paint(), "Paint before panel grip drag failed");
+    assert(driver.paint(), "Paint before panel header drag failed");
     const panelBeforeX = root.document().nodes[panel].x;
     const childBeforeX = root.document().absoluteRect(child).x;
-    const panelGrip = canvas.moveGripRect();
-    assert(panelGrip.width > 0, "Selected panel has no move grip");
-    const gripGlobal = canvas.localToGlobal(Point(
-        panelGrip.x + panelGrip.width / 2,
-        panelGrip.y + panelGrip.height / 2));
-    driver.moveTo(gripGlobal);
+    const panelHeaderRect = canvas.containerHeaderRect(panel);
+    assert(panelHeaderRect.width > 0, "Selected panel has no header drag target");
+    const panelHeaderGlobal = canvas.localToGlobal(Point(
+        panelHeaderRect.x + panelHeaderRect.width / 2,
+        panelHeaderRect.y + panelHeaderRect.height / 2));
+    driver.moveTo(panelHeaderGlobal);
     driver.mouseDown(MouseButton.left);
-    driver.moveTo(Point(gripGlobal.x + 40, gripGlobal.y + 20));
+    driver.moveTo(Point(panelHeaderGlobal.x + 40, panelHeaderGlobal.y + 20));
     driver.mouseUp(MouseButton.left);
-    assert(driver.paint(), "Paint after panel grip drag failed");
+    assert(driver.paint(), "Paint after panel header drag failed");
     assert(root.document().nodes[panel].x == panelBeforeX + 40,
-        "The selected panel did not move from its grip");
+        "The selected panel did not move from its header");
     assert(root.document().absoluteRect(child).x == childBeforeX + 40,
         "The panel's child did not move with the panel");
+    const secondHeader = canvas.containerHeaderRect(panel);
+    assert(secondHeader.width > 0,
+        "The panel's second-drag target is missing");
+    const secondHeaderGlobal = canvas.localToGlobal(Point(
+        secondHeader.x + secondHeader.width / 2,
+        secondHeader.y + secondHeader.height / 2));
+    driver.moveTo(secondHeaderGlobal);
+    driver.mouseDown(MouseButton.left);
+    driver.moveTo(Point(secondHeaderGlobal.x + 30, secondHeaderGlobal.y + 10));
+    driver.mouseUp(MouseButton.left);
+    assert(driver.paint(), "Paint after the second panel drag failed");
+    assert(root.document().nodes[panel].x == panelBeforeX + 70,
+        "The panel could not be dragged a second time");
+    auto postDragRow = findById(root,
+        "outline-" ~ root.document().nodes[child].id);
+    assert(postDragRow !is null, "Layers row missing after the second panel drag");
+    const postDragOrigin = postDragRow.globalOrigin();
+    const postDragSize = postDragRow.bounds();
+    driver.click(Point(postDragOrigin.x + postDragSize.width / 2,
+        postDragOrigin.y + postDragSize.height / 2));
+    assert(driver.paint(), "Paint after the first click following a panel drag failed");
+    assert(root.selectedIndex() == child,
+        "The first click after a panel drag was swallowed");
 
     const oldChildId = root.document().nodes[child].id;
     assert(root.setNodeId(child, "fresh-child-id"),
@@ -405,18 +428,76 @@ int main()
         "A duplicate node id was accepted");
     assert(root.document().nodes[child].id == "fresh-child-id",
         "Rejected id edit changed the node");
+    root.selectNodeForTesting(child);
+    assert(root.setNodeId(child, "undo-child-id"),
+        "A unique undoable id edit was rejected");
+    root.undoForTesting();
+    assert(root.document().nodes[child].id == "fresh-child-id",
+        "Undo did not restore the previous id");
+    root.redoForTesting();
+    assert(root.document().nodes[child].id == "undo-child-id",
+        "Redo did not restore the edited id");
 
     // --- A second click on the selected child still starts a drag. ---
-    const childRect = root.document().absoluteRect(child);
     const childOrigin = canvas.artboardOrigin();
+
+    // A normal click on empty panel area selects the panel.
+    root.selectNodeForTesting(root.document().root);
+    const panelRect = root.document().absoluteRect(panel);
+    const panelPoint = canvas.localToGlobal(Point(
+        childOrigin.x + panelRect.x + 160,
+        childOrigin.y + panelRect.y + 110));
+    driver.click(panelPoint);
+    assert(root.selectedIndex() == panel,
+        "Normal click on the panel did not select it");
+
+    // The persistent container header is a normal click/drag target even
+    // when a child covers the panel body.
+    const header = canvas.containerHeaderRect(panel);
+    assert(header.width > 0, "Panel has no header target");
+    const headerCenter = canvas.localToGlobal(Point(
+        header.x + header.width / 2, header.y + header.height / 2));
+    driver.click(headerCenter);
+    assert(root.selectedIndex() == panel,
+        "Header click did not select the panel");
+    const headerStartX = root.document().nodes[panel].x;
+    driver.drag(headerCenter,
+        Point(headerCenter.x + 20, headerCenter.y + 10), 8);
+    assert(driver.paint(), "Paint after header drag failed");
+    assert(root.document().nodes[panel].x == headerStartX + 20,
+        "Header drag did not move the panel");
+
+    const childRect = root.document().absoluteRect(child);
     const childCenter = canvas.localToGlobal(Point(
         childOrigin.x + childRect.x + childRect.width / 2,
         childOrigin.y + childRect.y + childRect.height / 2));
+
+    // Clicking a nested child selects that child every time. Parent selection
+    // stays explicit: Alt-click, Layers, inspector, or the panel header.
     driver.click(childCenter);
+    assert(root.selectedIndex() == child, "First click did not select the child");
     driver.click(childCenter);
     assert(root.selectedIndex() == child,
-        "Second click changed selection to the parent");
+        "Re-clicking the child jumped to the parent panel");
+    driver.click(childCenter);
+    assert(root.selectedIndex() == child,
+        "A third click on the child left it unselected");
+
+    // Real click-sized pointer jitter neither nudges the child nor changes
+    // the selection.
     const childX = root.document().nodes[child].x;
+    driver.moveTo(childCenter);
+    driver.mouseDown(MouseButton.left);
+    driver.moveTo(Point(childCenter.x + 2, childCenter.y + 2));
+    driver.mouseUp(MouseButton.left);
+    assert(root.document().nodes[child].x == childX,
+        "Click-sized pointer jitter moved the child");
+    assert(root.selectedIndex() == child,
+        "Click-sized pointer jitter changed the selection");
+
+    // Pressing and dragging moves the child, not the parent, and the child
+    // can be grabbed and dragged again immediately after a drag.
+
     driver.moveTo(childCenter);
     driver.mouseDown(MouseButton.left);
     driver.moveTo(Point(childCenter.x + 24, childCenter.y + 12));
@@ -426,6 +507,14 @@ int main()
         "Dragging after a second click lost the child selection");
     assert(root.document().nodes[child].x == childX + 24,
         "Dragging after a second click did not move the child");
+    const movedCenter = Point(childCenter.x + 24, childCenter.y + 12);
+    driver.moveTo(movedCenter);
+    driver.mouseDown(MouseButton.left);
+    driver.moveTo(Point(movedCenter.x + 10, movedCenter.y + 6));
+    driver.mouseUp(MouseButton.left);
+    assert(root.document().nodes[child].x == childX + 34,
+        "The child could not be dragged a second time");
+
 
     root.toggleCollapsed(root.document().root);
     assert(findById(root, "outline-" ~ root.document().nodes[child].id) is null,
@@ -514,6 +603,82 @@ int main()
     assert(hierarchy.nodes[leaf].x == movedAbs.x - newParentAbs.x &&
         hierarchy.nodes[leaf].y == movedAbs.y - newParentAbs.y,
         "Reparented coordinates are not parent-relative");
+
+    // --- Layers drag reparents a child into another container. ---
+    root.selectNodeForTesting(root.document().root);
+    const layerDestination = root.addNodeForTesting(NodeKind.panel);
+    assert(driver.paint(), "Paint before Layers drag failed");
+    auto dragRow = findById(root, "outline-" ~ root.document().nodes[child].id);
+    auto dropRow = findById(root,
+        "outline-" ~ root.document().nodes[layerDestination].id);
+    assert(dragRow !is null && dropRow !is null,
+        "Layers rows are missing for drag/drop");
+    const dragOrigin = dragRow.globalOrigin();
+    const dragSize = dragRow.bounds();
+    const dropOrigin = dropRow.globalOrigin();
+    const dropSize = dropRow.bounds();
+    driver.drag(Point(dragOrigin.x + dragSize.width / 2,
+        dragOrigin.y + dragSize.height / 2),
+        Point(dropOrigin.x + dropSize.width / 2,
+        dropOrigin.y + dropSize.height / 2), 8);
+    assert(driver.paint(), "Paint after Layers drag failed");
+    assert(root.document().parentOf(child) == layerDestination,
+        "Layers drag did not reparent into the destination panel");
+
+    // --- Visible children win clicks over their containers. ---
+    // The header owns its own visible band, but a leaf that spills above the
+    // panel edge is outside that band and must stay clickable.
+    ref DesignDocument clicks = root.designDocument();
+    const clickPanel = clicks.addChild(NodeKind.panel, clicks.root, 40, 180);
+    clicks.nodes[clickPanel].width = 200;
+    clicks.nodes[clickPanel].height = 140;
+    const clickOrigin = canvas.artboardOrigin();
+    const spill = clicks.addChild(NodeKind.button, clickPanel, 40, -30);
+    const spillAbs = clicks.absoluteRect(spill);
+    const spillPoint = canvas.localToGlobal(Point(
+        clickOrigin.x + spillAbs.x + spillAbs.width / 2,
+        clickOrigin.y + spillAbs.y + spillAbs.height / 2));
+    driver.click(spillPoint);
+    assert(root.selectedIndex() == spill,
+        "Clicking the visible part of a child that spills over its panel selected the panel");
+
+    // A child along the panel's top edge stays clickable beside the title
+    // chip. Only the chip itself owns the click.
+    const topEdge = clicks.addChild(NodeKind.button, clickPanel, 150, 0);
+    clicks.nodes[topEdge].width = 40;
+    clicks.nodes[topEdge].height = 16;
+    const topEdgeAbs = clicks.absoluteRect(topEdge);
+    const topEdgePoint = canvas.localToGlobal(Point(
+        clickOrigin.x + topEdgeAbs.x + topEdgeAbs.width / 2,
+        clickOrigin.y + topEdgeAbs.y + topEdgeAbs.height / 2));
+    driver.click(topEdgePoint);
+    assert(root.selectedIndex() == topEdge,
+        "A child at the panel's top edge beside the title chip was stolen by the header");
+
+    // A small child inside a larger container is clickable edge to edge, and
+    // the container's own body selects the container, not a sibling subtree.
+    const smallPanel = clicks.addChild(NodeKind.panel, clicks.root, 60, 60);
+    clicks.nodes[smallPanel].width = 200;
+    clicks.nodes[smallPanel].height = 120;
+    const tiny = clicks.addChild(NodeKind.button, smallPanel, 10, 40);
+    clicks.nodes[tiny].width = 60;
+    clicks.nodes[tiny].height = 16;
+    const tinyAbs = clicks.absoluteRect(tiny);
+    const tinyPoint = canvas.localToGlobal(Point(
+        clickOrigin.x + tinyAbs.x + 2, clickOrigin.y + tinyAbs.y + 2));
+    driver.click(tinyPoint);
+    assert(root.selectedIndex() == tiny,
+        "Clicking the top-left of a small child selected its container");
+    const emptyBody = canvas.localToGlobal(Point(
+        clickOrigin.x + clicks.absoluteRect(smallPanel).x + 120,
+        clickOrigin.y + clicks.absoluteRect(smallPanel).y + 60));
+
+    driver.click(emptyBody);
+    assert(root.selectedIndex() == smallPanel,
+        "A click on the container's empty area did not select the container");
+    driver.click(emptyBody);
+    assert(root.selectedIndex() == smallPanel,
+        "A repeated body click escaped into another widget's subtree");
 
     // --- Palette drag still works from a new, empty artboard. ---
     root.designDocument() = DesignDocument.init;

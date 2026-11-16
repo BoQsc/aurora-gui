@@ -1696,6 +1696,15 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             event.button == _pressClickButton ? _pressClickCount : 1;
         if (target !is null)
             dispatchToBubble(target, event);
+        // A press must never leave the window captured after its release.
+        // Widgets normally release capture themselves, but a missed or
+        // exceptional drag path must not swallow every subsequent click.
+        if (_captured !is null && event.button == MouseButton.left)
+        {
+            endSynchronizedPointer();
+            _captured = null;
+            requestFrame();
+        }
         // A captured widget commonly releases capture from onMouseUp. Refresh
         // hover once, after dispatch, at the final pointer position.
         if (_captured is null && rehover)

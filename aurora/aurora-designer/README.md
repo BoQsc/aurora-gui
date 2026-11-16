@@ -16,11 +16,15 @@ window, double-click it to maximize, or right-click it for the system menu.
 - Dragging from the palette shows a drop preview and highlights the target
   container. The widget is placed in that container's coordinate space, clamped
   to its bounds. On an empty artboard, the first drop creates the root window.
-- The canvas selects the deepest widget under the pointer. Alt-click selects its
-  parent; the Layers tree and inspector also expose parent selection. Drag a
-  selected widget onto another container to reparent it while preserving its
-  artboard position; a drop target is shown during the drag. Corner handles
-  resize the selected widget.
+- The canvas selects the widget painted topmost under the pointer. A visible
+  child wins even where it spills outside its container, and a container's own
+  body selects the container. Alt-click selects the parent; the Layers tree and
+  inspector also expose parent selection. Every container except the window
+  shows a title chip at its top-left that selects and drags the container; the
+  rest of the top edge stays clickable for children. Drag a selected widget
+  onto another container to reparent it while preserving its artboard position;
+  a drop target is shown during the drag. Corner handles resize the selected
+  widget.
 - The Layers tree shows the hierarchy with indentation and collapsible rows.
   Click a row to select it. Right-click for add-child, select-parent, raise,
   lower, bring-to-front, send-to-back, and delete actions.
