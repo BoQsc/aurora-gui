@@ -19,6 +19,16 @@ public string composerSuggestionInstruction()
         "the work actually in progress. No quotes, no label, no explanation.";
 }
 
+/// Whether Tab in an empty composer may ask for a suggestion. A request that is
+/// already running owns the key (pressing Tab again just consumes it), while an
+/// idle composer needs the feature on and some conversation to read.
+public bool composerSuggestionCanRequest(bool enabled, bool generating,
+    bool busy, bool hasContext)
+{
+    if (generating) return true;
+    return enabled && !busy && hasContext;
+}
+
 /// Trim list bullets, blockquote markers and wrapping quotes from one line.
 private string undecorate(string value)
 {
@@ -113,4 +123,12 @@ unittest
     const instruction = composerSuggestionInstruction();
     assert(instruction.length > 0);
     assert(instruction.indexOf("one message") > 0);
+
+    // Tab may generate only in an idle composer that has something to read.
+    assert(composerSuggestionCanRequest(true, false, false, true));
+    assert(!composerSuggestionCanRequest(false, false, false, true));
+    assert(!composerSuggestionCanRequest(true, false, false, false));
+    assert(!composerSuggestionCanRequest(true, false, true, true));
+    // A running request always keeps the key so Tab is not typed as whitespace.
+    assert(composerSuggestionCanRequest(true, true, true, false));
 }

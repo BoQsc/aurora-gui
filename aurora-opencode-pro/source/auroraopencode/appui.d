@@ -146,7 +146,7 @@ import auroraopencode.buttonsuggest : ButtonSuggestion,
     suggestionsForPaths,
     suggestButtonsFromRecentConversations, suggestionInstruction;
 import auroraopencode.composersuggestion : cleanComposerSuggestion,
-    composerSuggestionInstruction;
+    composerSuggestionCanRequest, composerSuggestionInstruction;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision, invalidateToolWorkspace;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
 import auroraopencode.preferencewriter : PreferenceWriter;
@@ -9006,6 +9006,10 @@ private final class ChatInput : TextArea
 {
     void delegate() onSendRequested;
     void delegate() onQueueRequested;
+    // Tab on an empty box with no suggestion asks for one. Returns true when a
+    // generation is already running or was just requested, so Tab is consumed;
+    // false lets the key keep its normal behaviour (nothing to guess from).
+    bool delegate() onSuggestionRequested;
     // experimental: attachments - invoked with the text box before and after a
     // Ctrl+V paste. Return true when the paste was diverted into an attachment
     // (and the box was already reverted by the handler).
@@ -9016,6 +9020,12 @@ private final class ChatInput : TextArea
     // is empty, Tab accepts it, and typing or sending discards it.
     private string _suggestion;
     private string _wantedPlaceholder;
+    // A generation is running: a tiny three-dot pulse sits at the box's right
+    // edge so the wait is visible without adding a row or a full label.
+    private bool _suggestionBusy;
+    private double _busyElapsed;
+    private int _busyFrame;
+    private static immutable string[] busyFrames = [".  ", ".. ", "...", ".. "];
     private static immutable int suggestionInset = 6;
 
     this()
@@ -9036,10 +9046,41 @@ private final class ChatInput : TextArea
         invalidate();
     }
 
+    /// Test-only: whether the tiny generation indicator is showing.
+    bool suggestionBusy() const { return _suggestionBusy; }
+
+    void setSuggestionBusy(bool value)
+    {
+        if (_suggestionBusy == value) return;
+        _suggestionBusy = value;
+        _busyElapsed = 0;
+        _busyFrame = 0;
+        invalidate();
+    }
+
     /// Tab inserts the suggestion only while the box is still empty.
     private bool suggestionReady() const
     {
-        return _suggestion.length > 0 && textUtf8().strip().length == 0;
+        return _suggestion.length > 0 && composerEmpty();
+    }
+
+    /// Whitespace-only counts as empty, matching the send/placeholder rules.
+    private bool composerEmpty() const
+    {
+        foreach (ch; textView())
+            switch (ch)
+            {
+                case ' ': case '\t': case '\n': case '\r': case '\v': case '\f':
+                    break;
+                default:
+                    return false;
+            }
+        return true;
+    }
+
+    private int busyFrameIndex() const
+    {
+        return cast(int) (_busyElapsed * 4) % cast(int) busyFrames.length;
     }
 
     override void setPlaceholder(string value)
@@ -9051,13 +9092,21 @@ private final class ChatInput : TextArea
     override bool onKeyDown(ref Event event)
     {
         if (event.key == Key.tab && !event.shift() && !event.control() &&
-            !event.meta() && suggestionReady())
+            !event.meta())
         {
-            const accepted = _suggestion;
-            _suggestion = "";
-            super.setPlaceholder(_wantedPlaceholder);
-            setText(accepted); // setText leaves the caret after the text
-            return true;
+            if (suggestionReady())
+            {
+                const accepted = _suggestion;
+                _suggestion = "";
+                super.setPlaceholder(_wantedPlaceholder);
+                setText(accepted); // setText leaves the caret after the text
+                return true;
+            }
+            // No guess yet: Tab asks for one instead of typing a tab character
+            // into an empty composer. A running generation consumes the key too.
+            if (_suggestion.length == 0 && composerEmpty() &&
+                onSuggestionRequested !is null && onSuggestionRequested())
+                return true;
         }
         if (event.key == Key.enter && event.alt() && !event.shift())
         {
@@ -9142,11 +9191,40 @@ private final class ChatInput : TextArea
         return super.onTextInput(event);
     }
 
+    protected override void onTick(double deltaSeconds)
+    {
+        // Keep the caret blink and the rest of the editor's own ticking.
+        super.onTick(deltaSeconds);
+        if (!_suggestionBusy || !composerEmpty()) return;
+        _busyElapsed += deltaSeconds;
+        const frame = busyFrameIndex();
+        if (frame == _busyFrame) return;
+        _busyFrame = frame;
+        invalidate();
+    }
+
     protected override void onPaint(ref Canvas canvas)
     {
         super.onPaint(canvas);
-        if (!suggestionReady()) return;
         const palette = theme();
+        if (_suggestionBusy && composerEmpty())
+        {
+            auto dots = toUTF32(busyFrames[busyFrameIndex()]);
+            const width = canvas.measureText(dots, palette.fontScale,
+                FontRole.monospace, palette.monospaceFont).width;
+            const room = maxInt(0, bounds().width - suggestionInset * 2);
+            if (width > 0 && width <= room)
+            {
+                auto content = canvas.clipped(
+                    Rect(0, 0, bounds().width, bounds().height));
+                content.drawText(Point(bounds().width - suggestionInset - width,
+                    suggestionInset), dots, palette.textMuted,
+                    palette.fontScale, FontRole.monospace,
+                    palette.monospaceFont);
+            }
+            return;
+        }
+        if (!suggestionReady()) return;
         const room = maxInt(0, bounds().width - suggestionInset * 2);
         if (room <= 0) return;
         auto text = toUTF32(_suggestion);
@@ -17491,6 +17569,11 @@ private string _suggestExcludeId;
             sendMessage();
         };
         _input.onQueueRequested = delegate() { queueFollowUp(); };
+        // Tab with nothing to accept asks for a guess instead of typing a tab.
+        _input.onSuggestionRequested = delegate()
+        {
+            return requestComposerSuggestion();
+        };
         // experimental: attachments - turn a large paste into a text chip.
         _input.onLargePaste = delegate(string before, string after)
         {
@@ -25671,6 +25754,36 @@ private void pollButtonSuggestionRequest()
         if (anchor.length == 0 || runtime.suggestionAnchor == anchor) return;
         runtime.suggestionAnchor = anchor;
         runtime.suggestionPending = true;
+    }
+
+    /// Tab in an empty composer asks for a guess right away, even when the
+    /// automatic request for this reply's anchor already ran. Returns true when
+    /// a request is generating or was queued, so the key is consumed.
+    private bool requestComposerSuggestion()
+    {
+        if (_current < 0 || _current >= cast(int) _sessions.length) return false;
+        auto runtime = runtimeForSession(_current);
+        if (runtime is null) return false;
+        const generating = runtime.suggestionPending ||
+            runtime.suggestionClient !is null;
+        const idle = runtime.phase != RequestPhase.waiting &&
+            !runtime.effectPending() && !runtime.client.busy();
+        if (!composerSuggestionCanRequest(_settings.composerSuggestion,
+            generating, !idle,
+            composerSuggestionExcerpt(_sessions[_current]).length > 0))
+            return false;
+        if (generating)
+        {
+            if (_input !is null) _input.setSuggestionBusy(true);
+            return true;
+        }
+        // Claim the automatic anchor too, so settling a reply does not ask for
+        // exactly the same guess again while this request runs.
+        runtime.suggestionAnchor = lastSettledAssistantId(_sessions[_current]);
+        runtime.suggestionPending = true;
+        // Show the pulse immediately; the tick refreshes it from the job state.
+        if (_input !is null) _input.setSuggestionBusy(true);
+        return true;
     }
 
     /// One attempt, only while pending and this conversation's own client is
@@ -34227,6 +34340,16 @@ private void pollButtonSuggestionRequest()
             (!_settings.composerSuggestion || _turnInFlight ||
              _input.textUtf8().strip().length > 0))
             _input.setSuggestion("");
+        // The tiny three-dot pulse follows this conversation's suggestion job.
+        if (_input !is null)
+        {
+            bool generating;
+            if (_settings.composerSuggestion && !_turnInFlight && _current >= 0)
+                if (auto runtime = runtimeForSession(_current))
+                    generating = runtime.suggestionPending ||
+                        runtime.suggestionClient !is null;
+            _input.setSuggestionBusy(generating);
+        }
 
         updateSendButton();
         // Project transitions made during this tick before returning to paint.
@@ -35727,6 +35850,39 @@ private void pollButtonSuggestionRequest()
     public size_t bubbleShapeCountForTesting() const
     {
         return MessageBubble.shapeCount;
+    }
+
+    /// Test-only: the dimmed composer suggestion currently offered.
+    public string composerSuggestionForTesting() const
+    {
+        return _input is null ? "" : _input.suggestion();
+    }
+
+    /// Test-only: whether the composer's tiny generation indicator is showing.
+    public bool composerSuggestionBusyForTesting() const
+    {
+        return _input !is null && _input.suggestionBusy();
+    }
+
+    /// Test-only: whether a composer suggestion is queued or in flight.
+    public bool composerSuggestionPendingForTesting()
+    {
+        if (_current < 0) return false;
+        auto runtime = runtimeForSession(_current);
+        return runtime !is null &&
+            (runtime.suggestionPending || runtime.suggestionClient !is null);
+    }
+
+    /// Test-only: offer a composer suggestion without a model request.
+    public void offerComposerSuggestionForTesting(string value)
+    {
+        if (_input !is null) _input.setSuggestion(value);
+    }
+
+    /// Test-only: focus the composer so key events reach it.
+    public void focusComposerForTesting()
+    {
+        if (_input !is null) _input.requestFocus();
     }
 
 
