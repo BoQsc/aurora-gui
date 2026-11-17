@@ -2,21 +2,28 @@ module marchingcubesgpu;
 
 pragma(lib, "user32.lib");
 
+private extern(Windows) int SetProcessDPIAware();
+private extern(Windows) int SetProcessDpiAwarenessContext(void*);
+private extern(Windows) void* SetThreadDpiAwarenessContext(void*);
+
 import aurora.vulkan.api;
 import mcmesh : MeshData, MeshVertex, buildTorusMesh;
 
 import core.stdc.string : memcpy;
+import core.stdc.stdint : intptr_t;
 import core.thread : Thread;
 import core.time : msecs;
 import core.sys.windows.windows : CreateWindowExA, DefWindowProcA, DispatchMessageA,
-    FindWindowA, GetCurrentProcessId, GetModuleHandleA, HINSTANCE, HWND, LPARAM,
-    LRESULT, MSG, PeekMessageA, RegisterClassA, SW_SHOW, ShowWindow,
+    FindWindowA, GetClientRect, GetCurrentProcessId, GetModuleHandleA,
+    HINSTANCE, HWND, LPARAM, LRESULT, MSG, PeekMessageA, RECT, RegisterClassA,
+    SetWindowPos, SW_SHOW, ShowWindow,
     TranslateMessage, UINT, WNDCLASSA, WPARAM, WS_CHILD, WS_VISIBLE;
 import std.conv : to;
 import std.file : exists, read, write;
 import std.math : cos, sin, tan;
+import std.mmfile : MmFile;
 import std.path : buildPath;
-import std.stdio : stderr, stdout;
+import std.stdio : File, stderr, stdout;
 import std.string : toStringz;
 
 enum int Width = 360;
@@ -26,6 +33,81 @@ enum int DepthFormat = 126; // VK_FORMAT_D32_SFLOAT
 enum int EventBytes = 24;
 enum int EventCapacity = 64;
 enum int SurfaceHeader = 80;
+
+private struct AnimatedSurface
+{
+    MmFile map;
+    ubyte[] data;
+    int frameBytes;
+    ulong sequence;
+
+    this(string path)
+    {
+        frameBytes = Width * Height * 4;
+        const size = SurfaceHeader + EventCapacity * EventBytes +
+            2 * frameBytes;
+        auto stream = File(path, "wb");
+        stream.rawWrite(new ubyte[size]);
+        stream.close();
+        map = new MmFile(path, MmFile.Mode.readWrite, cast(ulong) size, null);
+        data = cast(ubyte[]) map[];
+        char[8] magic = "AURSFACE";
+        memcpy(data.ptr, magic.ptr, 8);
+        put!uint(8, 2);
+        put!uint(12, SurfaceHeader);
+        put!uint(16, Width);
+        put!uint(20, Height);
+        put!uint(24, 0);
+        put!uint(28, EventCapacity);
+        put!ulong(32, 0);
+        put!ulong(40, 0);
+        put!uint(48, 0);
+        put!uint(52, 0);
+        put!uint(56, EventBytes);
+        put!uint(60, 2);
+        put!uint(64, frameBytes);
+    }
+
+    private void put(T)(size_t offset, T value)
+    {
+        memcpy(data.ptr + offset, &value, T.sizeof);
+    }
+
+    private T get(T)(size_t offset)
+    {
+        T value;
+        memcpy(&value, data.ptr + offset, T.sizeof);
+        return value;
+    }
+
+    void publish(const(ubyte)[] pixels)
+    {
+        const active = get!uint(24);
+        const target = 1 - active;
+        const offset = SurfaceHeader + EventCapacity * EventBytes +
+            target * frameBytes;
+        data[offset .. offset + frameBytes] = pixels[];
+        put!uint(24, target);
+        sequence++;
+        put!ulong(32, sequence);
+    }
+
+    bool waitHost(ulong wanted, int timeoutMs = 500)
+    {
+        while (get!ulong(40) < wanted)
+        {
+            if (timeoutMs <= 0) return false;
+            Thread.sleep(5.msecs);
+            timeoutMs -= 5;
+        }
+        return true;
+    }
+
+    void close()
+    {
+        map = null;
+    }
+}
 
 struct PushConstants
 {
@@ -788,6 +870,92 @@ private final class App
         stdout.flush();
     }
 
+    void renderAnimated(string surfacePath, int seconds)
+    {
+        auto surface = AnimatedSurface(surfacePath);
+        stdout.writeln("vulkan3d: animated surface ", surfacePath); stdout.flush();
+        const frames = seconds * 60;
+        foreach (frame; 0 .. frames)
+        {
+            vk.vkResetFences(device, 1, &fence);
+            vk.vkResetCommandBuffer(commands, 0);
+            VkCommandBufferBeginInfo begin;
+            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            check(vk.vkBeginCommandBuffer(commands, &begin),
+                "begin animated frame");
+            VkClearValue[2] clears;
+            clears[0].color.float32 = [0.02f, 0.03f, 0.06f, 1.0f];
+            clears[1].depthStencil = VkClearDepthStencilValue(1.0f, 0);
+            VkRenderPassBeginInfo pass;
+            pass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            pass.renderPass = renderPass;
+            pass.framebuffer = framebuffer;
+            pass.renderArea = VkRect2D(VkOffset2D(0, 0),
+                VkExtent2D(Width, Height));
+            pass.clearValueCount = 2;
+            pass.pClearValues = clears.ptr;
+            vk.vkCmdBeginRenderPass(commands, &pass, 1);
+            vk.vkCmdBindPipeline(commands, 0, pipeline);
+            VkViewport viewport = VkViewport(0, 0, Width, Height, 0, 1);
+            VkRect2D scissor = VkRect2D(VkOffset2D(0, 0),
+                VkExtent2D(Width, Height));
+            vk.vkCmdSetViewport(commands, 0, 1, &viewport);
+            vk.vkCmdSetScissor(commands, 0, 1, &scissor);
+            VkDeviceSize offset = 0;
+            vk.vkCmdBindVertexBuffers(commands, 0, 1, &vertexBuffer, &offset);
+            vk.vkCmdBindIndexBuffer(commands, indexBuffer, 0,
+                VK_INDEX_TYPE_UINT32);
+            auto matrix = this.matrix(frame / 60.0);
+            pushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
+                0, 64, &matrix);
+            vk.vkCmdDrawIndexed(commands, indexCount, 1, 0, 0, 0);
+            vk.vkCmdEndRenderPass(commands);
+
+            VkImageMemoryBarrier barrier;
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            barrier.dstAccessMask = 0x800;
+            barrier.oldLayout = 6;
+            barrier.newLayout = 6;
+            barrier.srcQueueFamilyIndex = 0xffffffff;
+            barrier.dstQueueFamilyIndex = 0xffffffff;
+            barrier.image = colorImage;
+            barrier.subresourceRange = VkImageSubresourceRange(
+                VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1);
+            vk.vkCmdPipelineBarrier(commands,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, null, 0, null, 1,
+                &barrier);
+            VkBufferImageCopy region;
+            region.imageSubresource = VkImageSubresourceLayers(
+                VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1);
+            region.imageOffset = VkOffset3D(0, 0, 0);
+            region.imageExtent = VkExtent3D(Width, Height, 1);
+            copyImageToBuffer(commands, colorImage, 6, readBuffer, 1, &region);
+            check(vk.vkEndCommandBuffer(commands), "end animated frame");
+            VkSubmitInfo submit;
+            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit.commandBufferCount = 1;
+            submit.pCommandBuffers = &commands;
+            check(vk.vkQueueSubmit(queue, 1, &submit, fence),
+                "submitting animated frame");
+            check(vk.vkWaitForFences(device, 1, &fence, 1, ulong.max),
+                "waiting for animated frame");
+            void* pixels;
+            check(vk.vkMapMemory(device, readMemory, 0, Width * Height * 4, 0,
+                &pixels), "mapping animated frame");
+            auto data = cast(ubyte[]) pixels[0 .. Width * Height * 4];
+            surface.publish(data);
+            vk.vkUnmapMemory(device, readMemory);
+            surface.waitHost(surface.sequence, 250);
+            Thread.sleep(16.msecs);
+        }
+        surface.close();
+        stdout.writeln("PASS Vulkan animated surface frames=", frames);
+        stdout.flush();
+    }
+
     private void pumpMessages()
     {
         MSG message;
@@ -972,11 +1140,18 @@ private extern(Windows) nothrow LRESULT childWindowProc(HWND window,
 
 void main(string[] args)
 {
+    version (Windows)
+    {
+        if (SetProcessDpiAwarenessContext(cast(void*) cast(intptr_t) -4) == 0)
+            SetProcessDPIAware();
+        SetThreadDpiAwarenessContext(cast(void*) cast(intptr_t) -4);
+    }
     string shaderDir = ".";
     string output = "vulkan3d.ppm";
     string surfaceOutput;
     string hostTitle;
     double seconds = 0.7;
+    bool animate;
     for (size_t i = 0; i < args.length; ++i)
     {
         if (args[i] == "--shaders" && i + 1 < args.length)
@@ -989,6 +1164,8 @@ void main(string[] args)
             hostTitle = args[++i];
         else if (args[i] == "--time" && i + 1 < args.length)
             seconds = to!double(args[++i]);
+        else if (args[i] == "--animate")
+            animate = true;
     }
     if (!exists(buildPath(shaderDir, "cube.vert.spv")))
         throw new Exception("missing cube.vert.spv in " ~ shaderDir);
@@ -1016,10 +1193,22 @@ void main(string[] args)
         stdout.writeln("vulkan3d: child ", cast(ulong) gChildWindow);
         stdout.flush();
         ShowWindow(gChildWindow, SW_SHOW);
+        RECT childClient;
+        GetClientRect(gChildWindow, &childClient);
+        if (childClient.right > 0 && childClient.bottom > 0)
+        {
+            const scaleX = cast(double) Width / childClient.right;
+            const scaleY = cast(double) Height / childClient.bottom;
+            SetWindowPos(gChildWindow, null, 0, cast(int) (32 * scaleY),
+                cast(int) (Width * scaleX), cast(int) (Height * scaleY),
+                0x0004 | 0x0040);
+        }
     }
     auto app = new App();
     if (hostTitle.length != 0)
         app.present(cast(int) seconds);
+    else if (animate && surfaceOutput.length != 0)
+        app.renderAnimated(surfaceOutput, cast(int) seconds);
     else
         app.render(output, surfaceOutput, seconds);
 }

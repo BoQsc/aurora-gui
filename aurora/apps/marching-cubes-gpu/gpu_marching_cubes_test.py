@@ -17,13 +17,15 @@ HOST = ROOT / "aurora-host"
 HOST_EXE = HOST / "aurora-host.exe"
 APP_EXE = PROJECT / "build" / "marching-cubes-gpu.exe"
 SHADERS = PROJECT / "shaders3d"
-TITLE = "Marching Cubes GPU"
+TITLE = "Marching Cubes GPU Verify"
 TITLEBAR = 32
 
 sys.path.insert(0, str(HOST / "tools"))
 
 
 def scene_document() -> dict:
+    # Keep the host window opaque so the GPU child is not composited over
+    # Aurora's chat window.
     return {
         "schemaVersion": 2,
         "window": {
@@ -120,7 +122,7 @@ def main() -> int:
         time.sleep(0.2)
         rect = wintypes.RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(rect))
-        shot = PROJECT / "build" / "gpu-marching-cubes.png"
+        shot = PROJECT / "build" / "gpu-marching-cubes-verify.png"
         image = ImageGrab.grab(
             bbox=(rect.left, rect.top, rect.right, rect.bottom))
         image.save(shot)
