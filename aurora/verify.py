@@ -110,6 +110,7 @@ def main() -> int:
         HOST,
     )
     run([PYTHON, "-B", "apps/breakout/dev_swap_test.py"], HOST)
+    run([PYTHON, "-B", "apps/empty-app/live_reload_test.py"], HOST)
 
     print()
     print("Aurora v2 verification passed.")

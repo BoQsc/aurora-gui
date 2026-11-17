@@ -262,29 +262,62 @@ class HostLink
     }
 }
 
+private JSONValue surfaceNode(string surfacePath, string[] events)
+{
+    auto surface = JSONValue(string[string].init);
+    surface.object["id"] = JSONValue("module");
+    surface.object["type"] = JSONValue("surface");
+    surface.object["path"] = JSONValue(surfacePath);
+    surface.object["width"] = JSONValue(Width);
+    surface.object["height"] = JSONValue(Height);
+    surface.object["staleMs"] = JSONValue(StaleMs);
+    JSONValue[] eventValues;
+    if (events !is null)
+        foreach (eventName; events)
+            eventValues ~= JSONValue(eventName);
+    surface.object["events"] = JSONValue(eventValues);
+    return surface;
+}
+
 private void writeScene(string path, string surfacePath, string title,
-    string[] events = null)
+    string[] events = null, bool customTitlebar = false,
+    int titlebarHeight = 34)
 {
     auto scene = JSONValue(string[string].init);
     scene.object["schemaVersion"] = JSONValue(2);
     auto window = JSONValue(string[string].init);
     window.object["title"] = JSONValue(title);
     window.object["width"] = JSONValue(Width);
-    window.object["height"] = JSONValue(Height);
+    window.object["height"] = JSONValue(customTitlebar
+        ? Height + titlebarHeight : Height);
+    window.object["decorated"] = JSONValue(!customTitlebar);
     scene.object["window"] = window;
-    auto root = JSONValue(string[string].init);
-    root.object["id"] = JSONValue("module");
-    root.object["type"] = JSONValue("surface");
-    root.object["path"] = JSONValue(surfacePath);
-    root.object["width"] = JSONValue(Width);
-    root.object["height"] = JSONValue(Height);
-    root.object["staleMs"] = JSONValue(StaleMs);
-    JSONValue[] eventValues;
-    if (events !is null)
-        foreach (eventName; events)
-            eventValues ~= JSONValue(eventName);
-    root.object["events"] = JSONValue(eventValues);
-    scene.object["root"] = root;
+    auto surface = surfaceNode(surfacePath, events);
+    if (customTitlebar)
+    {
+        auto root = JSONValue(string[string].init);
+        root.object["id"] = JSONValue("root");
+        root.object["type"] = JSONValue("column");
+        root.object["spacing"] = JSONValue(0);
+        root.object["padding"] = JSONValue(0);
+        auto bar = JSONValue(string[string].init);
+        bar.object["id"] = JSONValue("titlebar");
+        bar.object["type"] = JSONValue("titleBar");
+        bar.object["text"] = JSONValue(title);
+        bar.object["height"] = JSONValue(titlebarHeight);
+        bar.object["background"] = JSONValue("#0f172a");
+        bar.object["border"] = JSONValue("#1e293b");
+        bar.object["textColor"] = JSONValue("#e2e8f0");
+        JSONValue[] children;
+        children ~= bar;
+        children ~= surface;
+        root.object["children"] = JSONValue(children);
+        scene.object["root"] = root;
+    }
+    else
+    {
+        scene.object["root"] = surface;
+    }
     const temporary = path ~ ".tmp";
     write(temporary, scene.toJSON());
     rename(temporary, path);
@@ -502,6 +535,8 @@ private void devMain(string[] args)
     string outDir = "build/live-dev";
     string title = "Live module";
     string eventKind;
+    bool customTitlebar;
+    int titlebarHeight = 34;
     int watchSeconds = 600;
     int holdSeconds;
     for (size_t i = 0; i < args.length; ++i)
@@ -516,6 +551,10 @@ private void devMain(string[] args)
             title = args[++i];
         else if (args[i] == "--events" && i + 1 < args.length)
             eventKind = args[++i];
+        else if (args[i] == "--titlebar")
+            customTitlebar = true;
+        else if (args[i] == "--titlebar-height" && i + 1 < args.length)
+            titlebarHeight = to!int(args[++i]);
         else if (args[i] == "--watch" && i + 1 < args.length)
             watchSeconds = to!int(args[++i]);
         else if (args[i] == "--hold" && i + 1 < args.length)
@@ -539,7 +578,8 @@ private void devMain(string[] args)
     const scenePath = buildPath(temp, "dev.scene.json");
     const statePath = buildPath(temp, "dev.state.json");
     const firstSurface = buildPath(temp, "dev-1.surface");
-    writeScene(scenePath, firstSurface, title, events);
+    writeScene(scenePath, firstSurface, title, events, customTitlebar,
+        titlebarHeight);
 
     const port = uniform(20000, 40000);
     auto host = spawnProcess([hostPath, "--run", scenePath,
@@ -594,7 +634,8 @@ private void devMain(string[] args)
             "--state", statePath, "--build", to!string(build),
             "--seconds", "900"]);
         waitBuild(statePath, build);
-        writeScene(scenePath, surface, title, events);
+        writeScene(scenePath, surface, title, events, customTitlebar,
+            titlebarHeight);
         link.request("reload");
         waitSurface(link);
         capture(link, buildPath(artifacts, "build-" ~ to!string(build) ~ ".ppm"));
