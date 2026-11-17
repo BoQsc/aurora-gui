@@ -11,8 +11,8 @@ import auroraopencode.core : Settings, saveSettings, opencodeTheme,
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.conv : to;
-import std.file : mkdirRecurse, readText;
-import std.path : buildPath, absolutePath;
+import std.file : mkdirRecurse, readText, tempDir, write;
+import std.path : buildPath;
 import std.process : environment;
 import std.stdio : writeln;
 import std.string : startsWith;
@@ -21,11 +21,21 @@ int main()
 {
     const base = environment.get("AURORA_CONTRACT_PROVIDER_BASE", "");
     assert(base.length, "Run with test_provider_roundtrip.py");
-    const directory = absolutePath("roundtrip-" ~ to!string(MonoTime.currTime.ticks));
+    // Keep the fixture's scratch checkout outside the live Aurora checkout: a
+    // checked parent command already holds that checkout lease, and sharing it
+    // made the fixture's own tools wait until their deadline.
+    const directory = buildPath(tempDir(),
+        "roundtrip-" ~ to!string(MonoTime.currTime.ticks));
     const workspace = buildPath(directory, "workspace");
     const state = buildPath(directory, "state");
     mkdirRecurse(workspace);
     mkdirRecurse(state);
+    // Declare a scratch developer source for this image. Otherwise the fixture
+    // resolves the live checkout from its executable path and leases it too.
+    const scratchSource = buildPath(state, "source", "aurora-gui");
+    mkdirRecurse(buildPath(scratchSource, "source"));
+    write(buildPath(scratchSource, "source", "app.d"), "");
+    write(buildPath(scratchSource, "dub.json"), `{"name":"aurora-opencode-pro"}`);
     setOpencodeStateDirectoryForTesting(state);
     Settings settings;
     settings.baseUrl = base;
@@ -35,6 +45,7 @@ int main()
     settings.toolsEnabled = true;
     settings.legacyTools = false;
     settings.quickTitle = true;
+    settings.developerSourceDir = scratchSource;
     const stalledGoal = environment.get("AURORA_CONTRACT_GOAL_STALL", "") == "1";
     const auditStall = environment.get("AURORA_CONTRACT_GOAL_AUDIT_STALL", "") == "1";
     settings.autoGoalFromFirstMessage = stalledGoal || auditStall;
