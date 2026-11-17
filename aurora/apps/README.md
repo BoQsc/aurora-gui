@@ -4,6 +4,24 @@ This is the standard workflow for building an app against Aurora Host v2.
 The host stays open; the app is a live D module that publishes frames through a
 shared surface.
 
+## Primary visual standard
+
+These rules are mandatory for app presentation:
+
+- The app's visual area is a host-owned `AURSFACE`. Apps must not put their
+  primary visual area in an external child HWND or child swapchain. A child
+  swapchain can be DPI-virtualized to 288x192 and offset from a 360x240 host
+  body; that is the wrong presentation model for apps.
+- GPU apps render offscreen at the surface dimensions and publish the result
+  through `AURSFACE`. The host owns placement and scaling.
+- Animated apps use double buffering on an in-place mapped surface. Do not
+  rewrite or replace the surface file for every frame.
+- Verify animation with `apps/verify_animated_surface.py`: sequence must
+  advance, `host_read` must advance and must have consumed the previous
+  sequence, and the active pixels must change. `host_read` may legitimately
+  lag the newest sequence by one at an arbitrary sample; never require
+  `host_read >= sequence` at a single instant.
+
 ## Boundary
 
 - `aurora-host` owns the window, scene, input, and presentation.
@@ -38,6 +56,10 @@ The module writes the inactive frame, flips the active-frame index, increments
 the sequence, and waits for the host to acknowledge the sequence. A new app can
 reuse the `Surface` struct in `new-app/module.d`; keep the header and frame
 layout unchanged.
+
+`host_read` is the host's consumed sequence. A sample may observe it one frame
+behind the just-published sequence; that is normal handshake latency, not a
+stalled surface.
 
 The host passes these arguments to the module:
 
@@ -124,6 +146,15 @@ The test copies the module to a temporary directory, runs hotswap, checks
    animated app. The frames must differ where the app draws. For the New App,
    the two captures show the rotating tetrahedral pyramid.
 
+4. **Animated surface contract:**
+
+```text
+python -B apps/verify_animated_surface.py --surface <app.surface>
+```
+
+This asserts sequence progress, host-ack progress, prior-frame consumption, and
+changing pixels using the actual live `AURSFACE`.
+
 Use `verify` with the test source as an input when the task requires a tracked
 test receipt.
 
@@ -134,9 +165,10 @@ tick, apply perspective projection, sort faces far-to-near, and fill triangles.
 `new-app/module.d` uses this for a marching-cubes torus: a 16³ scalar-field
 grid, the standard 256-case triangle table, and a depth-sorted triangle mesh.
 
-For a true GPU Vulkan path, use the dedicated host child-window swapchain
-presenter instead of the shared surface. It requires `VK_KHR_swapchain`; that is
-a separate presentation path, not part of this live-surface workflow.
+For GPU rendering, use offscreen Vulkan and publish `AURSFACE`; see
+`apps/marching-cubes-gpu`. A child-window swapchain is not the app visual
+standard. It may be used only for a focused swapchain experiment, and its
+window sizing/DPI must be verified independently.
 
 ## Stop
 
@@ -150,6 +182,8 @@ Close the host window, or stop the supervised hotswap process. Confirm no stale
 - [ ] Host opens with the app title.
 - [ ] Hotswap builds generation 1.
 - [ ] An edit rebuilds with the same host PID.
+- [ ] Primary visual area is host-owned AURSFACE, not an external child window.
 - [ ] Smoke test passes.
 - [ ] Animated frames are captured at two times and differ.
+- [ ] `verify_animated_surface.py` passes for animated apps.
 - [ ] No app-specific logic was added to the generic host.

@@ -135,6 +135,22 @@ rather than claiming the change works.
 4. Confirm the rebuilt app was relaunched.
 5. Only then report the outcome, and state what was actually verified.
 
+## Aurora host app visuals (primary standard)
+
+- App visuals belong in a host-owned `AURSFACE`. Do not put the app's primary
+  rendering area in an external child HWND or child swapchain; DPI
+  virtualisation can shrink it to 288x192 and offset it from a 360x240 host
+  body.
+- GPU apps render offscreen at the surface dimensions and publish
+  double-buffered `AURSFACE` frames; the host owns placement.
+- Animated apps write the inactive frame in place, flip the active frame,
+  increment the sequence, and wait for host consumption.
+- Verify with `../aurora/apps/verify_animated_surface.py`: sequence advance,
+  host-ack progress, prior-frame consumption, and changed pixels. `host_read`
+  may lag the newest sequence by one; never assert `host_read >= sequence` at
+  an arbitrary sample.
+- The full standard is [the app workflow](../aurora/apps/README.md).
+
 ## Conventions
 
 - Preserve chat history unless the user explicitly deletes it. Regenerate,
