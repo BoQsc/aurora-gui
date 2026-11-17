@@ -26,7 +26,7 @@ import core.sync.condition : Condition;
 import core.sys.windows.windows : CreateWindowExA, DefWindowProcA, DispatchMessageA,
     ClientToScreen, FindWindowA, GetClientRect, GetCurrentProcessId,
     GetCursorPos, GetForegroundWindow, GetModuleHandleA, HINSTANCE, HWND,
-    IsWindow, LoadCursorA,
+    IsIconic, IsWindow, LoadCursorA,
     LPARAM, LRESULT, MSG, POINT, PeekMessageA, RECT, RegisterClassA,
     ScreenToClient, SetCursorPos, SetForegroundWindow, SetWindowPos, SW_SHOW,
     ShowWindow, TranslateMessage, UINT, WM_CLOSE, WM_DESTROY, WNDCLASSA, WPARAM,
@@ -1507,6 +1507,11 @@ private final class App
         ulong frame;
         while (!gWindowClosed && IsWindow(gChildWindow))
         {
+            if (IsIconic(gChildWindow))
+            {
+                Thread.sleep(16.msecs);
+                continue;
+            }
             presentFrame(frame / 60.0);
             ++frame;
             Thread.sleep(16.msecs);

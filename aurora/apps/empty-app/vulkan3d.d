@@ -9,7 +9,7 @@ import core.thread : Thread;
 import core.time : msecs;
 import core.sys.windows.windows : CreateWindowExA, DefWindowProcA, DispatchMessageA,
     FindWindowA, GetCurrentProcessId, GetModuleHandleA, HINSTANCE, HWND,
-    IsWindow, LoadCursorA, LPARAM, LRESULT, MSG, PeekMessageA, RegisterClassA,
+    IsIconic, IsWindow, LoadCursorA, LPARAM, LRESULT, MSG, PeekMessageA, RegisterClassA,
     SetForegroundWindow, SW_SHOW, ShowWindow, TranslateMessage, UINT, WM_CLOSE,
     WM_DESTROY, WNDCLASSA, WPARAM, WS_CHILD, WS_VISIBLE;
 import std.conv : to;
@@ -965,6 +965,11 @@ private final class App
         ulong frame;
         while (!gWindowClosed && IsWindow(gChildWindow))
         {
+            if (IsIconic(gChildWindow))
+            {
+                Thread.sleep(16.msecs);
+                continue;
+            }
             presentFrame(frame / 60.0);
             ++frame;
             Thread.sleep(16.msecs);

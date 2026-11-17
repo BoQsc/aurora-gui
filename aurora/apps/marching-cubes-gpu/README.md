@@ -16,8 +16,9 @@ shader sidecars.
 
 ## Run
 
-With no arguments the executable renders one 360x240 frame to `vulkan3d.ppm` and
-exits. For an animated surface, pass `--animate --surface <path>`. To present
-inside a host window, start the host scene first and pass
+With no arguments the executable opens its own 360x240 window and stays open
+until you close it. Pass `--render` to render one 360x240 frame to
+`vulkan3d.ppm` and exit. For an animated surface, pass `--animate --surface
+<path>`. To present inside a host window, start the host scene first and pass
 `--host-title "<host window title>"`. The embedded shaders can be overridden
 with `--shaders <directory>`.
