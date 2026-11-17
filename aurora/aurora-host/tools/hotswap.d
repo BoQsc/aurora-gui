@@ -14,7 +14,7 @@ import std.process : Pid, kill, spawnProcess, tryWait, wait;
 import std.random : uniform;
 import std.socket : InternetAddress, Socket, SocketException, TcpSocket;
 import std.stdio : File, stderr, stdout, writeln;
-import std.string : indexOf, replace;
+import std.string : indexOf, replace, strip;
 
 enum int Width = 320;
 enum int Height = 240;
@@ -436,6 +436,173 @@ private void supervisorMain(string[] args)
     stdout.writeln("screenshots: ", shot1, " -> ", shot2);
 }
 
+private double buildLiveModule(string source, string exe)
+{
+    import std.datetime.stopwatch : StopWatch, AutoStart;
+    auto watch = StopWatch(AutoStart.yes);
+    auto child = spawnProcess(["dmd", "-O", "-release", "-of=" ~ exe, source]);
+    const status = wait(child);
+    watch.stop();
+    if (status != 0)
+        throw new Exception("live module build failed: " ~ source);
+    return watch.peek.total!"msecs";
+}
+
+private int parseRevision(string source)
+{
+    const marker = "enum Revision = ";
+    const start = source.indexOf(marker);
+    if (start < 0) return 1;
+    const valueStart = start + marker.length;
+    const end = source.indexOf(';', valueStart);
+    if (end < 0) return 1;
+    try
+    {
+        return to!int(source[valueStart .. end].strip);
+    }
+    catch (Exception)
+    {
+        return 1;
+    }
+}
+
+private void liveMain(string[] args)
+{
+    string hostPath = "aurora-host.exe";
+    string source = "projects/aurora-live/module.d";
+    string outDir = "build/live-demo";
+    bool demoEdit;
+    int watchSeconds;
+    for (size_t i = 0; i < args.length; ++i)
+    {
+        if (args[i] == "--host" && i + 1 < args.length)
+            hostPath = args[++i];
+        else if (args[i] == "--source" && i + 1 < args.length)
+            source = args[++i];
+        else if (args[i] == "--out" && i + 1 < args.length)
+            outDir = args[++i];
+        else if (args[i] == "--demo-edit")
+            demoEdit = true;
+        else if (args[i] == "--watch" && i + 1 < args.length)
+            watchSeconds = to!int(args[++i]);
+    }
+    if (!exists(hostPath)) throw new Exception("missing host: " ~ hostPath);
+    if (!exists(source)) throw new Exception("missing live source: " ~ source);
+    if (!demoEdit && watchSeconds <= 0)
+        throw new Exception("live mode needs --demo-edit or --watch <seconds>");
+
+    const temp = buildPath(tempDir(), "aurora-live-code-" ~
+        to!string(GetCurrentProcessId()) ~ "-" ~ to!string(uniform(0, 100000)));
+    mkdirRecurse(temp);
+    scope (exit) if (exists(temp)) rmdirRecurse(temp);
+    const artifacts = outDir.length != 0 ? outDir : temp;
+    if (outDir.length != 0) mkdirRecurse(artifacts);
+
+    const scenePath = buildPath(temp, "live.scene.json");
+    const statePath = buildPath(temp, "live.state.json");
+    const surface1 = buildPath(temp, "live-v1.surface");
+    const surface2 = buildPath(temp, "live-v2.surface");
+    const shot1 = buildPath(artifacts, "live-v1.ppm");
+    const shot2 = buildPath(artifacts, "live-v2.ppm");
+    writeScene(scenePath, surface1, "Live code v1");
+
+    const port = uniform(20000, 40000);
+    auto host = spawnProcess([hostPath, "--run", scenePath,
+        "--listen", to!string(port)]);
+    Socket socket;
+    foreach (i; 0 .. 200)
+    {
+        try
+        {
+            auto candidate = new TcpSocket();
+            candidate.connect(new InternetAddress("127.0.0.1", cast(ushort) port));
+            socket = candidate;
+            break;
+        }
+        catch (SocketException)
+        {
+            Thread.sleep(25.msecs);
+        }
+    }
+    if (socket is null) throw new Exception("cannot connect to aurora-host");
+    auto link = new HostLink(socket);
+
+    Pid v1;
+    Pid v2;
+    scope (exit)
+    {
+        stopQuietly(v2);
+        stopQuietly(v1);
+        closeQuietly(link);
+        stopQuietly(host);
+    }
+
+    auto exe1 = buildPath(temp, "live-v1.exe");
+    auto original = readText(source);
+    const revision1 = parseRevision(original);
+    const build1 = buildLiveModule(source, exe1);
+    v1 = spawnProcess([exe1, "--surface", surface1, "--state", statePath,
+        "--seconds", "20"]);
+    waitState(statePath, revision1);
+    waitSurface(link);
+    capture(link, shot1);
+    const value1 = parseJSON(readText(statePath)).object["value"].get!int;
+
+    if (demoEdit)
+    {
+        auto changed = original;
+        if (changed.indexOf("enum Revision = 1;") >= 0)
+            changed = changed.replace("enum Revision = 1;",
+                "enum Revision = 2;");
+        else
+            changed = changed.replace("enum Revision = 2;",
+                "enum Revision = 1;");
+        write(source, changed);
+        Thread.sleep(150.msecs);
+    }
+    else
+    {
+        stdout.writeln("watching ", source, " for ",
+            watchSeconds, " seconds...");
+        foreach (i; 0 .. watchSeconds * 10)
+        {
+            if (readText(source) != original) break;
+            Thread.sleep(100.msecs);
+        }
+    }
+
+    auto exe2 = buildPath(temp, "live-v2.exe");
+    const revision2 = parseRevision(readText(source));
+    if (revision2 == revision1)
+        throw new Exception("live source edit did not change Revision");
+    const build2 = buildLiveModule(source, exe2);
+    v2 = spawnProcess([exe2, "--surface", surface2, "--state", statePath,
+        "--seconds", "20"]);
+    waitState(statePath, revision2);
+    writeScene(scenePath, surface2, "Live code v2");
+
+    import std.datetime.stopwatch : StopWatch, AutoStart;
+    auto swapWatch = StopWatch(AutoStart.yes);
+    link.request("reload");
+    waitSurface(link);
+    swapWatch.stop();
+    capture(link, shot2);
+
+    const value2 = parseJSON(readText(statePath)).object["value"].get!int;
+    if (read(shot1) == read(shot2))
+        throw new Exception("live code change did not change pixels");
+    if (value2 <= value1)
+        throw new Exception("live module state did not carry over");
+
+    stdout.writeln("PASS live code swap");
+    stdout.writeln("host: pid=", host.processID, " stable");
+    stdout.writeln("build v1: ", build1, " ms; build v2: ", build2, " ms");
+    stdout.writeln("v1: pid=", v1.processID, " value=", value1);
+    stdout.writeln("v2: pid=", v2.processID, " value=", value2);
+    stdout.writeln("reload + remap: ", swapWatch.peek.total!"msecs", " ms");
+    stdout.writeln("screenshots: ", shot1, " -> ", shot2);
+}
+
 int main(string[] args)
 {
     try
@@ -450,7 +617,12 @@ int main(string[] args)
             supervisorMain(args[2 .. $]);
             return 0;
         }
-        stderr.writeln("usage: aurora-hotswap module ... | supervisor [--host path]");
+        if (args.length >= 2 && args[1] == "live")
+        {
+            liveMain(args[2 .. $]);
+            return 0;
+        }
+        stderr.writeln("usage: aurora-hotswap module ... | supervisor ... | live --demo-edit");
         return 2;
     }
     catch (Exception error)
