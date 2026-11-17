@@ -788,14 +788,14 @@ final class VulkanApi
         vkCreateXcbSurfaceKHR = optionalInstance!PFN_vkCreateXcbSurfaceKHR(instance, "vkCreateXcbSurfaceKHR");
         vkCreateWin32SurfaceKHR = optionalInstance!PFN_vkCreateWin32SurfaceKHR(instance, "vkCreateWin32SurfaceKHR");
         vkCreateMetalSurfaceEXT = optionalInstance!PFN_vkCreateMetalSurfaceEXT(instance, "vkCreateMetalSurfaceEXT");
-        vkDestroySurfaceKHR = loadInstanceFn!PFN_vkDestroySurfaceKHR(instance, "vkDestroySurfaceKHR");
+        vkDestroySurfaceKHR = optionalInstance!PFN_vkDestroySurfaceKHR(instance, "vkDestroySurfaceKHR");
         vkEnumeratePhysicalDevices = loadInstanceFn!PFN_vkEnumeratePhysicalDevices(instance, "vkEnumeratePhysicalDevices");
         vkGetPhysicalDeviceQueueFamilyProperties = loadInstanceFn!PFN_vkGetPhysicalDeviceQueueFamilyProperties(instance, "vkGetPhysicalDeviceQueueFamilyProperties");
-        vkGetPhysicalDeviceSurfaceSupportKHR = loadInstanceFn!PFN_vkGetPhysicalDeviceSurfaceSupportKHR(instance, "vkGetPhysicalDeviceSurfaceSupportKHR");
-        vkGetPhysicalDeviceSurfaceCapabilitiesKHR = loadInstanceFn!PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+        vkGetPhysicalDeviceSurfaceSupportKHR = optionalInstance!PFN_vkGetPhysicalDeviceSurfaceSupportKHR(instance, "vkGetPhysicalDeviceSurfaceSupportKHR");
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR = optionalInstance!PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
         vkGetPhysicalDeviceSurfaceCapabilities2KHR = optionalInstance!PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR(instance, "vkGetPhysicalDeviceSurfaceCapabilities2KHR");
-        vkGetPhysicalDeviceSurfaceFormatsKHR = loadInstanceFn!PFN_vkGetPhysicalDeviceSurfaceFormatsKHR(instance, "vkGetPhysicalDeviceSurfaceFormatsKHR");
-        vkGetPhysicalDeviceSurfacePresentModesKHR = loadInstanceFn!PFN_vkGetPhysicalDeviceSurfacePresentModesKHR(instance, "vkGetPhysicalDeviceSurfacePresentModesKHR");
+        vkGetPhysicalDeviceSurfaceFormatsKHR = optionalInstance!PFN_vkGetPhysicalDeviceSurfaceFormatsKHR(instance, "vkGetPhysicalDeviceSurfaceFormatsKHR");
+        vkGetPhysicalDeviceSurfacePresentModesKHR = optionalInstance!PFN_vkGetPhysicalDeviceSurfacePresentModesKHR(instance, "vkGetPhysicalDeviceSurfacePresentModesKHR");
         vkEnumerateDeviceExtensionProperties = loadInstanceFn!PFN_vkEnumerateDeviceExtensionProperties(instance, "vkEnumerateDeviceExtensionProperties");
         vkGetPhysicalDeviceMemoryProperties = loadInstanceFn!PFN_vkGetPhysicalDeviceMemoryProperties(instance, "vkGetPhysicalDeviceMemoryProperties");
         vkCreateDevice = loadInstanceFn!PFN_vkCreateDevice(instance, "vkCreateDevice");
@@ -808,11 +808,11 @@ final class VulkanApi
         vkGetDeviceQueue = loadDeviceFn!PFN_vkGetDeviceQueue(device, "vkGetDeviceQueue");
         vkDeviceWaitIdle = loadDeviceFn!PFN_vkDeviceWaitIdle(device, "vkDeviceWaitIdle");
         vkQueueWaitIdle = loadDeviceFn!PFN_vkQueueWaitIdle(device, "vkQueueWaitIdle");
-        vkCreateSwapchainKHR = loadDeviceFn!PFN_vkCreateSwapchainKHR(device, "vkCreateSwapchainKHR");
-        vkDestroySwapchainKHR = loadDeviceFn!PFN_vkDestroySwapchainKHR(device, "vkDestroySwapchainKHR");
-        vkGetSwapchainImagesKHR = loadDeviceFn!PFN_vkGetSwapchainImagesKHR(device, "vkGetSwapchainImagesKHR");
-        vkAcquireNextImageKHR = loadDeviceFn!PFN_vkAcquireNextImageKHR(device, "vkAcquireNextImageKHR");
-        vkQueuePresentKHR = loadDeviceFn!PFN_vkQueuePresentKHR(device, "vkQueuePresentKHR");
+        vkCreateSwapchainKHR = optionalDevice!PFN_vkCreateSwapchainKHR(device, "vkCreateSwapchainKHR");
+        vkDestroySwapchainKHR = optionalDevice!PFN_vkDestroySwapchainKHR(device, "vkDestroySwapchainKHR");
+        vkGetSwapchainImagesKHR = optionalDevice!PFN_vkGetSwapchainImagesKHR(device, "vkGetSwapchainImagesKHR");
+        vkAcquireNextImageKHR = optionalDevice!PFN_vkAcquireNextImageKHR(device, "vkAcquireNextImageKHR");
+        vkQueuePresentKHR = optionalDevice!PFN_vkQueuePresentKHR(device, "vkQueuePresentKHR");
         vkCreateImageView = loadDeviceFn!PFN_vkCreateImageView(device, "vkCreateImageView");
         vkDestroyImageView = loadDeviceFn!PFN_vkDestroyImageView(device, "vkDestroyImageView");
         vkCreateRenderPass = loadDeviceFn!PFN_vkCreateRenderPass(device, "vkCreateRenderPass");
@@ -951,6 +951,11 @@ final class VulkanApi
     private T optionalInstance(T)(VkInstance instance, string name)
     {
         return cast(T) vkGetInstanceProcAddr(instance, toStringz(name));
+    }
+
+    private T optionalDevice(T)(VkDevice device, string name)
+    {
+        return cast(T) vkGetDeviceProcAddr(device, toStringz(name));
     }
 
     private T loadDeviceFn(T)(VkDevice device, string name)

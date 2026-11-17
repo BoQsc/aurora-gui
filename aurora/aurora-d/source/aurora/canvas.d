@@ -10,6 +10,7 @@ import aurora.text.layout : PositionedGlyph, TextLayout, TextLayoutOptions;
 import aurora.text.unicode.grapheme : previousGraphemeBoundary;
 import aurora.types : HorizontalAlign, Point, Rect, Size, VerticalAlign,
     clampInt, maxInt, minInt;
+import std.algorithm : max, min;
 import std.math : floor, ceil;
 import std.conv : to;
 
@@ -125,6 +126,68 @@ struct Canvas
             _drawList.addSolidRect(absolute, color, _clip);
         else if (_surface !is null)
             _surface.fillRect(absolute, color, _clip);
+    }
+
+    void fillTriangle(Point a, Point b, Point c, Color color)
+    {
+        const pa = toSurface(a);
+        const pb = toSurface(b);
+        const pc = toSurface(c);
+        if (_drawList !is null)
+        {
+            _drawList.addSolidTriangle(pa, pb, pc, color, _clip);
+            return;
+        }
+        if (_surface is null || color.a == 0) return;
+        Point[3] points = [pa, pb, pc];
+        if (points[0].y > points[1].y)
+        {
+            auto swap = points[0];
+            points[0] = points[1];
+            points[1] = swap;
+        }
+        if (points[1].y > points[2].y)
+        {
+            auto swap = points[1];
+            points[1] = points[2];
+            points[2] = swap;
+        }
+        if (points[0].y > points[1].y)
+        {
+            auto swap = points[0];
+            points[0] = points[1];
+            points[1] = swap;
+        }
+        const firstY = maxInt(points[0].y, _clip.y);
+        const lastY = minInt(points[2].y, _clip.bottom() - 1);
+        foreach (y; firstY .. lastY + 1)
+        {
+            const sample = y + 0.5;
+            double[2] crossings;
+            int count;
+            foreach (edge; [[points[0], points[1]], [points[1], points[2]],
+                [points[2], points[0]]])
+            {
+                const y0 = edge[0].y;
+                const y1 = edge[1].y;
+                if ((y0 <= sample && y1 > sample) ||
+                    (y1 <= sample && y0 > sample))
+                {
+                    const x = edge[0].x + (sample - y0) *
+                        (edge[1].x - edge[0].x) / (y1 - y0);
+                    if (count < 2) crossings[count] = x;
+                    ++count;
+                }
+            }
+            if (count < 2) continue;
+            const left = maxInt(cast(int) floor(min(crossings[0], crossings[1])),
+                _clip.x);
+            const right = minInt(cast(int) ceil(max(crossings[0], crossings[1])),
+                _clip.right() - 1);
+            if (right >= left)
+                _surface.fillRect(Rect(left, y, right - left + 1, 1),
+                    color, _clip);
+        }
     }
 
     /** Draw an RGB24 image with scaling. The draw-list path retains the pixel buffer. */

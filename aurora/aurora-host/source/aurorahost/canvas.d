@@ -15,6 +15,8 @@ struct CanvasCommand
     int y;
     int x2;
     int y2;
+    int x3;
+    int y3;
     int width;
     int height;
     int radius;
@@ -277,6 +279,13 @@ class CanvasWidget : Widget
                         Point(command.x, command.y),
                         Point(command.x2, command.y2),
                         command.color, command.thickness);
+                    break;
+                case "triangle":
+                    canvas.fillTriangle(
+                        Point(command.x, command.y),
+                        Point(command.x2, command.y2),
+                        Point(command.x3, command.y3),
+                        command.color);
                     break;
                 case "circle":
                     canvas.fillCircle(

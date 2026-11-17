@@ -1,6 +1,6 @@
 module present3d;
 
-import aurora.render.scene3d : Line3D, Scene3D;
+import aurora.render.scene3d : Line3D, Scene3D, Triangle3D;
 
 import core.sys.windows.windows : GetCurrentProcessId;
 import core.thread : Thread;
@@ -115,9 +115,25 @@ private string sceneDocument()
     return scene.toJSON();
 }
 
-private JSONValue[string] canvasPayload(Line3D[] lines)
+private JSONValue[string] canvasPayload(Line3D[] lines, Triangle3D[] triangles)
 {
     JSONValue[] commands;
+    foreach (triangle; triangles)
+    {
+        auto command = JSONValue(string[string].init);
+        command.object["op"] = JSONValue("triangle");
+        command.object["x"] = JSONValue(triangle.x1);
+        command.object["y"] = JSONValue(triangle.y1);
+        command.object["x2"] = JSONValue(triangle.x2);
+        command.object["y2"] = JSONValue(triangle.y2);
+        command.object["x3"] = JSONValue(triangle.x3);
+        command.object["y3"] = JSONValue(triangle.y3);
+        const r = (triangle.color >> 16) & 0xff;
+        const g = (triangle.color >> 8) & 0xff;
+        const b = triangle.color & 0xff;
+        command.object["color"] = JSONValue(format("#%02X%02X%02X", r, g, b));
+        commands ~= command;
+    }
     foreach (line; lines)
     {
         auto command = JSONValue(string[string].init);
@@ -203,7 +219,8 @@ void main(string[] args)
     foreach (frame; 0 .. frames)
     {
         auto lines = scene.build(360, 240, frame / 30.0);
-        auto fields = canvasPayload(lines);
+        auto triangles = scene.buildTriangles(360, 240, frame / 30.0);
+        auto fields = canvasPayload(lines, triangles);
         link.request("setCanvas", fields);
         if (frame == 0)
         {

@@ -629,6 +629,8 @@ private bool isCanvasCommandField(string name)
         case "y":
         case "x2":
         case "y2":
+        case "x3":
+        case "y3":
         case "width":
         case "height":
         case "radius":
@@ -868,7 +870,8 @@ private CanvasCommand parseCanvasCommand(JSONValue value, int index,
             format("%s has unknown field '%s'", label, name));
     command.op = readString(value, "op", "", label);
     enforce(command.op == "rect" || command.op == "roundedRect" ||
-        command.op == "line" || command.op == "circle" ||
+        command.op == "line" || command.op == "triangle" ||
+        command.op == "circle" ||
         command.op == "ring" || command.op == "text" ||
         command.op == "image",
         format("%s.op is unknown: '%s'", label, command.op));
@@ -876,6 +879,8 @@ private CanvasCommand parseCanvasCommand(JSONValue value, int index,
     command.y = readRange(value, "y", 0, -100000, 100000, label);
     command.x2 = readRange(value, "x2", 0, -100000, 100000, label);
     command.y2 = readRange(value, "y2", 0, -100000, 100000, label);
+    command.x3 = readRange(value, "x3", 0, -100000, 100000, label);
+    command.y3 = readRange(value, "y3", 0, -100000, 100000, label);
     command.width = readRange(value, "width", 0, 0, 100000, label);
     command.height = readRange(value, "height", 0, 0, 100000, label);
     command.radius = readRange(value, "radius", 0, 0, 100000, label);

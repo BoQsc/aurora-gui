@@ -1,5 +1,6 @@
 module aurora.render.scene3d;
 
+import std.algorithm.sorting : sort;
 import std.math : cos, sin;
 
 struct Vec3
@@ -25,6 +26,18 @@ struct Line3D
     int y2;
     uint color;
     int thickness = 1;
+}
+
+struct Triangle3D
+{
+    int x1;
+    int y1;
+    int x2;
+    int y2;
+    int x3;
+    int y3;
+    uint color;
+    double depth;
 }
 
 private Vec3 rotateY(Vec3 p, double angle)
@@ -116,5 +129,64 @@ struct Scene3D
         }
 
         return lines;
+    }
+
+    Triangle3D[] buildTriangles(int width, int height, double time)
+    {
+        const yaw = time * 0.7;
+        const pitch = 0.35;
+        Vec3[8] corners;
+        size_t index;
+        foreach (x; [-1.0, 1.0])
+        {
+            foreach (y; [-1.0, 1.0])
+            {
+                foreach (z; [-1.0, 1.0])
+                {
+                    corners[index++] = rotateX(rotateY(Vec3(x, y, z), yaw),
+                        pitch);
+                }
+            }
+        }
+        immutable faces = [
+            [0, 1, 3, 2],
+            [4, 6, 7, 5],
+            [0, 4, 5, 1],
+            [2, 3, 7, 6],
+            [0, 2, 6, 4],
+            [1, 5, 7, 3]
+        ];
+        immutable colors = [
+            0x0c4a6e, 0x075985, 0x0369a1,
+            0x0284c7, 0x0ea5e9, 0x38bdf8
+        ];
+        Triangle3D[] triangles;
+        foreach (faceIndex, face; faces)
+        {
+            Vec3 center;
+            foreach (vertex; face)
+                center = center + corners[vertex];
+            center = Vec3(center.x / 4, center.y / 4, center.z / 4);
+            int[4] px;
+            int[4] py;
+            bool visible = true;
+            foreach (slot, vertex; face)
+            {
+                if (!project(corners[vertex], width, height,
+                    px[slot], py[slot]))
+                {
+                    visible = false;
+                    break;
+                }
+            }
+            if (!visible) continue;
+            const color = colors[faceIndex];
+            triangles ~= Triangle3D(px[0], py[0], px[1], py[1],
+                px[2], py[2], color, center.z);
+            triangles ~= Triangle3D(px[0], py[0], px[2], py[2],
+                px[3], py[3], color, center.z);
+        }
+        triangles.sort!((a, b) => a.depth < b.depth);
+        return triangles;
     }
 }
