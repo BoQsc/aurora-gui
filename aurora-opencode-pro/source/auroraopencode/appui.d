@@ -19113,6 +19113,9 @@ private string _suggestExcludeId;
             // guess is never carried into this composer.
             _input.setSuggestion(_execution.suggestionText);
         }
+        // Opening a chat whose reply settled earlier (even before this run)
+        // starts the same automatic guess a freshly settled reply gets.
+        queueComposerSuggestionOnOpen(index);
         // Opening a conversation is the "attention" its unread dot waits for.
         bool clearedUnread;
         if (_sessions[index].unread)
@@ -26018,6 +26021,35 @@ private void pollButtonSuggestionRequest()
         if (anchor.length == 0 || runtime.suggestionAnchor == anchor) return;
         runtime.suggestionAnchor = anchor;
         runtime.suggestionPending = true;
+    }
+
+    /// Start the automatic guess for a conversation that is being shown and
+    /// whose newest reply already settled - possibly in an earlier run, so no
+    /// job was queued then. The anchor still limits this to once per reply.
+    private void queueComposerSuggestionOnOpen(int sessionIndex)
+    {
+        if (!_settings.composerSuggestion) return;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        if (_current < 0 || _sessions[_current].id != _sessions[sessionIndex].id)
+            return;
+        auto runtime = runtimeForSession(sessionIndex);
+        if (runtime is null) return;
+        if (runtime.suggestionText.length || runtime.suggestionPending ||
+            runtime.suggestionClient !is null) return;
+        if (runtime.turnInFlight || runtime.turnTiming ||
+            runtime.phase == RequestPhase.waiting || runtime.effectPending() ||
+            runtime.client.busy()) return;
+        if (_input is null || _input.textUtf8().strip().length > 0) return;
+        auto session = &_sessions[sessionIndex];
+        const path = activeMessagePath(*session);
+        if (path.length == 0) return;
+        const ref last = session.messages[path[$ - 1]];
+        // Only a finished assistant answer leaves the user free to speak next;
+        // an unanswered prompt or a cancelled reply must not be guessed at.
+        if (last.role != "assistant" || last.internal || last.toolCalls.length)
+            return;
+        if (last.finishReason == "cancelled") return;
+        queueComposerSuggestion(sessionIndex);
     }
 
     /// Tab in an empty composer asks for a guess right away, even when the
@@ -33023,6 +33055,8 @@ private void pollButtonSuggestionRequest()
                         refreshUsageBadge();
                         updateStatus("Conversation loaded.");
                         recoverInvalidInputPause();
+                        // The guess waits for the transcript it reads.
+                        queueComposerSuggestionOnOpen(cast(int) i);
                     }
                     break;
                 }

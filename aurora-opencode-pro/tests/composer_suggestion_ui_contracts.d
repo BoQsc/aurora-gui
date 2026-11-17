@@ -142,6 +142,61 @@ int main()
     assert(root.composerSuggestionPendingForTesting(),
         "a queued guess was dropped when its conversation was left");
 
+    // Opening an already-settled conversation starts its guess too: its reply
+    // may have settled in an earlier run, so no job exists yet.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["Open the settled chat", "The settled chat is open."]);
+    const int settledOpen = cast(int) root.sessionCountForTesting() - 1;
+    root.newChatForTesting();
+    root.tickTree(0.02);
+    root.selectSessionForTesting(settledOpen);
+    root.tickTree(0.02);
+    assert(root.composerSuggestionPendingForTesting(),
+        "opening a settled conversation did not request its guess");
+
+    // A conversation whose last message is from the user is not settled and
+    // must not be guessed at.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["An unanswered prompt"]);
+    const int unanswered = cast(int) root.sessionCountForTesting() - 1;
+    root.newChatForTesting();
+    root.tickTree(0.02);
+    root.selectSessionForTesting(unanswered);
+    root.tickTree(0.02);
+    assert(!root.composerSuggestionPendingForTesting(),
+        "an unanswered conversation requested a guess");
+
+    // A conversation whose history loads only when it is opened must get its
+    // guess after the transcript arrives, not before it.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["Load the lazy history", "The lazy history is here."]);
+    const int lazyTarget = cast(int) root.sessionCountForTesting() - 1;
+    const string lazyId = root.sessionIdForTesting(lazyTarget);
+    root.newChatForTesting();
+    root.tickTree(0.02);
+    root.persistForTesting();
+    root.reloadSessionsForTesting();
+    int lazyIndex = -1;
+    foreach (i; 0 .. root.sessionCountForTesting())
+        if (root.sessionIdForTesting(cast(int) i) == lazyId) { lazyIndex = cast(int) i; break; }
+    assert(lazyIndex >= 0, "the reloaded conversation is missing");
+    root.selectSessionForTesting(lazyIndex);
+    const loadDeadline = MonoTime.currTime + 5.seconds;
+    while (root.historyPendingForTesting() && MonoTime.currTime < loadDeadline)
+    {
+        window.onNativeTick(0.02);
+        root.projectTranscriptForTesting();
+        assert(driver.paint(), "a lazy history load could not paint");
+        Thread.sleep(1.msecs);
+    }
+    assert(!root.historyPendingForTesting(), "lazy history did not load");
+    assert(root.messageCountForTesting() > 0,
+        "the lazily loaded conversation has no transcript");
+    assert(root.composerSuggestionPendingForTesting(),
+        "a lazily loaded settled conversation did not request its guess");
+
     // A new chat has no turns of its own, but Tab may read a bounded digest of
     // recent conversations. One small request, and only when asked.
     root.newChatForTesting();
