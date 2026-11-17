@@ -256,6 +256,38 @@ struct Canvas
         const clipped = absolute.intersection(_clip);
         if (clipped.empty()) return;
         const pixels = image.pixels();
+        if (!mirrorX && tint == Color(255, 255, 255, 255) &&
+            absolute.width == source.width && absolute.height == source.height)
+        {
+            auto destinationPixels = _surface.pixels();
+            const destinationWidth = _surface.width();
+            foreach (y; clipped.y .. clipped.bottom())
+            {
+                const sourceY = source.y + (y - absolute.y);
+                auto sourceX = source.x + (clipped.x - absolute.x);
+                auto sourceIndex = (cast(size_t) sourceY *
+                    cast(size_t) image.width() + cast(size_t) sourceX) * 4;
+                auto destinationIndex = cast(size_t) y *
+                    cast(size_t) destinationWidth + cast(size_t) clipped.x;
+                foreach (x; clipped.x .. clipped.right())
+                {
+                    const alpha = pixels[sourceIndex + 3];
+                    if (alpha == 255)
+                        destinationPixels[destinationIndex] =
+                            (cast(uint) alpha << 24) |
+                            (cast(uint) pixels[sourceIndex] << 16) |
+                            (cast(uint) pixels[sourceIndex + 1] << 8) |
+                            pixels[sourceIndex + 2];
+                    else if (alpha != 0)
+                        _surface.setPixel(x, y,
+                            Color(pixels[sourceIndex], pixels[sourceIndex + 1],
+                                pixels[sourceIndex + 2], alpha));
+                    sourceIndex += 4;
+                    ++destinationIndex;
+                }
+            }
+            return;
+        }
         foreach (y; clipped.y .. clipped.bottom())
         {
             const sourceY = source.y + clampInt((y - absolute.y) * source.height /

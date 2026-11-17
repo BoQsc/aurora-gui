@@ -13,10 +13,12 @@ import aurora.vulkan.shaders : fragmentShaderSpirv, imageFragmentShaderSpirv,
     vertexShaderSpirv, quantizedFragmentShaderSpirv;
 import core.stdc.config : c_ulong;
 import core.stdc.string : memcpy;
+import core.time : MonoTime;
 import std.algorithm : max, min;
 import std.conv : to;
 import std.process : environment;
 import std.string : fromStringz, toStringz;
+import std.stdio : stdout;
 
 private struct HostBuffer
 {
@@ -230,6 +232,12 @@ final class VulkanRenderer : RenderBackend
     private ulong _sceneGeneration;
     private ulong _immediateRevision;
     private RendererStats _stats;
+    private double _stagingCopyMs;
+    private double _copyRecordMs;
+    private double _submitMs;
+    private double _presentMs;
+    private double _fenceWaitMs;
+    private int _profileFrames;
     private HostBuffer _atlasStaging;
     private VkImage _atlasImage;
     private VkDeviceMemory _atlasMemory;
@@ -410,8 +418,11 @@ final class VulkanRenderer : RenderBackend
             // Reacquiring the same swapchain image means its previous present
             // has completed. The maintenance fence makes that ownership
             // transfer explicit before its semaphore/fence pair is reused.
+            auto fenceWaitStart = MonoTime.currTime;
             check(_vk.vkWaitForFences(_device, 1, &_presentFences[imageIndex],
                 VK_TRUE, ulong.max), "waiting for a Vulkan presentation fence");
+            _fenceWaitMs += (MonoTime.currTime - fenceWaitStart)
+                .total!"usecs" / 1000.0;
             check(_vk.vkResetFences(_device, 1, &_presentFences[imageIndex]),
                 "resetting a Vulkan presentation fence");
             _presentFencePending[imageIndex] = false;
@@ -457,8 +468,10 @@ final class VulkanRenderer : RenderBackend
         submit.pCommandBuffers = &frame.commandBuffer;
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &_presentSemaphores[imageIndex];
+        auto submitStart = MonoTime.currTime;
         check(_vk.vkQueueSubmit(_graphicsQueue, 1, &submit, frame.fence),
             "submitting the Vulkan frame");
+        _submitMs += (MonoTime.currTime - submitStart).total!"usecs" / 1000.0;
 
         VkPresentInfoKHR present;
         present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -475,7 +488,13 @@ final class VulkanRenderer : RenderBackend
         present.swapchainCount = 1;
         present.pSwapchains = &_swapchain;
         present.pImageIndices = &imageIndex;
+        const presentStamp = MonoTime.currTime;
+        stdout.writeln("vulkan prePresent stampUs=",
+            presentStamp.ticks);
+        stdout.flush();
+        auto presentStart = MonoTime.currTime;
         const presented = _vk.vkQueuePresentKHR(_presentQueue, &present);
+        _presentMs += (MonoTime.currTime - presentStart).total!"usecs" / 1000.0;
         if (presented == VK_ERROR_OUT_OF_DATE_KHR)
         {
             // The surface rejected the image, so nothing reached the screen.
@@ -493,6 +512,22 @@ final class VulkanRenderer : RenderBackend
             _presentFencePending[imageIndex] = true;
         _frameCursor = (frameIndex + 1) % activeFrameCount();
         ++_stats.frames;
+        if (++_profileFrames >= 60)
+        {
+            stdout.writeln("vulkan profile stagingCopyMs=",
+                _stagingCopyMs / _profileFrames, " copyRecordMs=",
+                _copyRecordMs / _profileFrames, " submitMs=",
+                _submitMs / _profileFrames, " presentMs=",
+                _presentMs / _profileFrames, " fenceWaitMs=",
+                _fenceWaitMs / _profileFrames);
+            stdout.flush();
+            _stagingCopyMs = 0;
+            _copyRecordMs = 0;
+            _submitMs = 0;
+            _presentMs = 0;
+            _fenceWaitMs = 0;
+            _profileFrames = 0;
+        }
         return true;
     }
 
@@ -1750,7 +1785,10 @@ final class VulkanRenderer : RenderBackend
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         if (texture.revision != image.revision())
         {
+            auto stagingCopyStart = MonoTime.currTime;
             memcpy(texture.staging.mapped, image.pixels().ptr, cast(size_t) byteCount);
+            _stagingCopyMs += (MonoTime.currTime - stagingCopyStart)
+                .total!"usecs" / 1000.0;
             texture.revision = image.revision();
         }
         if (texture.linearDescriptorSet == VK_NULL_HANDLE ||
@@ -2133,6 +2171,7 @@ final class VulkanRenderer : RenderBackend
         if (texture.submittedRevision == texture.revision && texture.initialized)
             return;
 
+        auto copyRecordStart = MonoTime.currTime;
         VkImageMemoryBarrier toTransfer;
         toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         toTransfer.oldLayout = texture.initialized ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL :
@@ -2165,6 +2204,8 @@ final class VulkanRenderer : RenderBackend
 
         texture.initialized = true;
         texture.submittedRevision = texture.revision;
+        _copyRecordMs += (MonoTime.currTime - copyRecordStart)
+            .total!"usecs" / 1000.0;
     }
 
     private void ensureHostBuffer(ref HostBuffer buffer, VkDeviceSize required, VkFlags usage)

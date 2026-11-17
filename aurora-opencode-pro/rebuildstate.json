@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy the explicit allowSourceBackground run-tool exception and its source-guard tests to the running app.",
+  "reason": "Deliver the open-conversation automatic suggestion fix (c0ea634), including lazy history, and publish the rebuilt source.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-17 07:13:18.6184107 UTC",
-  "finishedAt": "2026-11-17 07:14:15.8725259 UTC",
-  "durationMs": 57253,
+  "startedAt": "2026-11-17 11:21:04.5896234 UTC",
+  "finishedAt": "2026-11-17 11:22:08.73257 UTC",
+  "durationMs": 64141,
   "exitCode": 0,
   "errors": [],
-  "publishStatus": "failed",
-  "publishDetail": "Publishing with installed runtime required: MSVCR120.dll",
+  "publishStatus": "published",
+  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (2924c08190be).",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

@@ -11,6 +11,8 @@ import std.conv : to;
 import std.exception : enforce;
 import std.file : exists;
 import std.mmfile : MmFile;
+import std.stdio : stdout;
+import core.time : MonoTime;
 
 version (Windows)
     import core.sys.windows.windows : LoadCursorA, SetCursor, ShowCursor;
@@ -128,6 +130,24 @@ class SurfaceWidget : Widget
     private uint _pixelWidth;
     private uint _pixelHeight;
     private bool _cursorHidden;
+    private MonoTime _lastPaint;
+    private double _paintSumMs;
+    private double _paintMaxMs;
+    private int _paintSamples;
+    private double _insideSumMs;
+    private double _insideMaxMs;
+    private double _fillSumMs;
+    private double _fillMaxMs;
+    private double _imageSumMs;
+    private double _imageMaxMs;
+    private double _outsideSumMs;
+    private double _outsideMaxMs;
+    private double _lastInsideMs;
+    private MonoTime _tickStart;
+    private MonoTime _refreshDone;
+    private MonoTime _paintStart;
+    private MonoTime _paintEnd;
+    private bool _traceFrame;
 
     void delegate(HostEvent) onInput;
 
@@ -575,18 +595,95 @@ class SurfaceWidget : Widget
 
     protected override void onTick(double deltaSeconds)
     {
+        auto tick = MonoTime.currTime;
+        if (_traceFrame && _paintEnd != MonoTime.init &&
+            _refreshDone != MonoTime.init && _paintStart != MonoTime.init)
+        {
+            const intervalMs = (tick - _tickStart).total!"usecs" / 1000.0;
+            if (intervalMs > 20.0)
+            {
+                stdout.writeln("host frame over20 intervalMs=", intervalMs,
+                    " refreshMs=", (_refreshDone - _tickStart)
+                        .total!"usecs" / 1000.0,
+                    " prePaintMs=", (_paintStart - _refreshDone)
+                        .total!"usecs" / 1000.0,
+                    " paintMs=", (_paintEnd - _paintStart)
+                        .total!"usecs" / 1000.0,
+                    " postPaintMs=", (tick - _paintEnd)
+                        .total!"usecs" / 1000.0,
+                    " postPaintStampUs=", tick.ticks);
+                stdout.flush();
+            }
+        }
+        _tickStart = tick;
         version (Windows)
             if (_cursorHidden)
                 SetCursor(null);
         refresh(deltaSeconds);
+        _refreshDone = MonoTime.currTime;
+        _traceFrame = true;
     }
 
     protected override void onPaint(ref Canvas canvas)
     {
+        auto entry = MonoTime.currTime;
+        _paintStart = entry;
+        if (_lastPaint != MonoTime.init)
+        {
+            const deltaMs = (entry - _lastPaint).total!"usecs" / 1000.0;
+            _paintSumMs += deltaMs;
+            if (deltaMs > _paintMaxMs) _paintMaxMs = deltaMs;
+            const outsideMs = deltaMs > _lastInsideMs ?
+                deltaMs - _lastInsideMs : 0.0;
+            _outsideSumMs += outsideMs;
+            if (outsideMs > _outsideMaxMs) _outsideMaxMs = outsideMs;
+        }
+        _lastPaint = entry;
         const full = Rect(0, 0, bounds().width, bounds().height);
         if (_hasBackground)
+        {
+            auto fillStart = MonoTime.currTime;
             canvas.fillRect(full, _background);
+            const fillMs = (MonoTime.currTime - fillStart)
+                .total!"usecs" / 1000.0;
+            _fillSumMs += fillMs;
+            if (fillMs > _fillMaxMs) _fillMaxMs = fillMs;
+        }
         if (_image !is null)
+        {
+            auto imageStart = MonoTime.currTime;
             canvas.drawImage(full, _image);
+            const imageMs = (MonoTime.currTime - imageStart)
+                .total!"usecs" / 1000.0;
+            _imageSumMs += imageMs;
+            if (imageMs > _imageMaxMs) _imageMaxMs = imageMs;
+        }
+        const insideMs = (MonoTime.currTime - entry).total!"usecs" / 1000.0;
+        _paintEnd = MonoTime.currTime;
+        _insideSumMs += insideMs;
+        if (insideMs > _insideMaxMs) _insideMaxMs = insideMs;
+        _lastInsideMs = insideMs;
+        if (++_paintSamples >= 60)
+        {
+            stdout.writeln("host paint intervalAvg=", _paintSumMs / _paintSamples,
+                " max=", _paintMaxMs, " insideAvg=", _insideSumMs / _paintSamples,
+                " insideMax=", _insideMaxMs, " outsideAvg=",
+                _outsideSumMs / _paintSamples, " outsideMax=", _outsideMaxMs,
+                " fillAvg=", _fillSumMs / _paintSamples, " fillMax=", _fillMaxMs,
+                " imageAvg=", _imageSumMs / _paintSamples, " imageMax=",
+                _imageMaxMs);
+            stdout.flush();
+            _paintSumMs = 0;
+            _paintMaxMs = 0;
+            _insideSumMs = 0;
+            _insideMaxMs = 0;
+            _fillSumMs = 0;
+            _fillMaxMs = 0;
+            _imageSumMs = 0;
+            _imageMaxMs = 0;
+            _outsideSumMs = 0;
+            _outsideMaxMs = 0;
+            _paintSamples = 0;
+        }
     }
 }

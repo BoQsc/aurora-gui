@@ -1157,9 +1157,20 @@ private final class App
             const renderDone = MonoTime.currTime;
             surface.publish(readData);
             const publishDone = MonoTime.currTime;
-            const target = 1.0 / 60.0;
-            while ((MonoTime.currTime - frameStart).total!"usecs" <
-                cast(long) (target * 1000000.0)) {}
+            const target = 1.0 / 61.0;
+            while (true)
+            {
+                const elapsed = (MonoTime.currTime - frameStart)
+                    .total!"usecs" / 1000000.0;
+                if (elapsed >= target) break;
+                const remaining = target - elapsed;
+                if (remaining > 0.002)
+                    Thread.sleep((cast(long) ((remaining - 0.002) * 1000.0))
+                        .msecs);
+                else
+                    do {} while ((MonoTime.currTime - frameStart)
+                        .total!"usecs" < cast(long) (target * 1000000.0));
+            }
             const frameDone = MonoTime.currTime;
             renderMs += (renderDone - frameStart).total!"usecs" / 1000.0;
             publishMs += (publishDone - renderDone).total!"usecs" / 1000.0;
