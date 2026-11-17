@@ -1,13 +1,13 @@
 # New App
 
-A live D app for Aurora Host v2. It currently draws a spinning 3D triangular
-pyramid (tetrahedron) on a dark grid.
+A live D app for Aurora Host v2. It samples a torus scalar field and renders the
+extracted isosurface as a spinning marching-cubes mesh.
 
 ## Pieces
 
-- `module.d` — the app. `drawPyramid` rotates four vertices, projects them,
-  depth-sorts the four triangular faces, and fills them. `Revision` identifies
-  the app state.
+- `module.d` — the app. It samples the torus field on a 16³ grid, triangulates
+  the isosurface with the standard 256-case marching-cubes triangle table,
+  depth-sorts the triangles, and renders them with perspective projection.
 - `smoke_test.py` — builds the module through `aurora-hotswap`, opens the host,
   and verifies the first frame.
 
@@ -32,5 +32,5 @@ agent-assisted launch, use `background: true` with
 python -B apps/new-app/smoke_test.py
 ```
 
-The pyramid verification also captures two host frames after a short delay; the
-frames must differ where the pyramid is spinning.
+The visual verification also captures two host frames after a short delay; the
+frames must differ where the marching-cubes surface is rotating.

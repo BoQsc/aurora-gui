@@ -131,7 +131,8 @@ test receipt.
 
 The standard surface presenter is CPU geometry: rotate points by the frame
 tick, apply perspective projection, sort faces far-to-near, and fill triangles.
-`new-app/module.d` uses this for its spinning triangular pyramid.
+`new-app/module.d` uses this for a marching-cubes torus: a 16³ scalar-field
+grid, the standard 256-case triangle table, and a depth-sorted triangle mesh.
 
 For a true GPU Vulkan path, use the dedicated host child-window swapchain
 presenter instead of the shared surface. It requires `VK_KHR_swapchain`; that is
