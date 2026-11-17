@@ -409,6 +409,17 @@ public string goalCompletionError(const ref ChatSession session, string argument
     }
     if (!field("summary").length)
         return "goal_complete requires a concise summary of the verified result.";
+    const answerGoal = goalIsAnswerOnly(session.goal);
+    // A summary that reports the requested outcome as unmet cannot complete
+    // the goal, whatever receipts or checklist state the turn has. Automatic
+    // continuation stops only through goal_complete, so accepting this wording
+    // ended an unfinished goal without the user's cooperation.
+    if (!answerGoal && declaresUnmetGoal(field("summary")))
+        return "goal_complete cannot close a goal whose summary reports the requested outcome as unmet or failed. " ~
+            "The persistent goal remains active. Do work on the unfinished outcome with the available tools; " ~
+            "an audit that finds the goal unmet is a result to act on, not completion. " ~
+            "Call goal_complete only once the requested outcome is achieved and its checks pass. " ~
+            "If an essential user-owned fact prevents completion, call request_input with that fact and blocked_steps.";
     // Report remaining work before asking the model to repair receipt IDs.
     // Otherwise an already-finished archive sent the agent through thirteen
     // history lookups only to discover it still needed an accepted check.
@@ -416,7 +427,6 @@ public string goalCompletionError(const ref ChatSession session, string argument
         return "Verification is still outstanding. Call verify with inline inputs naming the actual deliverables " ~
             "and steps running the relevant check. A custom run may succeed without an accepted receipt. " ~
             "Use the accepted toolCallId in goal_complete. No saved recipe, extra framework or history search is required.";
-    const answerGoal = goalIsAnswerOnly(session.goal);
     // An answer-only goal is proved by the answer itself. Action goals still
     // need real receipts so prose cannot stand in for completed work.
     if (!answerGoal)
@@ -454,13 +464,6 @@ public string goalCompletionError(const ref ChatSession session, string argument
             return "Required work remains open. Finish it before completing the goal.";
     if (!answerGoal)
     {
-        const unmet = declaresUnmetGoal(field("summary"));
-        if (unmet)
-            return "goal_complete cannot close a goal whose summary reports the requested outcome as unmet or failed. " ~
-                "The persistent goal remains active. Do work on the unfinished outcome with the available tools; " ~
-                "an audit that finds the goal unmet is a result to act on, not completion. " ~
-                "Call goal_complete only once the requested outcome is achieved and its checks pass. " ~
-                "If an essential user-owned fact prevents completion, call request_input with that fact and blocked_steps.";
         string declared = declaredUnfinishedWork(field("summary"));
         if (!declared.length)
             declared = declaredUnfinishedWork(currentAnswerProse(session));

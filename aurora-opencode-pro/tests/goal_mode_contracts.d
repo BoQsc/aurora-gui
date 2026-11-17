@@ -234,6 +234,16 @@ int main()
         const error = goalCompletionError(limited, args.toString());
         require(error.length == 0, "a legitimate completion was rejected (" ~ summary ~ "); result: " ~ error);
     }
+    // The unmet declaration is audited before receipt bookkeeping: a goal the
+    // summary itself calls unmet cannot be completed even when evidence is
+    // missing, so the agent is told to finish the work, not to find IDs.
+    {
+        JSONValue args;
+        args["summary"] = "The strict goal is not achieved.";
+        const error = goalCompletionError(limited, args.toString());
+        require(error.indexOf("unmet or failed") >= 0,
+            "a missing receipt hid the unmet goal declaration; result: " ~ error);
+    }
     writeln("PASS goal completion refuses answers that declare unfinished work");
 
     // An answer-only goal is proved by its answer. No receipt is required for a
