@@ -13,6 +13,7 @@ import auroraopencode.orchestrator : experimentalOrchestratorIsRouter, experimen
 import auroraopencode.contextpolicy : latestActualUserRequest;
 import auroraopencode.requestintent : workRestrictionRequest;
 import auroraopencode.planmode : planModeProposalPending;
+import auroraopencode.outputrecovery : goalAuditStalled;
 import std.string : strip;
 
 enum TurnAction { settle, failed, interrupted, applySteering, request, waitInput, waitChildren, reportChild }
@@ -217,7 +218,13 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     // still owns the work. Only an explicit restriction ("just explain", "do not
     // edit") holds the continuation until the user lifts it. Leaving the goal
     // active but idle was the reported "goal stopped and does nothing" state.
+    // A goal continuation answered with prose only has not advanced the goal.
+    // Requesting the same continuation again replayed the refusal until an
+    // internal audit painted a failed turn over it. Settle instead: the reply
+    // and recorded work stay, and the goal pauses below so Start is the explicit
+    // way back. An audit must never stop the chat.
     if (goalActive(session) && policy.toolsEnabled &&
+        !goalAuditStalled(session) &&
         !goalIsAnswerTurn(session.goal) &&
         !workRestrictionRequest(latestActualUserRequest(session)))
     {

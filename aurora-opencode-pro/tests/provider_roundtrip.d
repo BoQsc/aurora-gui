@@ -64,28 +64,30 @@ int main()
         root.projectTranscriptForTesting();
         assert(driver.paint());
         if (!root.turnBusyForTesting() &&
-            (auditStall ? root.failedMessageCountForTesting() > 0
-                        : root.lastAssistantContentForTesting() == "READY"))
+            (stalledGoal
+                ? root.goalStatusForTesting() == "paused"
+                : root.lastAssistantContentForTesting() == "READY"))
             break;
         Thread.sleep(10.msecs);
     }
     assert(!root.turnBusyForTesting() &&
-        (auditStall ? root.failedMessageCountForTesting() > 0
-                    : root.lastAssistantContentForTesting() == "READY"),
+        (stalledGoal
+            ? root.goalStatusForTesting() == "paused"
+            : root.lastAssistantContentForTesting() == "READY"),
         "Round trip did not settle: " ~ root.lastAssistantContentForTesting());
-    if (auditStall)
+    if (stalledGoal)
     {
-        assert(root.failedMessageCountForTesting() == 1,
-            "One audit-stall episode must surface one failure row");
-        assert(root.goalStatusForTesting() == "active",
-            "An audit stall must preserve the active goal");
+        assert(root.failedMessageCountForTesting() == 0,
+            "A no-action goal continuation surfaced a failure row");
+        assert(root.taskStatusForTesting() == "completed",
+            "A no-action goal continuation lost the completed work");
     }
     assert(readText(buildPath(workspace, "out.txt")) == "success");
     assert(root.verificationStatusForTesting() == "passed");
-    assert(root.taskStatusForTesting() ==
-        (stalledGoal || auditStall ? "blocked" : "completed"));
-    if (stalledGoal || auditStall)
-        assert(root.goalStatusForTesting() == "active", "Provider failure must preserve the authorized goal");
+    assert(root.taskStatusForTesting() == "completed");
+    if (stalledGoal)
+        assert(root.goalStatusForTesting() == "paused",
+            "An idle no-action goal was left looking active");
     const latency = root.latencyPaintForTesting();
     assert(latency.microseconds[LatencyStage.firstToken] >= 0 &&
         latency.microseconds[LatencyStage.applied] >= latency.microseconds[LatencyStage.firstToken] &&
@@ -102,7 +104,7 @@ int main()
         "Deferred optional title did not run after foreground work completed");
     root.persistForTesting();
     root.reloadSessionsForTesting();
-    assert(auditStall
+    assert(stalledGoal
         ? root.lastAssistantContentForTesting().startsWith("READY")
         : root.lastAssistantContentForTesting() == "READY");
     writeln("PASS composer -> HTTP/SSE -> plan/write/run -> verification -> final UI -> persisted reload");

@@ -136,7 +136,7 @@ import auroraopencode.restorestore : RestoreBundle, readRestoreBundle, readThrea
 import auroraopencode.outputguard : agentOutputIssue, outputFailurePrefix,
     outputRecoveryMarker, outputIssueDescription;
 import auroraopencode.outputrecovery : answerReplayed, outputRecoveryCount,
-    maxOutputRecoveries, goalAuditStalled, taskAuditStalled, auditStallIssue,
+    maxOutputRecoveries, auditStallIssue,
     outputRecoveryAllowed, unfinishedTaskRecoveryInstruction;
 import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow,
     transcriptVirtualThreshold;
@@ -21765,10 +21765,13 @@ private void pollButtonSuggestionRequest()
     /// paths in rebuildMessageColumn.
     private static bool legacyAuditStallFailure(string error)
     {
-        return !error.startsWith(outputFailurePrefix ~ "Recovery exhausted: ") &&
-            error.canFind("Agent output stalled:") &&
-            (error.canFind("without advancing the unfinished work") ||
-             error.canFind("Saved work is unchanged"));
+        if (!error.startsWith(outputFailurePrefix)) return false;
+        // Older builds turned a provider's no-action goal/task audit into a
+        // failed turn. That boundary is internal now, so saved notices stay out
+        // of the transcript instead of stopping or alarming the chat.
+        return error.canFind("without advancing the active goal") ||
+            error.canFind("without advancing the unfinished work") ||
+            error.canFind("Saved work is unchanged");
     }
 
     private BubbleVersion bubblePresentation(size_t index, ref const ChatMessage message,
@@ -23262,8 +23265,11 @@ private void pollButtonSuggestionRequest()
             " thread=" ~ session.id ~ " issue=" ~ event.outputIssue ~
             " recovery=" ~ (recover ? "continuing" : "stopped"));
         const taskAudit = auditStallIssue(event.outputIssue);
-        if (taskAudit && recover)
+        if (taskAudit)
         {
+            // A progress audit is an internal control boundary, not a provider
+            // failure. Keep the reply and finish it here; exhaustion settles
+            // quietly below instead of painting an error that stops the chat.
             _suppressDoneStatus = true;
             finishAssistantMessage(false);
         }
@@ -23279,6 +23285,11 @@ private void pollButtonSuggestionRequest()
         _activeRequestSession = -1;
         if (!recover)
         {
+            if (taskAudit)
+            {
+                settleStalledAudit(sessionIndex);
+                return;
+            }
             updateStatus("Stopped repeated agent output. See the conversation for details.");
             refreshBubbleActions();
             startNextQueuedFollowUp(sessionIndex);
@@ -23307,6 +23318,33 @@ private void pollButtonSuggestionRequest()
         rebuildMessageColumn();
         updateStatus("Recovering agent output…");
         if (!_toolContinuationPaused) startChatRequest(sessionIndex);
+    }
+
+    /// End an exhausted progress audit without a failure row or another
+    /// request. The reply and recorded work stay; an active goal pauses so Start
+    /// is the explicit way back. Audit bookkeeping must never stop the chat.
+    private void settleStalledAudit(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        auto session = &_sessions[sessionIndex];
+        session.turnStatus = "completed";
+        session.taskStatus = session.verificationStatus == "required" ||
+            session.verificationStatus == "failed" ? "verifying" : "active";
+        if (goalActive(*session))
+        {
+            pauseActiveGoal(*session);
+            updateGoalBar();
+            updateStatus("Goal paused — press Start to continue it.");
+        }
+        else updateStatus("Unfinished work remains recorded. Press Continue to resume it.");
+        setTurnInFlight(false);
+        freezeTurnTiming();
+        markUnreadIfBackground(sessionIndex);
+        publishThreadUpdated(*session);
+        markDirty();
+        rebuildMessageColumn();
+        refreshBubbleActions();
+        startNextQueuedFollowUp(sessionIndex);
     }
 
     private static bool hasSubstantiveMutation(
@@ -34173,31 +34211,10 @@ private void pollButtonSuggestionRequest()
                         handleOutputFailure(failure);
                         break;
                     }
-                    // A goal continuation or execution-recovery turn answered
-                    // with prose only has not advanced the goal. Accepting it
-                    // as a completed turn paused the goal and stopped the work
-                    // after a refusal. Recover it through the bounded output
-                    // path so the goal stays active and repeated refusals end
-                    // as a visible stall, never as completion.
-                    {
-                        const goalOwner = turnOwnerSessionIndex();
-                        if (!event.cancelled && goalOwner >= 0 &&
-                            goalOwner < cast(int) _sessions.length &&
-                            goalAuditStalled(_sessions[goalOwner]))
-                        {
-                            OpenCodeEvent failure;
-                            failure.kind = OpenCodeEventKind.error;
-                            failure.text = outputFailurePrefix ~
-                                outputIssueDescription("goal_audit_stalled");
-                            failure.outputIssue = "goal_audit_stalled";
-                            failure.requestId = event.requestId;
-                            failure.promptTokens = event.promptTokens;
-                            failure.completionTokens = event.completionTokens;
-                            failure.totalTokens = event.totalTokens;
-                            handleOutputFailure(failure);
-                            break;
-                        }
-                    }
+                    // A prose-only goal continuation is not a failure. The
+                    // ordinary settle below keeps the reply and decides the
+                    // goal outcome; decideTurn pauses a goal whose continuation
+                    // produced no action, so no audit can stop the chat.
                     const completedRequestId = event.requestId;
                     const taskContinues = taskContinuesAfterDone(event.cancelled, event.finishReason);
                     finishAssistantMessage(event.cancelled, event.promptTokens,

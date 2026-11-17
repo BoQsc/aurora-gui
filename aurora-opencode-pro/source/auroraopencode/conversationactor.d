@@ -43,10 +43,8 @@ import auroraopencode.planhistory : recordPlanHistory;
 // experimental: planmode - delete with source/auroraopencode/planmode.d
 import auroraopencode.planmode : experimentalPlanModeEnabled, planModePromptBlock;
 import auroraopencode.goalmutation : resetTaskForNewGoal, restoreGoalTask;
-import auroraopencode.outputrecovery : outputRecoveryCount, maxOutputRecoveries,
-    goalAuditStalled, unfinishedTaskRecoveryInstruction;
-import auroraopencode.outputguard : outputRecoveryMarker, outputFailurePrefix,
-    outputIssueDescription;
+import auroraopencode.outputrecovery : outputRecoveryCount, maxOutputRecoveries;
+import auroraopencode.outputguard : outputRecoveryMarker;
 import auroraopencode.imagehistory : pruneHistoryImages, completedReplyImageIds;
 import core.sync.mutex : Mutex;
 import core.sync.condition : Condition;
@@ -1254,27 +1252,8 @@ public final class ConversationActor
         updateLast();
         if (event.cancelled) { applyStop(); return; }
         if (diagnosticActive) { finishDiagnostic(); applySteering(); request(); return; }
-        // A goal continuation or execution-recovery turn answered with prose
-        // only has not advanced the goal. Settling it as a completed turn
-        // paused the goal and stopped the work after a refusal. Recover it
-        // through the bounded output path so the goal stays active and
-        // repeated refusals end as a visible stall, never as completion.
-        if (goalAuditStalled(session))
-        {
-            if (outputRecoveryCount(session) >= maxOutputRecoveries)
-            {
-                fail(outputFailurePrefix ~ "Recovery exhausted: " ~
-                    outputIssueDescription("goal_audit_stalled") ~
-                    " The goal and its recorded work stay active; retry with a working provider to continue.");
-                return;
-            }
-            internalNote(outputRecoveryMarker ~ unfinishedTaskRecoveryInstruction);
-            session.turnStatus = "running";
-            session.taskStatus = "active";
-            metadata();
-            request();
-            return;
-        }
+        // A prose-only goal continuation is not a failure: decideTurn settles
+        // it and pauses the goal, so an internal audit can never stop the chat.
         auto policy = config.turn; policy.toolsEnabled = config.request.toolsEnabled; policy.finishReason = event.finishReason;
         policy.diagnosticAvailable = config.diagnosticModel.length > 0;
         policy.pendingChildren = waitingChildren;

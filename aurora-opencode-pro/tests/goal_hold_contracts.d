@@ -1,6 +1,7 @@
 module goal_hold_contracts;
 
-// Former silent audit holds now use the shared bounded recovery path.
+// Progress audits recover within a bounded budget and settle quietly; an audit
+// never paints a failure row or stops the chat.
 
 import aurora;
 import auroraopencode.appui : OpenCodeRoot;
@@ -71,13 +72,18 @@ int main()
             root.addConversationForTesting(["assistant"], ["Still done without a check."]);
             root.startTurnClockForTesting(); root.injectOutputFailureForTesting(issue);
         }
-        assert(root.turnStatusForTesting() == "failed" && root.failedMessageCountForTesting() == 1,
-            "No-action recovery was unbounded or silently returned to idle");
-        assert(root.goalStatusForTesting() == "active" && root.taskStatusForTesting() != "completed",
-            "Exhaustion fabricated completion or paused the user's goal");
+        assert(root.turnStatusForTesting() == "completed" && root.failedMessageCountForTesting() == 0,
+            "Exhausted audit recovery stopped the chat with a failure row");
+        assert(root.goalStatusForTesting() == "paused",
+            "Exhaustion left the goal active with no running turn");
+        assert(root.taskStatusForTesting() != "completed",
+            "Exhaustion fabricated completion of the unfinished task");
+        bool visible;
+        foreach (i; 0 .. root.totalMessageCountForTesting())
+            if (root.messageContentForTesting(i).indexOf("Agent output stalled") >= 0) visible = true;
+        assert(!visible, "Audit exhaustion leaked a failure notice into the transcript");
         pump();
-        assert(root.lastBubbleActionForTesting() == "Retry", "The terminal recovery failure was hidden as an old audit notice");
     }
-    writeln("PASS task and goal audits recover without idle holds; exhaustion is explicit and preserves work");
+    writeln("PASS task and goal audits recover quietly; exhaustion settles without stopping the chat");
     return 0;
 }

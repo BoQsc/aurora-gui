@@ -77,15 +77,11 @@ int main()
     assert(outputIssueDescription("goal_audit_stalled").indexOf("goal") >= 0);
     assert(outputIssueDescription("replayed_prose").indexOf("same prose") >= 0,
         "A real replay keeps its explicit description");
-    // A surfaced failure ends its audit interval. A retry then needs fresh
-    // no-action continuations instead of inheriting the stale counter.
+    // A surfaced failure is not goal progress; the audit stays open until a
+    // useful action or a new human instruction.
     add("assistant", "Agent output stalled: goal audit", false, "", true,
         outputFailurePrefix ~ outputIssueDescription("goal_audit_stalled"));
-    assert(!goalAuditStalled(session), "A surfaced failure must end its audit interval");
-    add("user", "Persistent goal continuation: fresh interval", true);
-    add("user", "Persistent goal continuation: still no action", true);
-    assert(goalAuditStalled(session),
-        "Two fresh no-action continuations must still trip the goal guard");
+    assert(goalAuditStalled(session), "A surfaced failure cleared the goal audit");
     add("user", "Reply READY again");
     add("assistant", "READY");
     assert(!answerReplayed(session) && !goalAuditStalled(session));
@@ -139,8 +135,8 @@ int main()
         assert(goalAuditStalled(goalSession),
             "a prose-only goal continuation was not detected as a stall");
         push(goalSession, "user", outputRecoveryMarker ~ unfinishedTaskRecoveryInstruction, true);
-        assert(!goalAuditStalled(goalSession) && outputRecoveryCount(goalSession) == 1,
-            "Recovery reused the stale audit interval");
+        assert(goalAuditStalled(goalSession) && outputRecoveryCount(goalSession) == 1,
+            "A recovery retry without a useful action cleared the goal audit");
         push(goalSession, "user", "Persistent goal continuation: " ~ goalSession.goal, true);
         push(goalSession, "assistant", "Still unfinished.");
         assert(goalAuditStalled(goalSession));

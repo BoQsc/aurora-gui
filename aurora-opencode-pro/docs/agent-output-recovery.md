@@ -6,16 +6,17 @@ execute. Malformed responses stay in saved history for diagnosis and are exclude
 from later provider requests.
 
 Desktop and conversation-actor execution use one bounded recovery budget: three
-consecutive unsuccessful repairs. A task or goal audit starts a fresh interval
-through its recovery marker, preserving the budget. Useful successful tools and
-new human instructions reset it; plan chatter does not. Stop still cancels work.
+consecutive unsuccessful repairs of unusable provider output. Useful successful
+tools and new human instructions reset it; plan chatter does not. Stop still
+cancels work.
 
-Recoverable task/goal audits retain the original reply without adding a failure
-bubble. They continue the specific unfinished work using ordinary tools. There
-is no separate idle hold, automatic goal pause, or extra goal-completion audit
-protocol. If repairs keep producing no progress, Aurora reports an explicit
-failure while preserving the task, goal and history. The session server reports
-an unexpected post-start idle state as `turn_stalled`, not `turn_not_started`.
+A goal continuation that answers with prose only is not a provider failure. The
+turn settles normally, the reply and recorded work stay, and an active goal
+pauses so Start is the explicit way back. An audit never adds a failure bubble
+and never stops the chat. A task audit keeps its bounded recovery; if repairs
+keep producing no progress it settles the same quiet way. The session server
+reports an unexpected post-start idle state as `turn_stalled`, not
+`turn_not_started`.
 
 Completed plans and current accepted checks trigger a short outcome check in the
 existing final request. It keeps the exact user's triggers and constraints in
@@ -51,8 +52,9 @@ in the logs, so inspect them before sharing. Tracing is off by default.
 
 Local HTTP/SSE tests cover native calls, paired results, streamed argument bursts,
 cancellation, four-round normal settlement, and bounded task/goal recovery.
-A varying-prose goal stalls explicitly after eleven main requests; it does not
-return silently to idle. The ordinary task uses four requests.
+A prose-only goal continuation now settles on the fifth request, preserves the
+reply and pauses the goal, with no failure row and no recovery requests. The
+ordinary task uses four requests.
 
 ```text
 python aurora-opencode-pro/tests/test_provider_roundtrip.py --actor --stream-tools

@@ -61,7 +61,7 @@ int main()
                 sawCompletedTool = sawCompletedTool || progress["state"].str == "completed";
             }
         }
-        ready = !projection.busy && view.turnStatus == (stalledGoal ? "failed" : "completed");
+        ready = !projection.busy && view.turnStatus == "completed";
         assert(!actor.fault().length, actor.fault());
         Thread.sleep(5.msecs);
     }
@@ -77,9 +77,9 @@ int main()
     const snapshot = actor.finalSnapshot();
     auto value = parseJSON(snapshot);
     assert(sessionToJson(view) == value, "Tool progress projection changed the conversation model");
-    assert(value["messages"].array[$ - 1]["content"].str == "READY");
+    assert(value["messages"].array[$ - 1]["content"].str.indexOf("READY") == 0);
     assert(value["verificationStatus"].str == "passed");
-    if (stalledGoal) assert(value["goalStatus"].str == "active", "Output recovery paused the user's persistent goal");
+    if (stalledGoal) assert(value["goalStatus"].str == "paused", "An idle no-action goal was left looking active");
     const trace = actor.recordedTrace();
     write(buildPath(directory, "trace.json"), trace); write(buildPath(directory, "final.json"), snapshot);
     // Replay has neither the original workspace nor access to a provider.
