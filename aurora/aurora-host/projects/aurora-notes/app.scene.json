@@ -1,0 +1,243 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Aurora Notes",
+    "width": 1100,
+    "height": 720,
+    "theme": "dark",
+    "decorated": false
+  },
+  "root": {
+    "id": "root",
+    "type": "column",
+    "spacing": 0,
+    "padding": 0,
+    "background": "#0b1020",
+    "children": [
+      {
+        "id": "titlebar",
+        "type": "titleBar",
+        "text": "Aurora Notes",
+        "height": 42,
+        "background": "#0f172a",
+        "border": "#1e293b",
+        "textColor": "#e2e8f0"
+      },
+      {
+        "id": "toolbar",
+        "type": "row",
+        "height": 44,
+        "spacing": 6,
+        "padding": 6,
+        "background": "#0f172a",
+        "border": "#1e293b",
+        "children": [
+          {
+            "id": "new-note",
+            "type": "button",
+            "text": "New",
+            "style": "toolbar",
+            "icon": "new",
+            "action": "note.new"
+          },
+          {
+            "id": "open-note",
+            "type": "button",
+            "text": "Open",
+            "style": "toolbar",
+            "icon": "open",
+            "action": "note.open"
+          },
+          {
+            "id": "save-note",
+            "type": "button",
+            "text": "Save",
+            "style": "toolbar",
+            "icon": "save",
+            "action": "note.save"
+          },
+          {
+            "type": "separator",
+            "orientation": "vertical"
+          },
+          {
+            "id": "focus-mode",
+            "type": "button",
+            "text": "Focus",
+            "style": "toolbar",
+            "active": true,
+            "action": "note.focus"
+          },
+          {
+            "type": "spacer",
+            "flex": 1
+          },
+          {
+            "id": "note-count",
+            "type": "label",
+            "text": "3 notes",
+            "scale": 1,
+            "align": "right",
+            "textColor": "#64748b"
+          }
+        ]
+      },
+      {
+        "id": "content",
+        "type": "row",
+        "flex": 1,
+        "spacing": 0,
+        "padding": 0,
+        "children": [
+          {
+            "id": "sidebar",
+            "type": "column",
+            "width": 260,
+            "spacing": 10,
+            "padding": 16,
+            "background": "#0b1220",
+            "border": "#1e293b",
+            "children": [
+              {
+                "id": "sections",
+                "type": "label",
+                "text": "NOTES",
+                "scale": 1,
+                "textColor": "#34d399"
+              },
+              {
+                "id": "search",
+                "type": "textField",
+                "text": "",
+                "events": ["change"]
+              },
+              {
+                "id": "note-1",
+                "type": "row",
+                "padding": 10,
+                "background": "#132033",
+                "radius": 8,
+                "children": [
+                  {
+                    "id": "note-1-title",
+                    "type": "label",
+                    "text": "Design notes",
+                    "scale": 1,
+                    "textColor": "#f8fafc"
+                  }
+                ]
+              },
+              {
+                "id": "note-2",
+                "type": "row",
+                "padding": 10,
+                "radius": 8,
+                "children": [
+                  {
+                    "id": "note-2-title",
+                    "type": "label",
+                    "text": "Host checklist",
+                    "scale": 1,
+                    "textColor": "#94a3b8"
+                  }
+                ]
+              },
+              {
+                "id": "note-3",
+                "type": "row",
+                "padding": 10,
+                "radius": 8,
+                "children": [
+                  {
+                    "id": "note-3-title",
+                    "type": "label",
+                    "text": "Release plan",
+                    "scale": 1,
+                    "textColor": "#94a3b8"
+                  }
+                ]
+              },
+              {
+                "type": "spacer",
+                "flex": 1
+              },
+              {
+                "id": "hint",
+                "type": "label",
+                "text": "Scene-driven · no new executable",
+                "scale": 1,
+                "textColor": "#475569"
+              }
+            ]
+          },
+          {
+            "id": "editor-pane",
+            "type": "column",
+            "flex": 1,
+            "spacing": 12,
+            "padding": 24,
+            "children": [
+              {
+                "id": "kicker",
+                "type": "label",
+                "text": "AURORA NOTES",
+                "scale": 1,
+                "textColor": "#34d399"
+              },
+              {
+                "id": "title",
+                "type": "label",
+                "text": "Design notes",
+                "scale": 3,
+                "textColor": "#f8fafc"
+              },
+              {
+                "id": "updated",
+                "type": "label",
+                "text": "Edited just now · host project",
+                "scale": 1,
+                "textColor": "#64748b"
+              },
+              {
+                "type": "separator"
+              },
+              {
+                "id": "editor",
+                "type": "textArea",
+                "text": "Aurora v2 starts as a scene.\n\nThe host owns the window, layout, painting, and input.\nThis project is the scene — edit it, reload, keep building.\n\nTry:\n- add a new note in the sidebar\n- change the accent color\n- split the editor into a preview pane\n",
+                "flex": 1,
+                "events": ["change", "cursor"]
+              },
+              {
+                "id": "status",
+                "type": "row",
+                "height": 28,
+                "spacing": 8,
+                "children": [
+                  {
+                    "id": "ready",
+                    "type": "label",
+                    "text": "Ready",
+                    "scale": 1,
+                    "textColor": "#64748b"
+                  },
+                  {
+                    "type": "spacer",
+                    "flex": 1
+                  },
+                  {
+                    "id": "position",
+                    "type": "label",
+                    "text": "Ln 1, Col 1",
+                    "scale": 1,
+                    "textColor": "#64748b"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
