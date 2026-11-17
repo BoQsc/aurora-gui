@@ -250,7 +250,8 @@ int main(string[] args)
                 const scene = loadScene(args[2]);
                 auto registry = new NodeRegistry();
                 auto window = createWindow(scene, registry,
-                    args.canFind("--minimized"));
+                    args.canFind("--minimized"), args.canFind("--maximized"),
+                    args.canFind("--no-activate"));
                 return runWindowed(window, registry, args.canFind("--control"),
                     args[2], args.canFind("--watch"), listenPort);
             }

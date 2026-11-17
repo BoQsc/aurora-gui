@@ -1,5 +1,5 @@
 import ctypes
-import math
+import statistics
 import struct
 import subprocess
 import sys
@@ -15,9 +15,8 @@ SURFACE = ROOT / "apps" / "marching-cubes-terrain" / "build" / "terrain-live.sur
 OUT = ROOT / "apps" / "marching-cubes-terrain" / "build" / "terrain-live.ppm"
 TITLE = "Marching Cubes Terrain"
 ITERATIONS = 8
-APP_SECONDS = 8
+APP_SECONDS = 30
 SAMPLE_SECONDS = 2.0
-SW_MINIMIZE = 6
 
 user32 = ctypes.windll.user32
 
@@ -65,11 +64,10 @@ def start_app():
 
 def start_host():
     return subprocess.Popen(
-        [str(HOST), "--run", str(SCENE), "--minimized"],
+        [str(HOST), "--run", str(SCENE), "--minimized", "--no-activate"],
         cwd=str(HOST.parent),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -86,63 +84,62 @@ def stop(process):
 
 
 def main():
+    app = None
+    host = None
     rows = []
-    for index in range(1, ITERATIONS + 1):
-        app = None
-        host = None
-        try:
-            app = start_app()
-            if not wait_for_surface():
-                raise RuntimeError("surface did not appear")
-            host = start_host()
-            hwnd = wait_for_window()
-            if not hwnd:
-                raise RuntimeError("host window did not appear")
-            time.sleep(0.5)
-            for _ in range(20):
-                user32.ShowWindow(hwnd, SW_MINIMIZE)
-                user32.ShowWindowAsync(hwnd, SW_MINIMIZE)
-                user32.PostMessageW(hwnd, 0x0112, 0xF020, 0)
-                time.sleep(0.1)
-                if user32.IsIconic(hwnd):
-                    break
-            time.sleep(1.0)
-            time.sleep(1.0)
-            minimized = bool(user32.IsIconic(hwnd))
+    try:
+        foreground_before = user32.GetForegroundWindow()
+        app = start_app()
+        if not wait_for_surface():
+            raise RuntimeError("surface did not appear")
+        host = start_host()
+        hwnd = wait_for_window()
+        if not hwnd:
+            raise RuntimeError("host window did not appear")
+        time.sleep(1.0)
+        minimized = bool(user32.IsIconic(hwnd))
+        if not minimized:
+            raise RuntimeError("host window is not minimized")
+
+        for index in range(1, ITERATIONS + 1):
             start_sequence, start_read = surface_sequences()
-            sample_start = time.monotonic()
+            started = time.monotonic()
             time.sleep(SAMPLE_SECONDS)
-            elapsed = time.monotonic() - sample_start
+            elapsed = time.monotonic() - started
             end_sequence, end_read = surface_sequences()
             producer_fps = (end_sequence - start_sequence) / elapsed
             host_fps = (end_read - start_read) / elapsed
-            row = (index, minimized, producer_fps, host_fps)
+            focus_preserved = foreground_before == user32.GetForegroundWindow()
+            row = (index, minimized, focus_preserved, producer_fps, host_fps)
             rows.append(row)
             print(
                 f"test={index} minimized={minimized} "
+                f"focus_preserved={focus_preserved} "
                 f"producer_fps={producer_fps:.2f} host_read_fps={host_fps:.2f}",
                 flush=True,
             )
-        except Exception as error:
-            print(f"test={index} FAILED: {error}", flush=True)
-            rows.append((index, False, 0.0, 0.0))
-        finally:
-            stop(host)
-            stop(app)
 
-    producer_values = [row[2] for row in rows]
-    host_values = [row[3] for row in rows]
-    print(
-        "summary "
-        f"tests={len(rows)} "
-        f"all_minimized={all(row[1] for row in rows)} "
-        f"producer_min={min(producer_values):.2f} "
-        f"producer_max={max(producer_values):.2f} "
-        f"host_min={min(host_values):.2f} "
-        f"host_max={max(host_values):.2f}",
-        flush=True,
-    )
-    return 0 if all(row[1] and row[2] >= 60.0 for row in rows) else 1
+        producer = [row[3] for row in rows]
+        host_values = [row[4] for row in rows]
+        print(
+            "summary "
+            f"tests={len(rows)} "
+            f"all_minimized={all(row[1] for row in rows)} "
+            f"all_focus_preserved={all(row[2] for row in rows)} "
+            f"producer_min={min(producer):.2f} "
+            f"producer_max={max(producer):.2f} "
+            f"host_min={min(host_values):.2f} "
+            f"host_max={max(host_values):.2f}",
+            flush=True,
+        )
+        return 0 if all(row[1] and row[2] and row[3] >= 60.0
+            for row in rows) else 1
+    except Exception as error:
+        print(f"FAILED: {error}", flush=True)
+        return 2
+    finally:
+        stop(app)
+        stop(host)
 
 
 if __name__ == "__main__":

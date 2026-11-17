@@ -1192,8 +1192,11 @@ else version (Windows)
             // application theme color instead of the system's white default.
             seedStartupBackground();
             _shown = true;
-            const command = (options.startNoActivate || options.noActivate) ?
-                SW_SHOWNOACTIVATE :
+            const noActivate = options.startNoActivate || options.noActivate;
+            const command = noActivate ?
+                (options.startMaximized ? SW_SHOWMAXIMIZED :
+                    (options.startMinimized ? SW_SHOWMINNOACTIVE :
+                        SW_SHOWNOACTIVATE)) :
                 (_fullscreen ? SW_SHOWNORMAL :
                     (options.startMaximized ? SW_SHOWMAXIMIZED :
                         (options.startMinimized ? SW_SHOWMINIMIZED : SW_SHOWNORMAL)));

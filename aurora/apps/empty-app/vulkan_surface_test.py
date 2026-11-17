@@ -96,6 +96,7 @@ def main() -> int:
         completed = subprocess.run(
             ["dmd", "-i",
              f"-I={ROOT / 'aurora-d' / 'source'}",
+             f"-J={PROJECT}",
              str(PROJECT / "vulkan3d.d"), f"-of={app}"],
             cwd=str(PROJECT), capture_output=True, text=True, encoding="utf-8")
         require(completed.returncode == 0,

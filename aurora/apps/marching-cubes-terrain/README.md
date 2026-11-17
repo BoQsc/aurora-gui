@@ -31,23 +31,37 @@ camera height follows the terrain smoothly.
 From this directory:
 
 ```text
-dmd -i -I=../../aurora-d/source -I=. vulkan3d.d -of=build/marching-cubes-terrain.exe
+dmd -J=. -i -I=../../aurora-d/source -I=. vulkan3d.d -of=build/marching-cubes-terrain.exe
 ```
+
+`-J=.` embeds `shaders3d/*.spv` into the executable, so the built `.exe` has no
+shader sidecars and runs from any directory.
 
 ## Run
 
 The app writes a live shared surface:
 
 ```text
-marching-cubes-terrain.exe --animate --shaders <absolute>/shaders3d \
+marching-cubes-terrain.exe --animate \
   --surface <absolute>/build/terrain-live.surface --time 3600
 ```
+
+The shaders are embedded; `--shaders <directory>` remains available as an
+override when you want to load external SPIR-V files.
 
 Then open the host surface scene:
 
 ```text
 aurora-host.exe --run <absolute>/terrain.scene.json
 ```
+
+With no arguments the executable opens its own 1280x720 window, renders the
+terrain live, and stays open until you close it. Point and click the view to
+capture the mouse; the window title is `Marching Cubes Terrain`.
+
+To render one 1920x1080 frame to `vulkan3d.ppm` and exit instead, pass
+`--render`. The host-presented shared-surface mode is still selected by
+`--animate --surface <path>` plus an `aurora-host` window.
 
 The scene uses `type: "surface"` with `"flex": 1`; this lets the host fill the
 available window area instead of keeping the logical node fixed. Without

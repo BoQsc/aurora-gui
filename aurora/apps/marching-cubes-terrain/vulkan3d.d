@@ -26,10 +26,11 @@ import core.sync.condition : Condition;
 import core.sys.windows.windows : CreateWindowExA, DefWindowProcA, DispatchMessageA,
     ClientToScreen, FindWindowA, GetClientRect, GetCurrentProcessId,
     GetCursorPos, GetForegroundWindow, GetModuleHandleA, HINSTANCE, HWND,
-    IsWindow,
+    IsWindow, LoadCursorA,
     LPARAM, LRESULT, MSG, POINT, PeekMessageA, RECT, RegisterClassA,
-    ScreenToClient, SetCursorPos, SetWindowPos, SW_SHOW, ShowWindow,
-    TranslateMessage, UINT, WNDCLASSA, WPARAM, WS_CHILD, WS_VISIBLE;
+    ScreenToClient, SetCursorPos, SetForegroundWindow, SetWindowPos, SW_SHOW,
+    ShowWindow, TranslateMessage, UINT, WM_CLOSE, WM_DESTROY, WNDCLASSA, WPARAM,
+    WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE;
 import std.conv : to;
 import std.file : exists, read, write;
 import std.math : cos, sin, sqrt, tan;
@@ -37,6 +38,11 @@ import std.mmfile : MmFile;
 import std.path : buildPath;
 import std.stdio : File, stderr, stdout;
 import std.string : toStringz;
+
+// Embedded at build time; compile from the app directory with -J=.
+private enum string CubeVertexSpirv = import("shaders3d/cube.vert.spv");
+private enum string CubeFragmentSpirv = import("shaders3d/cube.frag.spv");
+private string gShaderDir;
 
 enum int Width = 1920;
 enum int Height = 1080;
@@ -271,6 +277,8 @@ extern(System) alias CmdCopyImage = void function(VkCommandBuffer, VkImage, int,
 extern(Windows) alias WndProc = LRESULT function(HWND, UINT, WPARAM, LPARAM);
 
 private __gshared HWND gChildWindow;
+private __gshared bool gWindowClosed;
+private __gshared bool gStandaloneWindow;
 
 private final class App
 {
@@ -688,23 +696,25 @@ private final class App
             "creating the 3D framebuffer");
     }
 
-    private VkShaderModule shader(string path)
+    private VkShaderModule shader(string embedded, string name)
     {
-        auto bytes = cast(ubyte[]) read(path);
+        const(ubyte)[] bytes = cast(const(ubyte)[]) embedded;
+        if (gShaderDir.length != 0)
+            bytes = cast(const(ubyte)[]) read(buildPath(gShaderDir, name));
         VkShaderModuleCreateInfo info;
         info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         info.codeSize = bytes.length;
         info.pCode = cast(const(uint)*) bytes.ptr;
         VkShaderModule shaderModule;
         check(vk.vkCreateShaderModule(device, &info, null, &shaderModule),
-            "creating shader module " ~ path);
+            "creating shader module " ~ name);
         return shaderModule;
     }
 
     private void createPipeline()
     {
-        auto vertex = shader("cube.vert.spv");
-        auto fragment = shader("cube.frag.spv");
+        auto vertex = shader(CubeVertexSpirv, "cube.vert.spv");
+        auto fragment = shader(CubeFragmentSpirv, "cube.frag.spv");
         VkPipelineShaderStageCreateInfo[2] stages;
         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -970,7 +980,8 @@ private final class App
         if (!GetCursorPos(&cursor)) return;
         POINT local = cursor;
         ScreenToClient(mouseWindow, &local);
-        const bool inRender = local.x >= 0 && local.y >= 32 &&
+        const int renderTop = gStandaloneWindow ? 0 : 32;
+        const bool inRender = local.x >= 0 && local.y >= renderTop &&
             local.x < client.right && local.y < client.bottom;
         if (keyDown(0x5B) || keyDown(0x5C) || keyDown(0x1B))
         {
@@ -1006,9 +1017,11 @@ private final class App
         return result;
     }
 
-    private float[16] matrix(double seconds)
+    private float[16] matrix(double seconds, uint width, uint height)
     {
-        const aspect = cast(float) Width / Height;
+        const aspect = height != 0
+            ? cast(float) width / height
+            : cast(float) Width / Height;
         const f = 1.0f / cast(float) tan(3.14159265358979323846 / 6.0);
         const near = 0.1f;
         const far = 100.0f;
@@ -1105,7 +1118,7 @@ private final class App
         vk.vkCmdBindVertexBuffers(commands, 0, 1, &vertexBuffer, &offset);
         vk.vkCmdBindIndexBuffer(commands, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
         updateCamera(seconds, 0);
-        auto matrix = this.matrix(seconds);
+        auto matrix = this.matrix(seconds, Width, Height);
         pushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
             0, 64, &matrix);
         vk.vkCmdDrawIndexed(commands, indexCount, 1, 0, 0, 0);
@@ -1260,7 +1273,7 @@ private final class App
                 updateMouse();
             updateCamera(frame / 60.0, dt);
 
-            auto matrix = this.matrix(frame / 60.0);
+            auto matrix = this.matrix(frame / 60.0, Width, Height);
             pushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
                 0, 64, &matrix);
             vk.vkCmdDrawIndexed(commands, indexCount, 1, 0, 0, 0);
@@ -1339,11 +1352,27 @@ private final class App
         }
     }
 
+    private VkExtent2D targetExtent()
+    {
+        VkExtent2D target;
+        target.width = extent.width != 0 && extent.width < Width
+            ? extent.width : Width;
+        target.height = extent.height != 0 && extent.height < Height
+            ? extent.height : Height;
+        return target;
+    }
+
     private void presentFrame(double seconds)
     {
+        const target = targetExtent();
         uint imageIndex;
         auto acquired = vk.vkAcquireNextImageKHR(device, swapchain, ulong.max,
             acquireSemaphore, VK_NULL_HANDLE, &imageIndex);
+        if (acquired == VK_ERROR_OUT_OF_DATE_KHR)
+        {
+            recreateSwapchain();
+            return;
+        }
         if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
             check(acquired, "acquiring a child swapchain image");
         vk.vkResetFences(device, 1, &fence);
@@ -1360,20 +1389,20 @@ private final class App
         pass.renderPass = renderPass;
         pass.framebuffer = framebuffer;
         pass.renderArea = VkRect2D(VkOffset2D(0, 0),
-            VkExtent2D(Width, Height));
+            VkExtent2D(target.width, target.height));
         pass.clearValueCount = 2;
         pass.pClearValues = clears.ptr;
         vk.vkCmdBeginRenderPass(commands, &pass, 1);
         vk.vkCmdBindPipeline(commands, 0, pipeline);
-        VkViewport viewport = VkViewport(0, 0, Width, Height, 0, 1);
+        VkViewport viewport = VkViewport(0, 0, target.width, target.height, 0, 1);
         VkRect2D scissor = VkRect2D(VkOffset2D(0, 0),
-            VkExtent2D(Width, Height));
+            VkExtent2D(target.width, target.height));
         vk.vkCmdSetViewport(commands, 0, 1, &viewport);
         vk.vkCmdSetScissor(commands, 0, 1, &scissor);
         VkDeviceSize offset = 0;
         vk.vkCmdBindVertexBuffers(commands, 0, 1, &vertexBuffer, &offset);
         vk.vkCmdBindIndexBuffer(commands, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-        auto matrix = this.matrix(seconds);
+        auto matrix = this.matrix(seconds, target.width, target.height);
         pushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
             0, 64, &matrix);
         vk.vkCmdDrawIndexed(commands, indexCount, 1, 0, 0, 0);
@@ -1414,9 +1443,7 @@ private final class App
         region.dstSubresource = region.srcSubresource;
         region.srcOffset = VkOffset3D(0, 0, 0);
         region.dstOffset = VkOffset3D(0, 0, 0);
-        const copyWidth = Width < extent.width ? Width : extent.width;
-        const copyHeight = Height < extent.height ? Height : extent.height;
-        region.extent = VkExtent3D(copyWidth, copyHeight, 1);
+        region.extent = VkExtent3D(target.width, target.height, 1);
         copyImage(commands, colorImage, 6, swapImages[imageIndex], 7, 1,
             &region);
         swapBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -1473,6 +1500,21 @@ private final class App
             GetCurrentProcessId(), " frames=", frames);
         stdout.flush();
     }
+
+    void presentStandalone()
+    {
+        stdout.writeln("vulkan3d: standalone window start"); stdout.flush();
+        ulong frame;
+        while (!gWindowClosed && IsWindow(gChildWindow))
+        {
+            presentFrame(frame / 60.0);
+            ++frame;
+            Thread.sleep(16.msecs);
+        }
+        vk.vkDeviceWaitIdle(device);
+        stdout.writeln("PASS Vulkan 3D standalone window frames=", frame);
+        stdout.flush();
+    }
 }
 
 private void put(T)(ubyte[] data, size_t offset, T value)
@@ -1511,6 +1553,20 @@ private extern(Windows) nothrow LRESULT childWindowProc(HWND window,
     return DefWindowProcA(window, message, wParam, lParam);
 }
 
+private extern(Windows) nothrow LRESULT standaloneWindowProc(HWND window,
+    UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+        case WM_CLOSE:
+        case WM_DESTROY:
+            gWindowClosed = true;
+            return 0;
+        default:
+            return DefWindowProcA(window, message, wParam, lParam);
+    }
+}
+
 void main(string[] args)
 {
     version (Windows)
@@ -1519,12 +1575,13 @@ void main(string[] args)
             SetProcessDPIAware();
         SetThreadDpiAwarenessContext(cast(void*) cast(intptr_t) -4);
     }
-    string shaderDir = ".";
+    string shaderDir;
     string output = "vulkan3d.ppm";
     string surfaceOutput;
     string hostTitle;
     double seconds = 0.7;
     bool animate;
+    bool offscreen;
     bool testMotion;
     bool extremeMotion;
     for (size_t i = 0; i < args.length; ++i)
@@ -1541,18 +1598,24 @@ void main(string[] args)
             seconds = to!double(args[++i]);
         else if (args[i] == "--animate")
             animate = true;
+        else if (args[i] == "--render")
+            offscreen = true;
         else if (args[i] == "--test-motion")
             testMotion = true;
         else if (args[i] == "--extreme-motion")
             extremeMotion = true;
     }
-    if (!exists(buildPath(shaderDir, "cube.vert.spv")))
-        throw new Exception("missing cube.vert.spv in " ~ shaderDir);
-    version (Windows)
+    if (shaderDir.length != 0)
     {
-        import core.sys.windows.windows : SetCurrentDirectoryA;
-        SetCurrentDirectoryA(toStringz(shaderDir));
+        if (!exists(buildPath(shaderDir, "cube.vert.spv")))
+            throw new Exception("missing cube.vert.spv in " ~ shaderDir);
+        version (Windows)
+        {
+            import core.sys.windows.windows : SetCurrentDirectoryA;
+            SetCurrentDirectoryA(toStringz(shaderDir));
+        }
     }
+    gShaderDir = shaderDir;
     if (hostTitle.length != 0)
     {
         auto parent = FindWindowA(null, toStringz(hostTitle));
@@ -1583,6 +1646,26 @@ void main(string[] args)
                 0x0004 | 0x0040);
         }
     }
+    else if (!animate && surfaceOutput.length == 0 && !offscreen &&
+        output == "vulkan3d.ppm")
+    {
+        HINSTANCE instanceHandle = GetModuleHandleA(null);
+        WNDCLASSA windowClass;
+        windowClass.lpfnWndProc = &standaloneWindowProc;
+        windowClass.hInstance = instanceHandle;
+        windowClass.hCursor = LoadCursorA(null, cast(const(char)*) 32512);
+        windowClass.lpszClassName = toStringz("AuroraVk3DStandalone");
+        RegisterClassA(&windowClass);
+        gStandaloneWindow = true;
+        gChildWindow = CreateWindowExA(0, toStringz("AuroraVk3DStandalone"),
+            toStringz("Marching Cubes Terrain"),
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE, 80, 80, 1280, 720,
+            null, null, instanceHandle, null);
+        if (gChildWindow is null)
+            throw new Exception("cannot create the standalone window");
+        ShowWindow(gChildWindow, SW_SHOW);
+        SetForegroundWindow(gChildWindow);
+    }
     auto app = new App();
     timeBeginPeriod(1);
     scope(exit) timeEndPeriod(1);
@@ -1595,6 +1678,9 @@ void main(string[] args)
         app.present(cast(int) seconds);
     else if (animate && surfaceOutput.length != 0)
         app.renderAnimated(surfaceOutput, cast(int) seconds);
-    else
+    else if (offscreen || output != "vulkan3d.ppm" ||
+        surfaceOutput.length != 0)
         app.render(output, surfaceOutput, seconds);
+    else
+        app.presentStandalone();
 }

@@ -78,7 +78,7 @@ def main():
         if not wait_for_surface():
             raise RuntimeError("surface did not appear")
         host = subprocess.Popen(
-            [str(HOST), "--run", str(SCENE)],
+            [str(HOST), "--run", str(SCENE), "--maximized", "--no-activate"],
             cwd=str(HOST.parent),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -88,11 +88,9 @@ def main():
             raise RuntimeError("host window did not appear")
         time.sleep(0.5)
         for _ in range(10):
-            user32.ShowWindow(hwnd, SW_MAXIMIZE)
-            user32.SetForegroundWindow(hwnd)
-            time.sleep(0.2)
             if user32.IsZoomed(hwnd):
                 break
+            time.sleep(0.2)
         if not user32.IsZoomed(hwnd):
             raise RuntimeError("host window did not maximize")
         print("maximized=True", flush=True)
