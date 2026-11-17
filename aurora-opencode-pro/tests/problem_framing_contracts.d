@@ -16,6 +16,10 @@ void main()
     const contract = answerContract("Make the agent sharper", "");
     assert(contract.length < 600, "Per-response footer duplicated global policy");
     assert(contract.indexOf("corrections") >= 0);
+    assert(contract.indexOf("Do not hand back a build for the user to run") >= 0,
+        "Implementation work can still be handed back for the user to launch");
+    assert(answerContract("Why does the provider stall?", "").indexOf("Do not hand back a build") < 0,
+        "Diagnosis footer duplicated the implementation delivery rule");
     writeln("MEASURE system_prompt_bytes=",prompt.length," answer_footer_bytes=",contract.length);
     writeln("PASS scoped workflow without framing deferrals or repeated global policy");
 }

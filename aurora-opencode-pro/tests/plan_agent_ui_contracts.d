@@ -67,6 +67,16 @@ int main()
         "The stale-step rule is missing");
     assert(prompt.indexOf("Follow the steps in order") < 0,
         "The prompt still mandates rigid step order");
+    assert(prompt.indexOf("requested outcome as the destination") >= 0,
+        "The prompt does not separate the user-visible outcome from an internal milestone");
+    assert(prompt.indexOf("real window, real input, maximized size") >= 0,
+        "The prompt does not require exercising the user's actual path");
+    assert(prompt.indexOf("synthetic event is narrow evidence") >= 0,
+        "The prompt does not distinguish narrow checks from user-visible behavior");
+    assert(prompt.indexOf("reported failure authorizes diagnosing") >= 0,
+        "The prompt does not authorize resolving a reported failure");
+    assert(prompt.indexOf("do not stop for the user to run") >= 0,
+        "The prompt still allows handing routine execution back to the user");
     assert(prompt.indexOf("Never end with a question, an offer") >= 0,
         "The closing-offer prohibition is missing");
 
