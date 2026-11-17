@@ -15,6 +15,7 @@ area and scales the native frame into the flexed logical surface.
 - Hover the render area — cursor stays visible
 - Click the render area to capture — mouse look, cursor hidden
 - `Windows` or `Escape` — release the mouse for titlebar/maximize use
+- `F1` — toggle the information panel in the upper-right corner
 - Left/Right arrows — turn
 - Up/Down arrows — look up/down
 
@@ -25,6 +26,9 @@ render area to capture again. While captured, the host hides the regular
 cursor; releasing shows it again.
 Camera movement uses frame-delta timing with acceleration and damping, and the
 camera height follows the terrain smoothly.
+
+The upper-right information panel shows the frame rate, camera position, and
+control hints. Press `F1` to hide or show it.
 
 ## Build
 

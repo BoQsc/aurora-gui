@@ -15,6 +15,8 @@ private extern(Windows) uint timeBeginPeriod(uint);
 private extern(Windows) uint timeEndPeriod(uint);
 
 import aurora.vulkan.api;
+import aurora.font : GlyphAdvance, GlyphHeight, GlyphWidth, LineAdvance,
+    glyphBits, glyphPixel;
 import mcmesh : MeshData, MeshVertex, buildTerrainMesh, terrainHeight;
 
 import core.stdc.string : memcpy;
@@ -33,6 +35,7 @@ import core.sys.windows.windows : CreateWindowExA, DefWindowProcA, DispatchMessa
     WNDCLASSA, WPARAM, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE;
 import std.conv : to;
 import std.file : exists, read, write;
+import std.format : format;
 import std.math : cos, sin, sqrt, tan;
 import std.mmfile : MmFile;
 import std.path : buildPath;
@@ -51,6 +54,9 @@ enum int DepthFormat = 126; // VK_FORMAT_D32_SFLOAT
 enum int EventBytes = 24;
 enum int EventCapacity = 64;
 enum int SurfaceHeader = 80;
+private enum int MaxHudVertices = 32768;
+private enum int MaxHudIndices = 49152;
+private enum int HudScale = 2;
 
 private struct AnimatedSurface
 {
@@ -308,6 +314,21 @@ private final class App
     uint indexCount;
     VkBuffer readBuffer;
     VkDeviceMemory readMemory;
+    VkPipeline hudPipeline;
+    VkBuffer hudVertexBuffer;
+    VkDeviceMemory hudVertexMemory;
+    VkBuffer hudIndexBuffer;
+    VkDeviceMemory hudIndexMemory;
+    uint hudIndexCount;
+    bool hudVisible = true;
+    bool hudToggleDown;
+    bool hudDirty = true;
+    bool hudClockStarted;
+    uint hudWidth;
+    uint hudHeight;
+    uint hudFrameCount;
+    double hudFps = 60;
+    MonoTime hudLastUpdate;
     CmdPushConstants pushConstants;
     CmdCopyImageToBuffer copyImageToBuffer;
     CmdCopyImage copyImage;
@@ -452,8 +473,11 @@ private final class App
         if (gChildWindow !is null) { stdout.writeln("vulkan3d: render pass"); stdout.flush(); }
         createPipeline();
         if (gChildWindow !is null) { stdout.writeln("vulkan3d: pipeline"); stdout.flush(); }
+        createHudPipeline();
+        if (gChildWindow !is null) { stdout.writeln("vulkan3d: hud pipeline"); stdout.flush(); }
         auto mesh = buildTerrainMesh();
         createBuffers(mesh);
+        createHudBuffers();
         camZ = 40;
         camY = terrainHeight(camX, camZ) + 2.26;
         if (gChildWindow !is null) { stdout.writeln("vulkan3d: buffers"); stdout.flush(); }
@@ -809,6 +833,234 @@ private final class App
         info.basePipelineIndex = -1;
         check(vk.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info,
             null, &pipeline), "creating the 3D pipeline");
+    }
+
+    private void createHudPipeline()
+    {
+        auto vertex = shader(CubeVertexSpirv, "cube.vert.spv");
+        auto fragment = shader(CubeFragmentSpirv, "cube.frag.spv");
+        VkPipelineShaderStageCreateInfo[2] stages;
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module_ = vertex;
+        stages[0].pName = toStringz("main");
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module_ = fragment;
+        stages[1].pName = toStringz("main");
+
+        VkVertexInputBindingDescription binding;
+        binding.binding = 0;
+        binding.stride = 24;
+        binding.inputRate = 0;
+        VkVertexInputAttributeDescription[2] attributes;
+        attributes[0].location = 0;
+        attributes[0].binding = 0;
+        attributes[0].format = 106; // R32G32B32_SFLOAT
+        attributes[0].offset = 0;
+        attributes[1].location = 1;
+        attributes[1].binding = 0;
+        attributes[1].format = 106;
+        attributes[1].offset = 12;
+        VkPipelineVertexInputStateCreateInfo vertexInput;
+        vertexInput.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInput.vertexBindingDescriptionCount = 1;
+        vertexInput.pVertexBindingDescriptions = &binding;
+        vertexInput.vertexAttributeDescriptionCount = 2;
+        vertexInput.pVertexAttributeDescriptions = attributes.ptr;
+        VkPipelineInputAssemblyStateCreateInfo assembly;
+        assembly.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        assembly.topology = 3;
+        int[2] dynamicStates = [VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR];
+        VkPipelineDynamicStateCreateInfo dynamicState;
+        dynamicState.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamicState.dynamicStateCount = 2;
+        dynamicState.pDynamicStates = dynamicStates.ptr;
+        VkPipelineViewportStateCreateInfo viewportState;
+        viewportState.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo raster;
+        raster.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        raster.polygonMode = 0;
+        raster.cullMode = 0;
+        raster.frontFace = 1;
+        raster.lineWidth = 1;
+        VkPipelineMultisampleStateCreateInfo multisample;
+        multisample.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisample.rasterizationSamples = 1;
+        VkPipelineColorBlendAttachmentState blendAttachment;
+        blendAttachment.colorWriteMask = 0xf;
+        VkPipelineColorBlendStateCreateInfo blend;
+        blend.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        blend.attachmentCount = 1;
+        blend.pAttachments = &blendAttachment;
+        DepthState depth;
+        depth.sType = 46;
+        depth.depthTestEnable = 0;
+        depth.depthWriteEnable = 0;
+        VkGraphicsPipelineCreateInfo info;
+        info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        info.stageCount = 2;
+        info.pStages = stages.ptr;
+        info.pVertexInputState = &vertexInput;
+        info.pInputAssemblyState = &assembly;
+        info.pViewportState = &viewportState;
+        info.pRasterizationState = &raster;
+        info.pMultisampleState = &multisample;
+        info.pDepthStencilState = &depth;
+        info.pColorBlendState = &blend;
+        info.pDynamicState = &dynamicState;
+        info.layout = pipelineLayout;
+        info.renderPass = renderPass;
+        info.subpass = 0;
+        info.basePipelineIndex = -1;
+        check(vk.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info,
+            null, &hudPipeline), "creating the HUD pipeline");
+    }
+
+    private void createHudBuffers()
+    {
+        createBuffer(hudVertexBuffer, hudVertexMemory,
+            cast(VkDeviceSize) MaxHudVertices * MeshVertex.sizeof,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        createBuffer(hudIndexBuffer, hudIndexMemory,
+            cast(VkDeviceSize) MaxHudIndices * uint.sizeof,
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    }
+
+    private void uploadHud(MeshVertex[] vertices, uint[] indices)
+    {
+        if (vertices.length > MaxHudVertices ||
+            indices.length > MaxHudIndices)
+        {
+            hudIndexCount = 0;
+            return;
+        }
+        hudIndexCount = cast(uint) indices.length;
+        if (vertices.length != 0)
+            upload(hudVertexMemory, vertices);
+        if (indices.length != 0)
+            upload(hudIndexMemory, indices);
+    }
+
+    private float[16] hudMatrix(uint width, uint height)
+    {
+        float[16] result;
+        result[] = 0;
+        if (width == 0 || height == 0) return result;
+        result[0] = 2.0f / width;
+        result[5] = 2.0f / height;
+        result[10] = 1.0f;
+        result[12] = -1.0f;
+        result[13] = -1.0f;
+        result[15] = 1.0f;
+        return result;
+    }
+
+    private void hudQuad(ref MeshVertex[] vertices, ref uint[] indices,
+        float x0, float y0, float x1, float y1, float r, float g, float b)
+    {
+        const uint base = cast(uint) vertices.length;
+        vertices ~= MeshVertex(x0, y0, 0, r, g, b);
+        vertices ~= MeshVertex(x1, y0, 0, r, g, b);
+        vertices ~= MeshVertex(x1, y1, 0, r, g, b);
+        vertices ~= MeshVertex(x0, y1, 0, r, g, b);
+        indices ~= [base, base + 1, base + 2, base, base + 2, base + 3];
+    }
+
+    private void updateHudToggle()
+    {
+        const bool down = keyDown(0x70); // F1
+        const bool focused = !gStandaloneWindow ||
+            GetForegroundWindow() == gChildWindow;
+        if (focused && down && !hudToggleDown)
+        {
+            hudVisible = !hudVisible;
+            hudDirty = true;
+        }
+        hudToggleDown = down;
+    }
+
+    private void updateHud(uint width, uint height)
+    {
+        MeshVertex[] vertices;
+        uint[] indices;
+        if (!hudVisible || width == 0 || height == 0)
+        {
+            hudIndexCount = 0;
+            return;
+        }
+        string[] lines = [
+            "TERRAIN INFO",
+            format("FPS %.0f", hudFps),
+            format("X %.1f  Z %.1f", camX, camZ),
+            format("Y %.1f  YAW %.2f", camY, camYaw),
+            "WASD MOVE  SHIFT SPRINT",
+            "CLICK LOOK  ESC RELEASE",
+            "F1 HIDE INFO"
+        ];
+        size_t maxLine;
+        foreach (line; lines)
+            if (line.length > maxLine) maxLine = line.length;
+        const float margin = 12;
+        const float padding = 12;
+        float panelWidth = cast(float) maxLine * GlyphAdvance * HudScale +
+            padding * 2;
+        const float available = cast(float) width - margin * 2;
+        if (panelWidth > available) panelWidth = available;
+        const float lineStep = cast(float) LineAdvance * HudScale + 4;
+        const float panelHeight =
+            cast(float) lines.length * lineStep + padding * 2;
+        float panelX = cast(float) width - panelWidth - margin;
+        if (panelX < margin) panelX = margin;
+        const float panelY = margin;
+        hudQuad(vertices, indices, panelX, panelY, panelX + panelWidth,
+            panelY + panelHeight, 0.018f, 0.035f, 0.065f);
+        const float border = 2;
+        hudQuad(vertices, indices, panelX, panelY, panelX + panelWidth,
+            panelY + border, 0.12f, 0.32f, 0.48f);
+        hudQuad(vertices, indices, panelX, panelY + panelHeight - border,
+            panelX + panelWidth, panelY + panelHeight, 0.12f, 0.32f, 0.48f);
+        hudQuad(vertices, indices, panelX, panelY, panelX + border,
+            panelY + panelHeight, 0.12f, 0.32f, 0.48f);
+        hudQuad(vertices, indices, panelX + panelWidth - border, panelY,
+            panelX + panelWidth, panelY + panelHeight, 0.12f, 0.32f, 0.48f);
+        float y = panelY + padding;
+        foreach (lineIndex, line; lines)
+        {
+            float x = panelX + padding;
+            const bool title = lineIndex == 0;
+            const bool hint = lineIndex >= 4;
+            const float r = title ? 0.35f : hint ? 0.62f : 0.86f;
+            const float g = title ? 0.85f : hint ? 0.78f : 0.94f;
+            const float b = title ? 1.0f : hint ? 0.88f : 1.0f;
+            foreach (ch; line)
+            {
+                if (ch != ' ')
+                {
+                    const glyph = glyphBits(ch);
+                    foreach (gy; 0 .. GlyphHeight)
+                        foreach (gx; 0 .. GlyphWidth)
+                            if (glyphPixel(glyph, gx, gy))
+                                hudQuad(vertices, indices,
+                                    x + gx * HudScale, y + gy * HudScale,
+                                    x + (gx + 1) * HudScale,
+                                    y + (gy + 1) * HudScale, r, g, b);
+                }
+                x += GlyphAdvance * HudScale;
+            }
+            y += lineStep;
+        }
+        uploadHud(vertices, indices);
     }
 
     private void createBuffer(ref VkBuffer buffer, ref VkDeviceMemory memory,
@@ -1398,6 +1650,34 @@ private final class App
     private void presentFrame(double seconds)
     {
         const target = targetExtent();
+        updateHudToggle();
+        const now = MonoTime.currTime;
+        if (!hudClockStarted)
+        {
+            hudLastUpdate = now;
+            hudClockStarted = true;
+        }
+        ++hudFrameCount;
+        const double hudElapsed =
+            (now - hudLastUpdate).total!"usecs" / 1000000.0;
+        if (hudElapsed >= 0.5)
+        {
+            hudFps = hudFrameCount / hudElapsed;
+            hudFrameCount = 0;
+            hudLastUpdate = now;
+            hudDirty = true;
+        }
+        if (hudWidth != target.width || hudHeight != target.height)
+        {
+            hudWidth = target.width;
+            hudHeight = target.height;
+            hudDirty = true;
+        }
+        if (hudDirty)
+        {
+            updateHud(target.width, target.height);
+            hudDirty = false;
+        }
         uint imageIndex;
         auto acquired = vk.vkAcquireNextImageKHR(device, swapchain, ulong.max,
             acquireSemaphore, VK_NULL_HANDLE, &imageIndex);
@@ -1441,6 +1721,25 @@ private final class App
         pushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
             0, 64, &matrix);
         vk.vkCmdDrawIndexed(commands, indexCount, 1, 0, 0, 0);
+        if (hudVisible && hudIndexCount != 0)
+        {
+            VkViewport hudViewport = VkViewport(0, 0, target.width,
+                target.height, 0, 1);
+            VkRect2D hudScissor = VkRect2D(VkOffset2D(0, 0),
+                VkExtent2D(target.width, target.height));
+            vk.vkCmdSetViewport(commands, 0, 1, &hudViewport);
+            vk.vkCmdSetScissor(commands, 0, 1, &hudScissor);
+            vk.vkCmdBindPipeline(commands, 0, hudPipeline);
+            VkDeviceSize hudOffset = 0;
+            vk.vkCmdBindVertexBuffers(commands, 0, 1, &hudVertexBuffer,
+                &hudOffset);
+            vk.vkCmdBindIndexBuffer(commands, hudIndexBuffer, 0,
+                VK_INDEX_TYPE_UINT32);
+            auto hudMvp = hudMatrix(target.width, target.height);
+            pushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
+                0, 64, &hudMvp);
+            vk.vkCmdDrawIndexed(commands, hudIndexCount, 1, 0, 0, 0);
+        }
         vk.vkCmdEndRenderPass(commands);
 
         VkImageMemoryBarrier colorBarrier;
