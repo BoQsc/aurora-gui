@@ -321,6 +321,7 @@ private final class App
     VkDeviceMemory hudIndexMemory;
     uint hudIndexCount;
     bool hudVisible = true;
+    bool hudTrace;
     bool hudToggleDown;
     bool hudDirty = true;
     bool hudClockStarted;
@@ -549,8 +550,29 @@ private final class App
         info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
         info.preTransform = capabilities.currentTransform;
         info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        uint presentModeCount;
+        check(vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface,
+            &presentModeCount, null), "counting present modes");
+        auto presentModes = new int[presentModeCount];
+        check(vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface,
+            &presentModeCount, presentModes.ptr), "reading present modes");
         info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+        foreach (mode; presentModes)
+            if (mode == VK_PRESENT_MODE_IMMEDIATE_KHR)
+            {
+                info.presentMode = mode;
+                break;
+            }
+        if (info.presentMode == VK_PRESENT_MODE_FIFO_KHR)
+            foreach (mode; presentModes)
+                if (mode == VK_PRESENT_MODE_MAILBOX_KHR)
+                {
+                    info.presentMode = mode;
+                    break;
+                }
         info.clipped = 1;
+        stdout.writeln("vulkan3d: present mode ", cast(int) info.presentMode);
+        stdout.flush();
         stdout.writeln("vulkan3d: creating swapchain ", extent.width, "x",
             extent.height); stdout.flush();
         if (vk.vkCreateSwapchainKHR is null)
@@ -1597,7 +1619,7 @@ private final class App
             const renderDone = MonoTime.currTime;
             presenter.submit(readData, mouseCaptured);
             const publishDone = MonoTime.currTime;
-            const target = 1.0 / 61.0;
+            const target = 1.0 / 64.0;
             while (true)
             {
                 const elapsed = (MonoTime.currTime - frameStart)
@@ -1666,6 +1688,11 @@ private final class App
             hudFrameCount = 0;
             hudLastUpdate = now;
             hudDirty = true;
+            if (hudTrace)
+            {
+                stdout.writeln("hud fps=", hudFps);
+                stdout.flush();
+            }
         }
         if (hudWidth != target.width || hudHeight != target.height)
         {
@@ -1826,8 +1853,22 @@ private final class App
         foreach (frame; 0 .. frames)
         {
             if (frame == 0) { stdout.writeln("vulkan3d: frame 1"); stdout.flush(); }
+            const frameStart = MonoTime.currTime;
             presentFrame(frame / 60.0);
-            Thread.sleep(16.msecs);
+            const target = 1.0 / 64.0;
+            while (true)
+            {
+                const elapsed = (MonoTime.currTime - frameStart)
+                    .total!"usecs" / 1000000.0;
+                if (elapsed >= target) break;
+                const remaining = target - elapsed;
+                if (remaining > 0.002)
+                    Thread.sleep((cast(long) ((remaining - 0.002) * 1000.0))
+                        .msecs);
+                else
+                    do {} while ((MonoTime.currTime - frameStart)
+                        .total!"usecs" < cast(long) (target * 1000000.0));
+            }
         }
         vk.vkDeviceWaitIdle(device);
         stdout.writeln("PASS Vulkan 3D child swapchain hostPid=",
@@ -1847,6 +1888,7 @@ private final class App
                 Thread.sleep(16.msecs);
                 continue;
             }
+            const frameStart = MonoTime.currTime;
             presentFrame(frame / 60.0);
             if ((frame % 30) == 0)
             {
@@ -1855,7 +1897,20 @@ private final class App
                 stdout.flush();
             }
             ++frame;
-            Thread.sleep(16.msecs);
+            const target = 1.0 / 64.0;
+            while (true)
+            {
+                const elapsed = (MonoTime.currTime - frameStart)
+                    .total!"usecs" / 1000000.0;
+                if (elapsed >= target) break;
+                const remaining = target - elapsed;
+                if (remaining > 0.002)
+                    Thread.sleep((cast(long) ((remaining - 0.002) * 1000.0))
+                        .msecs);
+                else
+                    do {} while ((MonoTime.currTime - frameStart)
+                        .total!"usecs" < cast(long) (target * 1000000.0));
+            }
         }
         vk.vkDeviceWaitIdle(device);
         stdout.writeln("PASS Vulkan 3D standalone window frames=", frame);
@@ -1930,6 +1985,7 @@ void main(string[] args)
     bool offscreen;
     bool testMotion;
     bool extremeMotion;
+    bool hudTrace;
     for (size_t i = 0; i < args.length; ++i)
     {
         if (args[i] == "--shaders" && i + 1 < args.length)
@@ -1950,6 +2006,8 @@ void main(string[] args)
             testMotion = true;
         else if (args[i] == "--extreme-motion")
             extremeMotion = true;
+        else if (args[i] == "--trace-hud")
+            hudTrace = true;
     }
     if (shaderDir.length != 0)
     {
@@ -2021,6 +2079,7 @@ void main(string[] args)
     SetThreadPriority(GetCurrentThread(), 15);
     app.testMotion = testMotion;
     app.extremeMotion = extremeMotion;
+    app.hudTrace = hudTrace;
     app.mouseTitle = "Marching Cubes Terrain";
     if (hostTitle.length != 0)
         app.present(cast(int) seconds);
