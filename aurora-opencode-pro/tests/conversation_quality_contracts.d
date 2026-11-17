@@ -34,8 +34,11 @@ void request(ref ChatSession s, string text)
     append(s, "user", text); acceptTaskRequest(s, text, s.activeLeafId);
 }
 
-int main()
+int main(string[] args)
 {
+    import auroraopencode.tools : runFilesystemHelperMode;
+    const helper = runFilesystemHelperMode(args);
+    if (helper >= 0) return helper;
     environment["AURORA_STRICT_PLAN"] = "0";
     setStrictPlanSetting(false);
     scope(exit) setStrictPlanSetting(false);
