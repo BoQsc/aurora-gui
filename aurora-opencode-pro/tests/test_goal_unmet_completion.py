@@ -5,9 +5,13 @@ goal_complete with a summary saying the goal was "found unmet" / "a critical
 failure". That was accepted, the goal became completed, and automatic
 continuation stopped with the requested outcome still missing.
 
-This fixture drives the real headless loop: the model plans, does the work,
+This fixture drives the real headless loop: the model plans, does the work and
+runs an actual check (process tools only, so no filesystem host is involved),
 tries to close the goal as unmet (which must be refused with an error), then
 completes it with the achieved result.
+
+Run it standalone against a built executable; the app's own verify step cannot
+host the nested process tools this fixture drives.
 """
 import argparse
 import hashlib
@@ -52,25 +56,30 @@ class Provider(http.server.BaseHTTPRequestHandler):
             content = "FIXTURE_FAILED"
         elif "plan" not in results:
             tool = ("plan", "update_plan", {"plan": [
-                {"id": "deliver", "step": "Write the deployment note", "kind": "edit", "status": "in_progress"}]})
-        elif "save-note" not in results:
-            tool = ("save-note", "write", {"filePath": "deployment.md", "content": "Environment: staging"})
+                {"id": "deliver", "step": "Calculate the deployment total", "kind": "edit", "status": "in_progress"}]})
+        elif "run-calc" not in results:
+            tool = ("run-calc", "run", {"program": "python",
+                "args": ["-c", "open('total.txt', 'w').write('42')"]})
         elif "complete-plan" not in results:
             tool = ("complete-plan", "update_plan", {"plan_mode": "patch", "plan": [
-                {"id": "deliver", "status": "completed", "evidence": ["save-note"]}]})
+                {"id": "deliver", "status": "completed", "evidence": ["run-calc"]}]})
+        elif "check" not in results:
+            tool = ("check", "verify", {"inputs": ["total.txt"], "steps": [{"kind": "tests",
+                "command": {"program": "python", "args": ["-c", "assert open('total.txt').read() == '42'"]}}]})
         elif "failed-close" not in results:
             tool = ("failed-close", "goal_complete", {
                 "summary": "Strict deployment goal audited and found unmet: the requested outcome is not achieved.",
-                "evidence": ["save-note"]})
+                "evidence": ["run-calc"]})
         elif "complete-goal" not in results:
             if "unmet or failed" not in results["failed-close"]:
                 failures.append("An unmet goal summary was accepted as completion: " + results["failed-close"])
             tool = ("complete-goal", "goal_complete", {
-                "summary": "Saved deployment.md for staging.", "evidence": ["save-note"]})
+                "summary": "Calculated and published the deployment total: 42.",
+                "evidence": ["run-calc", "check"]})
         else:
             if "Error:" in results["complete-goal"]:
                 failures.append(results["complete-goal"])
-            content = "Saved deployment.md for staging."
+            content = "The calculated deployment total is 42."
         delta = {"content": content}
         if tool:
             identity, name, arguments = tool
@@ -105,14 +114,13 @@ state.mkdir(parents=True)
 started = time.monotonic()
 try:
     result = subprocess.run([str(args.executable.resolve()), "--headless-loop-json"],
-                            input="/goal Write deployment.md for the final deployment environment.\nexit\n",
+                            input="/goal Publish the calculated deployment total for the release.\nexit\n",
                             cwd=workspace, env=dict(os.environ, APPDATA=str(directory / "appdata"),
                                                     AURORA_STRICT_PLAN="0"),
-                            capture_output=True, text=True, encoding="utf-8", timeout=120)
+                            capture_output=True, text=True, encoding="utf-8", timeout=180)
     (directory / "process.log").write_text(result.stdout + result.stderr, encoding="utf-8")
     assert result.returncode == 0, (result.returncode, result.stdout, failures)
     assert not failures, failures
-    assert (workspace / "deployment.md").read_text() == "Environment: staging"
     index = json.loads((state / "threads.index.json").read_text(encoding="utf-8"))
     completed = [s for s in index["sessions"] if s.get("goalStatus") == "completed"]
     assert len(completed) == 1, index
@@ -122,6 +130,10 @@ try:
     refused = next(m for m in messages if m.get("toolCallId") == "failed-close")
     assert refused.get("failed") is True, refused
     assert "unmet or failed" in refused["content"], refused
+    calculated = next(m for m in messages if m.get("toolCallId") == "run-calc")
+    assert not calculated.get("failed"), calculated
+    checked = next(m for m in messages if m.get("toolCallId") == "check")
+    assert not checked.get("failed"), checked
     accepted = next(m for m in messages if m.get("toolCallId") == "complete-goal")
     assert not accepted.get("failed"), accepted
     (directory / "result.json").write_text(json.dumps({
