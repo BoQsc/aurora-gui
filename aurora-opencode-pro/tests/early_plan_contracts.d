@@ -15,8 +15,12 @@ import std.process : environment;
 import std.stdio : writeln;
 import std.string : indexOf;
 
-int main()
+int main(string[] args)
 {
+    import auroraopencode.tools : runFilesystemHelperMode;
+    import auroraopencode.planprogress : planProgressMarker, planProgressWindow;
+    const helper = runFilesystemHelperMode(args);
+    if (helper >= 0) return helper;
     environment["AURORA_STRICT_PLAN"] = "0";
     const state = buildPath(tempDir(), "aurora-early-plan-" ~ to!string(MonoTime.currTime.ticks));
     mkdirRecurse(state);
@@ -117,7 +121,11 @@ int main()
     writeln("PASS seven normal reads execute without synthetic planning results");
 
     fresh(); context(12);
-    assert(root.lastUserMessageForTesting().indexOf("Plan progress checkpoint") >= 0 &&
+    // The injected results bypass the post-tool continuation, so drive the
+    // same stale-plan check that path performs before asserting the reminder.
+    assert(root.queueStalePlanGuidanceForTesting(),
+        "The stale-plan check did not queue a reminder");
+    assert(root.lastUserMessageForTesting().indexOf(planProgressMarker) >= 0 &&
         root.lastUserMessageForTesting().indexOf("update_plan") >= 0,
         "A long investigation without a plan received no planning reminder: " ~
         root.lastUserMessageForTesting());
@@ -178,29 +186,36 @@ int main()
     // stale badge is covered by tool_feedback_ui_contracts, which runs with the
     // panel enabled.)
     const usersBefore = root.userMessageCountForTesting();
-    context(4);
-    assert(root.userMessageCountForTesting() == usersBefore, "A short healthy phase still forced plan maintenance");
-    context(5);
-    assert(root.userMessageCountForTesting() == usersBefore,
+    context(planProgressWindow - 1);
+    assert(!root.queueStalePlanGuidanceForTesting(),
         "Plan upkeep arrived before its window");
+    assert(root.userMessageCountForTesting() == usersBefore,
+        "A short healthy phase still forced plan maintenance");
     context(1);
+    assert(root.queueStalePlanGuidanceForTesting(),
+        "A full upkeep window queued no reminder");
     assert(root.userMessageCountForTesting() == usersBefore + 1 &&
-        root.lastUserMessageForTesting().indexOf("Plan upkeep") >= 0,
+        root.lastUserMessageForTesting().indexOf(planProgressMarker) >= 0,
         "A plan that ran a full upkeep window without a refresh received no reminder: " ~
         root.lastUserMessageForTesting());
-    context(9);
-    assert(root.userMessageCountForTesting() == usersBefore + 1, "Plan upkeep repeated inside its window");
+    context(planProgressWindow - 1);
+    assert(!root.queueStalePlanGuidanceForTesting(),
+        "Plan upkeep repeated inside its window");
     context(1);
-    assert(root.userMessageCountForTesting() == usersBefore + 1,
-        "An unchanged work phase received repeated upkeep lectures");
+    assert(root.queueStalePlanGuidanceForTesting(),
+        "A second full window queued no reminder");
+    assert(root.userMessageCountForTesting() == usersBefore + 2,
+        "Plan upkeep did not repeat once per window");
     record(advanced);
     assert(root.toolResultsSincePlanUpdateForTesting() == 0,
         "A refreshed plan kept its stale tool-result count");
     const usersAfterRefresh = root.userMessageCountForTesting();
-    context(9);
-    assert(root.userMessageCountForTesting() == usersAfterRefresh,
+    context(planProgressWindow - 1);
+    assert(!root.queueStalePlanGuidanceForTesting(),
         "A refreshed plan was reminded again too soon");
     context(1);
+    assert(root.queueStalePlanGuidanceForTesting(),
+        "A refreshed plan queued no reminder after a full window");
     assert(root.userMessageCountForTesting() == usersAfterRefresh + 1,
         "A refreshed plan should be reminded again after a full window");
     writeln("PASS a long phase reissues plan upkeep once per window and a refresh clears it");
@@ -208,8 +223,12 @@ int main()
     // A checklist that stays stale past the second window no longer waits for a
     // reminder alone: the next edit batch is deferred once so the plan is
     // checked off before more work, and the retried call then runs.
-    context(10);
-    assert(root.toolResultsSincePlanUpdateForTesting() == 20,
+    enum upkeepGateResults = 20;
+    const upkeepNeeded = upkeepGateResults -
+        root.toolResultsSincePlanUpdateForTesting();
+    assert(upkeepNeeded > 0);
+    context(upkeepNeeded);
+    assert(root.toolResultsSincePlanUpdateForTesting() == upkeepGateResults,
         "the upkeep gate fixture did not reach the second window");
     const gateFile = buildPath(state, "upkeep-gate.md");
     run([OpenCodeToolCall("upkeep_gate_write", "write",
@@ -246,11 +265,12 @@ int main()
     const phaseFile = buildPath(state, "phase.md");
     const beforeEdit = root.userMessageCountForTesting();
     run([OpenCodeToolCall("phase_write", "write", `{"filePath":` ~ JSONValue(phaseFile).toString ~ `,"content":"phase complete"}`)]);
-    assert(root.userMessageCountForTesting() == beforeEdit + 1 &&
-        root.lastUserMessageForTesting().indexOf("Work now includes editing or verification") >= 0);
+    assert(root.userMessageCountForTesting() == beforeEdit,
+        "An edit injected unrelated phase guidance");
     assert(root.taskStepStatusForTesting(0) == "in_progress", "A phase reminder fabricated completion");
     run([readCall(), readCall()]);
-    assert(root.userMessageCountForTesting() == beforeEdit + 1, "Phase guidance repeated without a phase change");
+    assert(root.userMessageCountForTesting() == beforeEdit,
+        "Phase guidance repeated without a phase change");
     auto phaseAdvanced = parseJSON(phasePlan);
     phaseAdvanced["plan"][0]["status"] = "completed";
     phaseAdvanced["plan"][1]["status"] = "in_progress";
@@ -264,12 +284,12 @@ int main()
         `{"program":"python","args":["-u","-B","-m","unittest","test_phase"]}`,
         0, 0, "", null, "unittest");
     assert(root.verificationStatusForTesting() == "passed", "An accepted optional check could not satisfy a recorded verification outcome");
-    assert(root.userMessageCountForTesting() == beforeCheck + 1 &&
-        root.lastUserMessageForTesting().indexOf("Work now includes editing or verification") >= 0);
+    assert(root.userMessageCountForTesting() == beforeCheck,
+        "An accepted check injected unrelated phase guidance");
     foreach (ref step; phaseAdvanced["plan"].array) step["status"] = "completed";
     record(phaseAdvanced.toString());
     foreach (i; 0 .. 3) assert(root.taskStepStatusForTesting(i) == "completed");
-    writeln("PASS editing and accepted verification trigger bounded reconciliation without delaying tools or fabricating ticks");
+    writeln("PASS editing and accepted verification do not delay tools or fabricate plan progress");
 
     fresh();
     record(`{"plan":[{"id":"project","step":"Deliver the document","kind":"edit","status":"in_progress"}]}`);
