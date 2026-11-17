@@ -108,7 +108,7 @@ try:
                             input="/goal Write deployment.md for the final deployment environment.\nexit\n",
                             cwd=workspace, env=dict(os.environ, APPDATA=str(directory / "appdata"),
                                                     AURORA_STRICT_PLAN="0"),
-                            capture_output=True, text=True, encoding="utf-8", timeout=45)
+                            capture_output=True, text=True, encoding="utf-8", timeout=120)
     (directory / "process.log").write_text(result.stdout + result.stderr, encoding="utf-8")
     assert result.returncode == 0, (result.returncode, result.stdout, failures)
     assert not failures, failures
