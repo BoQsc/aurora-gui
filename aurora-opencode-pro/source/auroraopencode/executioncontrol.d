@@ -189,12 +189,29 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
     auto proofs = taskEvidenceIndex(session, false);
     string facts;
     bool[string] completedProofs;
+    bool[string] claimedProofs;
     void outcome(string id, string text, string done, bool complete, const(string)[] evidence)
     {
         if (complete)
         {
+            // One receipt completes one outcome. A new outcome that only
+            // reuses evidence an earlier outcome already claimed is not
+            // progress: counting it changed the recovery fingerprint and reset
+            // the stagnation budget, so repeating a plan entry with borrowed
+            // evidence escaped recovery forever. Ignore the duplicate instead
+            // of certifying it or adding it as remaining work.
+            bool novelEvidence;
+            foreach (proof; evidence)
+                if ((proof in proofs) && !(proof in claimedProofs))
+                    novelEvidence = true;
+            if (evidence.length && !novelEvidence) return;
             ++state.completed;
-            foreach (proof; evidence) if (proof in proofs) completedProofs[proof] = true;
+            foreach (proof; evidence)
+                if (proof in proofs)
+                {
+                    claimedProofs[proof] = true;
+                    completedProofs[proof] = true;
+                }
         }
         else if (state.remaining.length < 1800)
             state.remaining ~= "Outcome: " ~ taskExcerpt(text, 240) ~

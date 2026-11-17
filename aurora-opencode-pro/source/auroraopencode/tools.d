@@ -6645,7 +6645,9 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
         const control = call.name == "calculate" || call.name == "process" || call.name == "tool_status" ||
             call.name == "update_plan" || call.name == "update_subplan" ||
             call.name == "goal_complete" || call.name == "open" ||
-            call.name == "retire_images" || call.name == "task_blocker" || call.name == "request_input";
+            call.name == "retire_images" || call.name == "task_blocker" ||
+            call.name == "request_input" || call.name == "assign" ||
+            call.name == "ask_user" || call.name == "finish";
         JSONValue input;
         try input = parseJSON(call.arguments); catch (Exception) {}
         auto operationDir = workspace;
