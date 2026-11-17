@@ -13,11 +13,12 @@ import mcmesh : MeshData, MeshVertex, buildTerrainMesh, terrainHeight;
 import core.stdc.string : memcpy;
 import core.stdc.stdint : intptr_t;
 import core.thread : Thread;
-import core.time : msecs;
+import core.time : MonoTime, msecs;
 import core.sys.windows.windows : CreateWindowExA, DefWindowProcA, DispatchMessageA,
-    FindWindowA, GetClientRect, GetCurrentProcessId, GetModuleHandleA,
-    HINSTANCE, HWND, LPARAM, LRESULT, MSG, PeekMessageA, RECT, RegisterClassA,
-    SetWindowPos, SW_SHOW, ShowWindow,
+    ClientToScreen, FindWindowA, GetClientRect, GetCurrentProcessId,
+    GetCursorPos, GetForegroundWindow, GetModuleHandleA, HINSTANCE, HWND,
+    LPARAM, LRESULT, MSG, POINT, PeekMessageA, RECT, RegisterClassA,
+    SetCursorPos, SetWindowPos, SW_SHOW, ShowWindow,
     TranslateMessage, UINT, WNDCLASSA, WPARAM, WS_CHILD, WS_VISIBLE;
 import std.conv : to;
 import std.file : exists, read, write;
@@ -27,8 +28,8 @@ import std.path : buildPath;
 import std.stdio : File, stderr, stdout;
 import std.string : toStringz;
 
-enum int Width = 360;
-enum int Height = 240;
+enum int Width = 960;
+enum int Height = 720;
 enum int ColorFormat = VK_FORMAT_R8G8B8A8_UNORM;
 enum int DepthFormat = 126; // VK_FORMAT_D32_SFLOAT
 enum int EventBytes = 24;
@@ -213,6 +214,11 @@ private final class App
     double camZ = 0;
     double camYaw = 0;
     double camPitch = 0;
+    double velocityX = 0;
+    double velocityZ = 0;
+    string mouseTitle = "Marching Cubes Terrain";
+    HWND mouseWindow;
+    bool mouseCaptured;
 
     this()
     {
@@ -768,26 +774,71 @@ private final class App
 
     private void updateCamera(double seconds, double dt)
     {
-        const speed = 7.0 * dt;
+        if (dt <= 0) return;
+        if (dt > 0.1) dt = 0.1;
         const forwardX = sin(camYaw);
         const forwardZ = -cos(camYaw);
         const rightX = cos(camYaw);
         const rightZ = sin(camYaw);
-        if (keyDown(0x57)) { camX += forwardX * speed; camZ += forwardZ * speed; }
-        if (keyDown(0x53)) { camX -= forwardX * speed; camZ -= forwardZ * speed; }
-        if (keyDown(0x44)) { camX += rightX * speed; camZ += rightZ * speed; }
-        if (keyDown(0x41)) { camX -= rightX * speed; camZ -= rightZ * speed; }
-        if (keyDown(0x25)) camYaw -= 1.7 * dt;
-        if (keyDown(0x27)) camYaw += 1.7 * dt;
-        if (keyDown(0x26)) camPitch += 1.2 * dt;
-        if (keyDown(0x28)) camPitch -= 1.2 * dt;
+        const forwardInput = (keyDown(0x57) ? 1 : 0) -
+            (keyDown(0x53) ? 1 : 0);
+        const strafeInput = (keyDown(0x44) ? 1 : 0) -
+            (keyDown(0x41) ? 1 : 0);
+        const sprint = keyDown(0x10) ? 1.9 : 1.0;
+        const speed = 11.0 * sprint;
+        const targetX = (forwardX * forwardInput +
+            rightX * strafeInput) * speed;
+        const targetZ = (forwardZ * forwardInput +
+            rightZ * strafeInput) * speed;
+        const blend = dt > 0.08 ? 1.0 : dt * 14.0;
+        velocityX += (targetX - velocityX) * blend;
+        velocityZ += (targetZ - velocityZ) * blend;
+        camX += velocityX * dt;
+        camZ += velocityZ * dt;
+        if (keyDown(0x25)) camYaw -= 2.0 * dt;
+        if (keyDown(0x27)) camYaw += 2.0 * dt;
+        if (keyDown(0x26)) camPitch += 1.4 * dt;
+        if (keyDown(0x28)) camPitch -= 1.4 * dt;
         if (camPitch < -1.15) camPitch = -1.15;
         if (camPitch > 1.15) camPitch = 1.15;
         if (camX < -40.0) camX = -40.0;
         if (camX > 40.0) camX = 40.0;
         if (camZ < -40.0) camZ = -40.0;
         if (camZ > 40.0) camZ = 40.0;
-        camY = terrainHeight(camX, camZ) + 2.26;
+        const targetY = terrainHeight(camX, camZ) + 2.26;
+        camY += (targetY - camY) * (dt > 0.08 ? 1.0 : dt * 14.0);
+    }
+
+    private void updateMouse()
+    {
+        if (mouseWindow is null)
+            mouseWindow = FindWindowA(null, mouseTitle.toStringz);
+        if (mouseWindow is null) return;
+        if (GetForegroundWindow() != mouseWindow)
+        {
+            mouseCaptured = false;
+            return;
+        }
+        RECT client;
+        GetClientRect(mouseWindow, &client);
+        POINT center;
+        center.x = client.right / 2;
+        center.y = client.bottom / 2;
+        if (center.x <= 0 || center.y <= 0) return;
+        ClientToScreen(mouseWindow, &center);
+        POINT cursor;
+        if (!GetCursorPos(&cursor)) return;
+        if (!mouseCaptured)
+        {
+            SetCursorPos(center.x, center.y);
+            mouseCaptured = true;
+            return;
+        }
+        camYaw += (cursor.x - center.x) * 0.0026;
+        camPitch -= (cursor.y - center.y) * 0.0026;
+        if (camPitch < -1.15) camPitch = -1.15;
+        if (camPitch > 1.15) camPitch = 1.15;
+        SetCursorPos(center.x, center.y);
     }
 
     private float[16] multiply(const float[16] a, const float[16] b)
@@ -967,8 +1018,13 @@ private final class App
         auto surface = AnimatedSurface(surfacePath);
         stdout.writeln("vulkan3d: animated surface ", surfacePath); stdout.flush();
         const frames = seconds * 60;
+        auto lastTime = MonoTime.currTime;
         foreach (frame; 0 .. frames)
         {
+            auto now = MonoTime.currTime;
+            auto dt = (now - lastTime).total!"msecs" / 1000.0;
+            lastTime = now;
+            if (dt <= 0 || dt > 0.1) dt = 1.0 / 60.0;
             vk.vkResetFences(device, 1, &fence);
             vk.vkResetCommandBuffer(commands, 0);
             VkCommandBufferBeginInfo begin;
@@ -998,11 +1054,13 @@ private final class App
             vk.vkCmdBindVertexBuffers(commands, 0, 1, &vertexBuffer, &offset);
             vk.vkCmdBindIndexBuffer(commands, indexBuffer, 0,
                 VK_INDEX_TYPE_UINT32);
-            updateCamera(frame / 60.0, 1.0 / 60.0);
+            updateMouse();
+            updateCamera(frame / 60.0, dt);
             if (frame % 60 == 0)
             {
                 stdout.writeln("terrain camera x=", camX, " y=", camY,
-                    " z=", camZ, " yaw=", camYaw);
+                    " z=", camZ, " yaw=", camYaw,
+                    " mouse=", mouseWindow, " captured=", mouseCaptured);
                 stdout.flush();
             }
             auto matrix = this.matrix(frame / 60.0);
@@ -1048,7 +1106,6 @@ private final class App
             surface.publish(data);
             vk.vkUnmapMemory(device, readMemory);
             surface.waitHost(surface.sequence, 250);
-            Thread.sleep(16.msecs);
         }
         surface.close();
         stdout.writeln("PASS Vulkan animated surface frames=", frames);
@@ -1304,6 +1361,7 @@ void main(string[] args)
         }
     }
     auto app = new App();
+    app.mouseTitle = "Marching Cubes Terrain";
     if (hostTitle.length != 0)
         app.present(cast(int) seconds);
     else if (animate && surfaceOutput.length != 0)

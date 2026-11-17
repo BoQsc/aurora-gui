@@ -145,10 +145,17 @@ rather than claiming the change works.
   double-buffered `AURSFACE` frames; the host owns placement.
 - Animated apps write the inactive frame in place, flip the active frame,
   increment the sequence, and wait for host consumption.
+- A host surface node must set `"flex": 1` to fill the resized/maximized host.
+  Fixed bounds without flex intentionally remain fixed.
+- Publish the native `AURSFACE` at the host-preferred pixel resolution. A small
+  fixed surface upscaled by a flexed host is visibly pixelated; this is a
+  producer-resolution problem, not a host-layout fix.
 - Verify with `../aurora/apps/verify_animated_surface.py`: sequence advance,
   host-ack progress, prior-frame consumption, and changed pixels. `host_read`
   may lag the newest sequence by one; never assert `host_read >= sequence` at
   an arbitrary sample.
+- Verify flex and native sizing with
+  `../aurora/apps/verify_native_surface.py --surface ... --title ... --scene ...`.
 - The full standard is [the app workflow](../aurora/apps/README.md).
 
 ## Conventions

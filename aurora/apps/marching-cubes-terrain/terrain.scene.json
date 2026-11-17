@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Marching Cubes Terrain",
+    "width": 360,
+    "height": 272,
+    "decorated": false
+  },
+  "root": {
+    "id": "root",
+    "type": "column",
+    "spacing": 0,
+    "padding": 0,
+    "background": "#0b1220",
+    "children": [
+      {
+        "id": "titlebar",
+        "type": "titleBar",
+        "text": "Marching Cubes Terrain",
+        "height": 32,
+        "background": "#0b1220",
+        "border": "#1e293b",
+        "textColor": "#e2e8f0"
+      },
+      {
+        "id": "view",
+        "type": "surface",
+        "path": "build/terrain-live.surface",
+        "width": 360,
+        "height": 240,
+        "flex": 1,
+        "staleMs": 1000,
+        "events": []
+      }
+    ]
+  }
+}

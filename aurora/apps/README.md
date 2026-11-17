@@ -16,6 +16,13 @@ These rules are mandatory for app presentation:
   through `AURSFACE`. The host owns placement and scaling.
 - Animated apps use double buffering on an in-place mapped surface. Do not
   rewrite or replace the surface file for every frame.
+- A host surface node must set `"flex": 1` to consume the remaining layout
+  space. Fixed `width`/`height` without `flex` intentionally stays fixed when
+  the host window is resized or maximized.
+- Render the native `AURSFACE` at a resolution appropriate to the host window;
+  a small fixed frame that the host flexes will be visibly upscaled and
+  pixelated. Use the host-preferred pixel size when adaptive production is
+  available.
 - Verify animation with `apps/verify_animated_surface.py`: sequence must
   advance, `host_read` must advance and must have consumed the previous
   sequence, and the active pixels must change. `host_read` may legitimately
@@ -155,6 +162,17 @@ python -B apps/verify_animated_surface.py --surface <app.surface>
 This asserts sequence progress, host-ack progress, prior-frame consumption, and
 changing pixels using the actual live `AURSFACE`.
 
+5. **Native-resolution / flex contract:**
+
+```text
+python -B apps/verify_native_surface.py --surface <app.surface> \
+  --title "<host title>" --scene <app.scene.json>
+```
+
+This verifies that the surface node is flexed and that the published native
+surface is at least the host's resized DPI-native pixel size. A flexed but
+undersized surface will look visibly pixelated.
+
 Use `verify` with the test source as an input when the task requires a tracked
 test receipt.
 
@@ -186,4 +204,5 @@ Close the host window, or stop the supervised hotswap process. Confirm no stale
 - [ ] Smoke test passes.
 - [ ] Animated frames are captured at two times and differ.
 - [ ] `verify_animated_surface.py` passes for animated apps.
+- [ ] `verify_native_surface.py` passes; surface is flexed and native-sized.
 - [ ] No app-specific logic was added to the generic host.
