@@ -77,7 +77,10 @@ bool answerReplayed(const ref ChatSession session)
 }
 
 /// A goal audit must produce an action or completion call. Changing the prose
-/// alone cannot make an endless succession of final answers useful.
+/// alone cannot make an endless succession of final answers useful. Goal turns
+/// also arrive as execution-recovery prompts when a checklist outcome is still
+/// open, and their recovery marker starts a new retry interval without any new
+/// goal progress. Both must keep the goal audit open until a useful tool acts.
 bool goalAuditStalled(const ref ChatSession session)
 {
     if (!goalActive(session) || taskAwaitingInput(session)) return false;
@@ -85,11 +88,11 @@ bool goalAuditStalled(const ref ChatSession session)
     foreach_reverse (index; activeMessagePath(session))
     {
         const ref message = session.messages[index];
-        if (endsAuditInterval(message)) break;
         if ((message.role == "user" && !message.internal) ||
             (message.role == "tool" && usefulTool(message.toolName) &&
                 !message.content.startsWith("Tool call skipped:"))) break;
-        if (message.internal && message.content.startsWith("Persistent goal continuation:")) ++audits;
+        if (message.internal && (message.content.startsWith("Persistent goal continuation:") ||
+            message.content.startsWith("Execution recovery:"))) ++audits;
     }
     return audits >= 1;
 }

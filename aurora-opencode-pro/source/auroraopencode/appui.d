@@ -34173,6 +34173,31 @@ private void pollButtonSuggestionRequest()
                         handleOutputFailure(failure);
                         break;
                     }
+                    // A goal continuation or execution-recovery turn answered
+                    // with prose only has not advanced the goal. Accepting it
+                    // as a completed turn paused the goal and stopped the work
+                    // after a refusal. Recover it through the bounded output
+                    // path so the goal stays active and repeated refusals end
+                    // as a visible stall, never as completion.
+                    {
+                        const goalOwner = turnOwnerSessionIndex();
+                        if (!event.cancelled && goalOwner >= 0 &&
+                            goalOwner < cast(int) _sessions.length &&
+                            goalAuditStalled(_sessions[goalOwner]))
+                        {
+                            OpenCodeEvent failure;
+                            failure.kind = OpenCodeEventKind.error;
+                            failure.text = outputFailurePrefix ~
+                                outputIssueDescription("goal_audit_stalled");
+                            failure.outputIssue = "goal_audit_stalled";
+                            failure.requestId = event.requestId;
+                            failure.promptTokens = event.promptTokens;
+                            failure.completionTokens = event.completionTokens;
+                            failure.totalTokens = event.totalTokens;
+                            handleOutputFailure(failure);
+                            break;
+                        }
+                    }
                     const completedRequestId = event.requestId;
                     const taskContinues = taskContinuesAfterDone(event.cancelled, event.finishReason);
                     finishAssistantMessage(event.cancelled, event.promptTokens,

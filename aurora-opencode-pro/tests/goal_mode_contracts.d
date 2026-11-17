@@ -1,9 +1,11 @@
 module goal_mode_contracts;
 
 import auroraopencode.core : ChatMessage, ChatSession, Settings, TaskStep,
-    ensureMessageGraph, goalHistoryFromJson, goalHistoryToJson;
+    ensureMessageGraph, goalHistoryFromJson, goalHistoryToJson, newMessageId;
 import auroraopencode.goalmode;
 import auroraopencode.goalmutation : resetTaskForNewGoal;
+import auroraopencode.outputrecovery : goalAuditStalled;
+import auroraopencode.outputguard : outputRecoveryMarker;
 import std.json : JSONValue, parseJSON;
 import auroraopencode.runtime : AgentEventKind, AgentRuntimeEvent,
     projectAgentRuntimeEvents;
@@ -32,6 +34,14 @@ ChatMessage msg(string role, string content, bool internal = false)
     result.content = content;
     result.internal = internal;
     return result;
+}
+
+void appendLinked(ref ChatSession session, ChatMessage message)
+{
+    message.id = newMessageId();
+    message.parentId = session.messages.length ? session.messages[$ - 1].id : "";
+    session.messages ~= message;
+    session.activeLeafId = message.id;
 }
 
 int main()
@@ -343,6 +353,41 @@ int main()
             "first message lost automatic goal adoption: " ~ text);
     require(!automaticGoalRequest("   "), "an empty first message became a goal");
     writeln("PASS every first message becomes the goal; validated input suspends continuation and a reply releases it");
+
+    // A prose-only continuation is a stalled goal audit, not a finished turn.
+    // Execution recovery and output recovery keep the same audit open until a
+    // useful tool actually advances the goal.
+    {
+        ChatSession prose;
+        prose.goal = "Reach the strict target";
+        prose.goalStatus = "active";
+        appendLinked(prose, msg("user", prose.goal));
+        appendLinked(prose, msg("user", "Persistent goal continuation: " ~ prose.goal, true));
+        appendLinked(prose, msg("assistant", "No new source change is warranted; the goal remains active."));
+        require(goalAuditStalled(prose),
+            "a prose-only goal continuation was not detected as stalled");
+
+        ChatSession recovering = prose;
+        appendLinked(recovering, msg("user", "Execution recovery: the outcome remains unresolved.", true));
+        appendLinked(recovering, msg("assistant", "The goal remains active and incomplete."));
+        require(goalAuditStalled(recovering),
+            "an execution-recovery refusal cleared the goal stall");
+
+        ChatSession retried = recovering;
+        appendLinked(retried, msg("user", outputRecoveryMarker ~ "use tools", true));
+        appendLinked(retried, msg("assistant", "Still refusing."));
+        require(goalAuditStalled(retried),
+            "an output-recovery retry cleared the goal stall without progress");
+
+        ChatSession progressed = retried;
+        ChatMessage progress = msg("tool", "42", false);
+        progress.toolName = "calculate";
+        progress.toolCallId = "calc-progress";
+        appendLinked(progressed, progress);
+        require(!goalAuditStalled(progressed),
+            "useful tool progress did not clear the goal stall");
+    }
+    writeln("PASS prose-only goal turns remain stalled until a useful action");
 
     foreach (definitions; [nativeOnlyToolDefinitions(), builtinToolDefinitions()])
     {
