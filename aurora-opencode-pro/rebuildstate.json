@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply the paused-goal continuation guard (turnpolicy.d) that produced the refusal/recovery loop, plus its contract tests.",
+  "reason": "Deploy the corrected no-pause behavior: a stalled goal continuation uses a bounded recovery turn and the goal stays active; source 871be57 is already on maintainer main.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-17 15:07:30.0718221 UTC",
-  "finishedAt": "2026-11-17 15:08:29.216684 UTC",
-  "durationMs": 59145,
+  "startedAt": "2026-11-17 16:47:53.2060004 UTC",
+  "finishedAt": "2026-11-17 16:48:55.1600369 UTC",
+  "durationMs": 61953,
   "exitCode": 0,
   "errors": [],
-  "publishStatus": "failed",
-  "publishDetail": "Publishing with installed runtime required: MSVCR120.dll",
+  "publishStatus": "published",
+  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (379615a41896).",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

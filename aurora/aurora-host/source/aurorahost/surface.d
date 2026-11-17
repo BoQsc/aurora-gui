@@ -146,7 +146,7 @@ class SurfaceWidget : Widget
     private double _lastInsideMs;
     private int _paintOver16;
     private int _paintOver20;
-    private double _paintMaxIntervalMs;
+    private double _paintMaxIntervalMs = 0.0;
     private MonoTime _tickStart;
     private MonoTime _refreshDone;
     private MonoTime _paintStart;
@@ -633,6 +633,7 @@ class SurfaceWidget : Widget
             if (_cursorHidden)
                 SetCursor(null);
         refresh(deltaSeconds);
+        invalidate();
         _refreshDone = MonoTime.currTime;
         _traceFrame = true;
     }
@@ -646,7 +647,12 @@ class SurfaceWidget : Widget
             const deltaMs = (entry - _lastPaint).total!"usecs" / 1000.0;
             _paintSumMs += deltaMs;
             if (deltaMs > _paintMaxMs) _paintMaxMs = deltaMs;
-            if (deltaMs > 16.667) ++_paintOver16;
+            if (deltaMs > 16.667)
+            {
+                ++_paintOver16;
+                stdout.writeln("host outlier ms=", deltaMs);
+                stdout.flush();
+            }
             if (deltaMs > 20.0) ++_paintOver20;
             if (deltaMs > _paintMaxIntervalMs)
                 _paintMaxIntervalMs = deltaMs;
@@ -680,11 +686,8 @@ class SurfaceWidget : Widget
         _insideSumMs += insideMs;
         if (insideMs > _insideMaxMs) _insideMaxMs = insideMs;
         _lastInsideMs = insideMs;
-        if (++_paintSamples >= 60)
+        if (++_paintSamples >= 600)
         {
-            stdout.writeln("host cadence over16=", _paintOver16,
-                " over20=", _paintOver20, " maxMs=", _paintMaxIntervalMs);
-            stdout.flush();
             if (_trace)
             {
                 stdout.writeln("host paint intervalAvg=",

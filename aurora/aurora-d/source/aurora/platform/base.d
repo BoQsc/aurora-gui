@@ -36,6 +36,7 @@ struct WindowOptions
     bool decorated = true;
     bool alwaysOnTop;
     bool startMaximized;
+    bool startMinimized;
     /** Show the initial Win32 window without activating it. Intended for
         background integration tests and passive utility windows. */
     bool startNoActivate;
@@ -52,6 +53,8 @@ struct WindowOptions
     bool enableFullscreenShortcut = true;
     /** Favor newest pointer-driven frames over queued throughput. */
     bool lowLatency = true;
+    /** Native presentation cadence. Defaults to the historical 60 Hz. */
+    int targetFps = 60;
     /** Render a frame-synchronized Aurora cursor during transform drags. */
     bool synchronizedDragPointer = true;
     /** Register the Windows pointer-wheel, scroll-command, and pan-gesture

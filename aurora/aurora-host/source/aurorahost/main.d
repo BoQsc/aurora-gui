@@ -23,6 +23,7 @@ import std.path : buildPath, dirName;
 import std.stdio : stderr, stdout, writeln;
 
 pragma(lib, "winmm.lib");
+pragma(lib, "avrt.lib");
 
 private extern(Windows) uint timeBeginPeriod(uint);
 private extern(Windows) uint timeEndPeriod(uint);
@@ -30,6 +31,8 @@ private extern(Windows) void* GetCurrentProcess();
 private extern(Windows) void* GetCurrentThread();
 private extern(Windows) int SetPriorityClass(void*, uint);
 private extern(Windows) int SetThreadPriority(void*, int);
+private extern(Windows) void* AvSetMmThreadCharacteristicsW(wchar*, uint*);
+private extern(Windows) int AvRevertMmThreadCharacteristics(void*);
 
 private enum StarterScene = import("starter.scene.json");
 
@@ -175,8 +178,13 @@ int main(string[] args)
 {
     timeBeginPeriod(1);
     scope(exit) timeEndPeriod(1);
-    SetPriorityClass(GetCurrentProcess(), 0x100);
-    SetThreadPriority(GetCurrentThread(), 15);
+    SetPriorityClass(GetCurrentProcess(), 0x80);
+    SetThreadPriority(GetCurrentThread(), 2);
+    wchar[] avTask = "Games"w.dup;
+    uint avIndex;
+    void* avHandle = AvSetMmThreadCharacteristicsW(avTask.ptr, &avIndex);
+    scope(exit)
+        if (avHandle !is null) AvRevertMmThreadCharacteristics(avHandle);
     if (args.length < 2 || args[1] == "--help" || args[1] == "-h")
     {
         usage();
@@ -241,7 +249,8 @@ int main(string[] args)
             {
                 const scene = loadScene(args[2]);
                 auto registry = new NodeRegistry();
-                auto window = createWindow(scene, registry);
+                auto window = createWindow(scene, registry,
+                    args.canFind("--minimized"));
                 return runWindowed(window, registry, args.canFind("--control"),
                     args[2], args.canFind("--watch"), listenPort);
             }

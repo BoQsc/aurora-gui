@@ -20,7 +20,9 @@ import mcmesh : MeshData, MeshVertex, buildTerrainMesh, terrainHeight;
 import core.stdc.string : memcpy;
 import core.stdc.stdint : intptr_t;
 import core.thread : Thread;
-import core.time : MonoTime, msecs;
+import core.time : MonoTime, msecs, usecs;
+import core.sync.mutex : Mutex;
+import core.sync.condition : Condition;
 import core.sys.windows.windows : CreateWindowExA, DefWindowProcA, DispatchMessageA,
     ClientToScreen, FindWindowA, GetClientRect, GetCurrentProcessId,
     GetCursorPos, GetForegroundWindow, GetModuleHandleA, HINSTANCE, HWND,
@@ -117,6 +119,98 @@ private struct AnimatedSurface
     void close()
     {
         map = null;
+    }
+}
+
+private class SurfacePresenter
+{
+    private AnimatedSurface _surface;
+    private Thread _thread;
+    private Mutex _mutex;
+    private Condition _condition;
+    private ubyte[] _frame;
+    private ubyte[] _publishFrame;
+    private bool _hasFrame;
+    private bool _running = true;
+    private bool _captured;
+    private MonoTime _lastPublish;
+    private int _publishOver16;
+    private int _publishOver20;
+    private double _publishMaxMs;
+    private int _publishSamples;
+
+    this(string path)
+    {
+        _surface = AnimatedSurface(path);
+        _mutex = new Mutex();
+        _condition = new Condition(_mutex);
+        _frame = new ubyte[Width * Height * 4];
+        _publishFrame = new ubyte[Width * Height * 4];
+        _thread = new Thread(&run);
+        _thread.start();
+    }
+
+    void submit(const(ubyte)[] pixels, bool captured)
+    {
+        synchronized (_mutex)
+        {
+            const count = pixels.length < _frame.length ?
+                pixels.length : _frame.length;
+            memcpy(_frame.ptr, pixels.ptr, count);
+            _captured = captured;
+            _hasFrame = true;
+            _condition.notify();
+        }
+    }
+
+    void stop()
+    {
+        synchronized (_mutex)
+        {
+            _running = false;
+            _condition.notify();
+        }
+        _thread.join();
+        _surface.close();
+    }
+
+    private void run()
+    {
+        SetThreadPriority(GetCurrentThread(), 15);
+        while (true)
+        {
+            bool captured;
+            synchronized (_mutex)
+            {
+                while (_running && !_hasFrame)
+                    _condition.wait();
+                if (!_running) break;
+                auto swap = _frame;
+                _frame = _publishFrame;
+                _publishFrame = swap;
+                _hasFrame = false;
+                captured = _captured;
+            }
+            _surface.publish(_publishFrame, captured);
+            const now = MonoTime.currTime;
+            if (_lastPublish != MonoTime.init)
+            {
+                const intervalMs = (now - _lastPublish)
+                    .total!"usecs" / 1000.0;
+                if (intervalMs > 16.667) ++_publishOver16;
+                if (intervalMs > 20.0) ++_publishOver20;
+                if (intervalMs > _publishMaxMs)
+                    _publishMaxMs = intervalMs;
+            }
+            _lastPublish = now;
+            if (++_publishSamples >= 60)
+            {
+                _publishOver16 = 0;
+                _publishOver20 = 0;
+                _publishMaxMs = 0;
+                _publishSamples = 0;
+            }
+        }
     }
 }
 
@@ -229,6 +323,7 @@ private final class App
     HWND mouseWindow;
     bool mouseCaptured;
     bool testMotion;
+    bool extremeMotion;
 
     this()
     {
@@ -1070,7 +1165,7 @@ private final class App
 
     void renderAnimated(string surfacePath, int seconds)
     {
-        auto surface = AnimatedSurface(surfacePath);
+        auto presenter = new SurfacePresenter(surfacePath);
         stdout.writeln("vulkan3d: animated surface ", surfacePath); stdout.flush();
         const frames = seconds * 60;
         void* readPixels;
@@ -1146,10 +1241,20 @@ private final class App
             {
                 const t = frame / 60.0;
                 mouseCaptured = false;
-                camYaw += dt * 0.9;
-                camX = 12.0 * sin(t * 0.6);
-                camZ = 40.0 + 8.0 * cos(t * 0.4);
-                camPitch = 0.2 * sin(t * 0.5);
+                if (extremeMotion)
+                {
+                    camYaw += dt * 3.8;
+                    camX = 55.0 * sin(t * 2.7);
+                    camZ = 95.0 + 35.0 * cos(t * 2.1);
+                    camPitch = 0.75 * sin(t * 2.3);
+                }
+                else
+                {
+                    camYaw += dt * 0.9;
+                    camX = 12.0 * sin(t * 0.6);
+                    camZ = 40.0 + 8.0 * cos(t * 0.4);
+                    camPitch = 0.2 * sin(t * 0.5);
+                }
             }
             else
                 updateMouse();
@@ -1192,7 +1297,7 @@ private final class App
             check(vk.vkWaitForFences(device, 1, &fence, 1, ulong.max),
                 "waiting for animated frame");
             const renderDone = MonoTime.currTime;
-            surface.publish(readData, mouseCaptured);
+            presenter.submit(readData, mouseCaptured);
             const publishDone = MonoTime.currTime;
             const target = 1.0 / 61.0;
             while (true)
@@ -1216,7 +1321,7 @@ private final class App
         }
         vk.vkUnmapMemory(device, readMemory);
 
-        surface.close();
+        presenter.stop();
         stdout.writeln("terrain cadence over16=", over16, " over20=", over20,
             " warmOver16=", warmOver16, " warmOver20=", warmOver20,
             " maxMs=", maxIntervalMs, " frames=", frames);
@@ -1421,6 +1526,7 @@ void main(string[] args)
     double seconds = 0.7;
     bool animate;
     bool testMotion;
+    bool extremeMotion;
     for (size_t i = 0; i < args.length; ++i)
     {
         if (args[i] == "--shaders" && i + 1 < args.length)
@@ -1437,6 +1543,8 @@ void main(string[] args)
             animate = true;
         else if (args[i] == "--test-motion")
             testMotion = true;
+        else if (args[i] == "--extreme-motion")
+            extremeMotion = true;
     }
     if (!exists(buildPath(shaderDir, "cube.vert.spv")))
         throw new Exception("missing cube.vert.spv in " ~ shaderDir);
@@ -1481,6 +1589,7 @@ void main(string[] args)
     SetPriorityClass(GetCurrentProcess(), 0x100);
     SetThreadPriority(GetCurrentThread(), 15);
     app.testMotion = testMotion;
+    app.extremeMotion = extremeMotion;
     app.mouseTitle = "Marching Cubes Terrain";
     if (hostTitle.length != 0)
         app.present(cast(int) seconds);

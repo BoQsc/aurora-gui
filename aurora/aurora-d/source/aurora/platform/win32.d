@@ -1195,7 +1195,8 @@ else version (Windows)
             const command = (options.startNoActivate || options.noActivate) ?
                 SW_SHOWNOACTIVATE :
                 (_fullscreen ? SW_SHOWNORMAL :
-                    (options.startMaximized ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL));
+                    (options.startMaximized ? SW_SHOWMAXIMIZED :
+                        (options.startMinimized ? SW_SHOWMINIMIZED : SW_SHOWNORMAL)));
             ShowWindow(_hwnd, command);
             UpdateWindow(_hwnd);
             // Re-publish the icons after the window becomes visible so the
@@ -1224,7 +1225,8 @@ else version (Windows)
             // quantization, so we instead wait the precise remainder until the
             // next frame deadline. low-latency windows still busy-yield during a
             // real pointer capture (continuous frames) but otherwise pace.
-            _frameIntervalTicks = cast(long) (perfFreq.QuadPart / 60);
+            _frameIntervalTicks = cast(long) (perfFreq.QuadPart /
+                (options.targetFps > 0 ? options.targetFps : 60));
             LARGE_INTEGER previousPerf;
             QueryPerformanceCounter(&previousPerf);
             LARGE_INTEGER nextFrameDeadline = previousPerf;

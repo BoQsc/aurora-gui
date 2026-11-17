@@ -1654,13 +1654,16 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
     }
 }
 
-GuiWindow createWindow(const Scene scene, NodeRegistry registry)
+GuiWindow createWindow(const Scene scene, NodeRegistry registry,
+    bool startMinimized = false)
 {
     WindowOptions options;
     options.title = scene.window.title;
     options.width = scene.window.width;
     options.height = scene.window.height;
     options.decorated = scene.window.decorated;
+    options.targetFps = 144;
+    options.startMinimized = startMinimized;
     options.darkTitleBar = scene.window.theme == "dark";
     auto iconPath = sceneIconPath(scene.window.iconData);
     if (iconPath.length == 0)
