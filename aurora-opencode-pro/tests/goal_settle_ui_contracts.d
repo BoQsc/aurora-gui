@@ -125,6 +125,36 @@ int main()
         "the active goal lost the user's completion condition");
     writeln("PASS an explained goal stays active; only the user pauses it");
 
+    // Reported: the goal continuation was answered with prose only while a
+    // checklist outcome and verification remained. The settle left the chat
+    // idle while the goal bar still showed it as active.
+    root.newChatForTesting();
+    const stalledGoal = "Reach 100% stable 60 fps while moving the camera.";
+    root.addConversationForTesting(["user", "assistant"], [stalledGoal, "I will."]);
+    root.addInternalNoteForTesting("Persistent goal continuation: " ~ stalledGoal);
+    root.addConversationForTesting(["assistant"],
+        ["The last change is live; the strict target remains open."]);
+    root.setGoalForTesting(stalledGoal, "active");
+    root.setTaskIntentForTesting("implementation", "analysis");
+    root.setTaskStateForTesting(stalledGoal, "active", "required");
+    root.applyPlanForTesting(
+        `{"plan":[{"step":"Reach the strict target","status":"in_progress"}]}`);
+    root.startTurnClockForTesting();
+    root.settleTaskAfterDoneForTesting();
+    pump();
+    assert(!root.turnBusyForTesting(), "the stalled goal left a running turn");
+    assert(root.goalStatusForTesting() == "paused",
+        "a stalled goal stayed active with no running turn: task=" ~
+        root.taskStatusForTesting() ~ " turn=" ~ root.turnStatusForTesting());
+    assert(root.goalHistoryOutcomesForTesting()[$ - 1] == "paused",
+        "the paused stalled goal was not recorded in goal history");
+    assert(driver.paint(), "goal row paint failed after the stalled goal paused");
+    assert(toUTF8(requireWidget!Label(root, "oc-goal-prefix").text()).toLower()
+        .indexOf("pause") >= 0,
+        "the goal row still did not show the stalled goal as paused: " ~
+        toUTF8(requireWidget!Label(root, "oc-goal-prefix").text()));
+    writeln("PASS a stalled goal continuation pauses instead of idling as active");
+
     // A question answered inside an action goal no longer ends it: the goal
     // continues and the turn stays busy.
     root.newChatForTesting();

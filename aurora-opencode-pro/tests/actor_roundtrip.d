@@ -79,7 +79,8 @@ int main()
     assert(sessionToJson(view) == value, "Tool progress projection changed the conversation model");
     assert(value["messages"].array[$ - 1]["content"].str.indexOf("READY") == 0);
     assert(value["verificationStatus"].str == "passed");
-    if (stalledGoal) assert(value["goalStatus"].str == "active", "An idle no-action goal was paused by the app");
+    if (stalledGoal) assert(value["goalStatus"].str == "paused",
+        "a prose-only goal continuation left the goal active with nothing running");
     const trace = actor.recordedTrace();
     write(buildPath(directory, "trace.json"), trace); write(buildPath(directory, "final.json"), snapshot);
     // Replay has neither the original workspace nor access to a provider.

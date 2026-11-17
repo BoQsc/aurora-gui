@@ -270,18 +270,25 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     }
     else result.taskStatus = "completed";
     // This settle starts no further turn. An answer goal finished by its
-    // delivered reply is complete. Every other goal stays active with its work
-    // recorded: the agent's turn ending must not pause the user's goal, so
-    // Continue is the explicit way back and only the user can pause it.
-    // A queued follow-up opens the next turn immediately, so that chat is not
-    // idle and the goal keeps owning the follow-up's work.
+    // delivered reply is complete. A goal whose continuation produced prose
+    // only is paused: leaving it active while the chat is idle is the reported
+    // "goal is active but doing nothing" state. Other goal settles keep their
+    // recorded work active for Continue (an explicit user restriction, a
+    // tool-free request). A queued follow-up opens the next turn immediately,
+    // so that chat is not idle and the goal keeps owning the follow-up's work.
     if (goalActive(session) && !session.queuedFollowUps.length)
     {
         const outstanding = hasIncompleteTaskSteps(session) ||
             session.verificationStatus == "required" ||
             session.verificationStatus == "failed";
-        result.settleGoal = goalIsAnswerTurn(session.goal) && !outstanding &&
-            goalAnswerDelivered(session) ? "completed" : "";
+        if (goalIsAnswerTurn(session.goal) && !outstanding &&
+            goalAnswerDelivered(session))
+            result.settleGoal = "completed";
+        else if (goalAuditStalled(session))
+        {
+            result.settleGoal = "paused";
+            result.status = "Goal paused · the last continuation made no progress. Press Start to resume it.";
+        }
     }
     return result;
 }

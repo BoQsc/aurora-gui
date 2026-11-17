@@ -214,6 +214,29 @@ int main()
             "a queued follow-up paused the goal it continues");
     }
 
+    // Reported: the referenced "Aurora Designer Check" chat answered its goal
+    // continuation with prose only while a checklist outcome and verification
+    // were still open. The turn settled and the chat sat idle while the goal
+    // still advertised itself as active.
+    {
+        auto session = sessionWith(actionGoal);
+        session.contract.currentIntent = "analysis";
+        session.verificationStatus = "required";
+        session.taskSteps ~= TaskStep("Reach the strict target", "pending",
+            "step-strict", "", "No frame over budget", []);
+        session.messages ~= msg("user",
+            "Persistent goal continuation: " ~ actionGoal, true);
+        session.messages ~= msg("assistant",
+            "The last change is live; the strict target remains open.");
+        const decision = decide(session);
+        require(!decision.continues(),
+            "a prose-only goal continuation kept replaying the same request");
+        require(decision.settleGoal == "paused",
+            "a stalled goal settled while still advertising itself as active");
+        require(decision.status.indexOf("paused") >= 0,
+            "the stalled goal settle did not explain the pause");
+    }
+
     // The reported refusal: the user pauses an unmet goal, asks why the agent
     // is refusing, and the app answers by restarting the paused goal's
     // outstanding verification. The delivered answer must end the turn; the

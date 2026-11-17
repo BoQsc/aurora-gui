@@ -97,8 +97,8 @@ int main()
     assert(root.verificationStatusForTesting() == "passed");
     assert(root.taskStatusForTesting() == "completed");
     if (stalledGoal)
-        assert(root.goalStatusForTesting() == "active",
-            "An idle no-action goal was paused by the app");
+        assert(root.goalStatusForTesting() == "paused",
+            "a prose-only goal continuation left the goal active with nothing running");
     const latency = root.latencyPaintForTesting();
     assert(latency.microseconds[LatencyStage.firstToken] >= 0 &&
         latency.microseconds[LatencyStage.applied] >= latency.microseconds[LatencyStage.firstToken] &&
