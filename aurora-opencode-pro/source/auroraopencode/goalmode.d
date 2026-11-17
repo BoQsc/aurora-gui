@@ -5,6 +5,7 @@ import auroraopencode.requestintent : answerOnlyRequest, requestIntent,
     RequestIntent;
 import std.array : appender, join, split;
 import std.json : JSONType, JSONValue, parseJSON;
+import std.regex : matchFirst, regex;
 import std.string : indexOf, replace, splitLines, startsWith, strip, toLower;
 import std.utf : toUTF32, toUTF8;
 
@@ -220,6 +221,8 @@ public string goalPromptBlock(const ref ChatSession session)
             output.put("Complete this explicit goal while preserving the user's acceptance and newer corrections. " ~
                 "Use a short plan for substantial work and continue until the requested outcome and relevant checks are complete. " ~
                 "Call goal_complete with a concise summary and accepted toolCallId evidence for action goals; an answer-only goal needs no receipt. " ~
+                "A goal whose requested outcome is still unmet or failed is not complete: never call goal_complete to record a failure, " ~
+                "a blocker or a failed audit. Keep working on the unfinished outcome. " ~
                 "If an essential user-owned fact is missing, finish independent work and call request_input with the fact and blocked steps. " ~
                 "Don't add hypothetical future work or repeat passing checks for completion bookkeeping.\n");
             break;
@@ -250,7 +253,8 @@ public string goalContinuationInstruction(const ref ChatSession session)
         (answerGoal
             ? "; no tool receipt is required for this answer goal. Otherwise keep "
             : " and concrete evidence; otherwise keep ") ~
-        "advancing the unfinished outcomes. If only an essential user-owned fact prevents completion, " ~
+        "advancing the unfinished outcomes. Do not close the goal as a failure: an audit that " ~
+        "finds the outcome unmet, blocked or not achieved means more work, not completion. If only an essential user-owned fact prevents completion, " ~
         "call request_input now with the missing fact and blocked_steps; a prose question does not pause " ~
         "the goal. Keep the goal active while waiting. Do not repeat completed work just to avoid this boundary. " ~
         "The user can pause this goal at any time.";
@@ -346,6 +350,25 @@ private string declaredUnfinishedWork(string text)
     return taskExcerpt(declared.replace("\n", " ").replace("\r", " "), 180);
 }
 
+/// A completion summary that reports the requested outcome as unmet is not a
+/// completion. `goal_complete` is the only way to stop automatic continuation,
+/// so accepting "closed as a critical failure" let an unfinished goal end
+/// without the user's cooperation. Match only wording that asserts the current
+/// result, not a description of a defect that was fixed.
+private bool declaresUnmetGoal(string summary)
+{
+    const text = summary.toLower.replace("*", "").replace("_", " ").splitLines.join(" ");
+    enum pattern =
+        `\bgoal (?:is|was|remains|remained|has been|is still) (?:unmet|incomplete|not (?:met|achieved|complete|completed|satisfied|fulfilled))\b|` ~
+        `\b(?:is|was|remains|remained|found|recorded as|closed as) (?:still )?(?:unmet|incomplete)\b|` ~
+        `\b(?:is|are|was|were|has|have) (?:still )?not (?:been )?(?:achieved|met|satisfied|fulfilled|completed?)\b|` ~
+        `\b(?:does not|did not|doesn't|didn't) meet\b|` ~
+        `\b(?:fails?|failed) (?:the )?acceptance\b|\bacceptance (?:still )?(?:fails?|failed)\b|` ~
+        `\b(?:recorded as|closed as|remains|remained|result is|result remains) (?:a |the )?(?:total |critical )?failure\b|` ~
+        `\bnot an? (?:[\w.-]+ ){0,3}success\b`;
+    return matchFirst(text, regex(pattern)).length > 0;
+}
+
 /// The final prose answer at the end of the current no-action interval. Once a
 /// tool has produced a result, the plan and its receipts decide completion;
 /// stale prose from before that work must not veto it.
@@ -431,6 +454,13 @@ public string goalCompletionError(const ref ChatSession session, string argument
             return "Required work remains open. Finish it before completing the goal.";
     if (!answerGoal)
     {
+        const unmet = declaresUnmetGoal(field("summary"));
+        if (unmet)
+            return "goal_complete cannot close a goal whose summary reports the requested outcome as unmet or failed. " ~
+                "The persistent goal remains active. Do work on the unfinished outcome with the available tools; " ~
+                "an audit that finds the goal unmet is a result to act on, not completion. " ~
+                "Call goal_complete only once the requested outcome is achieved and its checks pass. " ~
+                "If an essential user-owned fact prevents completion, call request_input with that fact and blocked_steps.";
         string declared = declaredUnfinishedWork(field("summary"));
         if (!declared.length)
             declared = declaredUnfinishedWork(currentAnswerProse(session));

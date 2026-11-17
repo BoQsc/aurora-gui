@@ -684,8 +684,10 @@ private OpenCodeToolDef goalCompleteToolDefinition()
 {
     return OpenCodeToolDef("goal_complete",
         "Mark the persistent goal complete after auditing the actual result. Use this only " ~
-        "when every requested outcome is finished and required checks pass. Provide a concise " ~
-        "summary. Action goals also require concrete evidence: successful tool-call IDs or accepted check receipts. " ~
+        "when every requested outcome is finished and required checks pass. A goal whose " ~
+        "requested outcome is unmet or failed is not complete: never use this to record a " ~
+        "failure, a blocker or a failed audit; keep working on the unfinished outcome. Provide a concise " ~
+        "summary of the achieved result. Action goals also require concrete evidence: successful tool-call IDs or accepted check receipts. " ~
         "For an answer-only goal, evidence is optional when no tool work was needed. " ~
         "Attempted actions, open checklist items or outstanding verification are not " ~
         "completion. This does not finish a paused goal.",

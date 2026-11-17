@@ -4,7 +4,7 @@ import auroraopencode.core : ChatMessage, ChatSession, Settings, TaskStep,
     ensureMessageGraph, goalHistoryFromJson, goalHistoryToJson;
 import auroraopencode.goalmode;
 import auroraopencode.goalmutation : resetTaskForNewGoal;
-import std.json : parseJSON;
+import std.json : JSONValue, parseJSON;
 import auroraopencode.runtime : AgentEventKind, AgentRuntimeEvent,
     projectAgentRuntimeEvents;
 import auroraopencode.tools : builtinToolDefinitions, executeTool,
@@ -203,6 +203,37 @@ int main()
         `{"summary":"Patched the parser and reran the suite.","evidence":["call-fix"]}`)
         .length == 0,
         "completion after acting on the declared work was rejected");
+    // Reported regression: an unfinished persistent goal was closed by
+    // summarizing the audit result as an unmet goal or a critical failure.
+    // Automatic continuation stops only through goal_complete, so that wording
+    // must keep the goal active instead of recording completion.
+    foreach (summary; [
+            "Strict 100% stable 60 fps goal audited and found unmet. Clean in-process producer-only test: 1200 frames, 4 over 16.67 ms.",
+            "The strict 100% stable 60 fps goal is not achieved and has been closed as a critical failure, not a stable-60 success.",
+            "Goal remains incomplete: 15/1200 frames over 16.67 ms.",
+            "The zero-over-16.67 ms acceptance fails, so the goal remains active.",
+            "The hard-60 target was not met; this is recorded as a total failure."
+        ])
+    {
+        JSONValue args;
+        args["summary"] = summary;
+        args["evidence"] = JSONValue(["call-fix"]);
+        const error = goalCompletionError(limited, args.toString());
+        require(error.indexOf("unmet or failed") >= 0,
+            "completion was accepted for an unmet goal (" ~ summary ~ "); result: " ~ error);
+    }
+    foreach (summary; [
+            "Patched the parser and reran the suite.",
+            "Verified: 1200 of 1200 frames were within 16.67 ms and the suite passes.",
+            "The earlier critical failure in the parser is fixed and covered by a regression test."
+        ])
+    {
+        JSONValue args;
+        args["summary"] = summary;
+        args["evidence"] = JSONValue(["call-fix"]);
+        const error = goalCompletionError(limited, args.toString());
+        require(error.length == 0, "a legitimate completion was rejected (" ~ summary ~ "); result: " ~ error);
+    }
     writeln("PASS goal completion refuses answers that declare unfinished work");
 
     // An answer-only goal is proved by its answer. No receipt is required for a
