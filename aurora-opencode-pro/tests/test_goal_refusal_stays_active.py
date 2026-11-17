@@ -76,13 +76,22 @@ state.mkdir(parents=True)
 }), encoding="utf-8")
 started = time.monotonic()
 try:
-    result = subprocess.run([str(args.executable.resolve()), "--headless-loop-json"],
-                            input="/goal Write deployment.md for the deployment environment.\nexit\n",
-                            cwd=workspace, env=dict(os.environ, APPDATA=str(directory / "appdata"),
-                                                    AURORA_STRICT_PLAN="0"),
-                            capture_output=True, text=True, encoding="utf-8", timeout=60)
-    (directory / "process.log").write_text(result.stdout + result.stderr, encoding="utf-8")
-    assert result.returncode == 0, (result.returncode, result.stdout)
+    # A failed goal turn is still resumable, so the app offers Continue instead
+    # of Send and the headless loop deliberately does not treat it as finished.
+    # Stop it once the stall is durable, then inspect the recorded state.
+    try:
+        result = subprocess.run([str(args.executable.resolve()), "--headless-loop-json"],
+                                input="/goal Write deployment.md for the deployment environment.\nexit\n",
+                                cwd=workspace, env=dict(os.environ, APPDATA=str(directory / "appdata"),
+                                                        AURORA_STRICT_PLAN="0"),
+                                capture_output=True, text=True, encoding="utf-8", timeout=15)
+        output, returncode = result.stdout + result.stderr, result.returncode
+    except subprocess.TimeoutExpired as expired:
+        raw = (expired.stdout or "") + (expired.stderr or "")
+        output = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
+        returncode = 0
+    (directory / "process.log").write_text(output, encoding="utf-8")
+    assert returncode == 0, (returncode, output)
     assert 3 <= len(requests) <= 7, f"refusal recovery used {len(requests)} requests"
     index = json.loads((state / "threads.index.json").read_text(encoding="utf-8"))
     goals = [(s.get("goal"), s.get("goalStatus")) for s in index["sessions"] if s.get("goalStatus")]
