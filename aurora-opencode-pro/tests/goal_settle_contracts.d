@@ -208,6 +208,47 @@ int main()
             "a queued follow-up paused the goal it continues");
     }
 
+    // The reported refusal: the user pauses an unmet goal, asks why the agent
+    // is refusing, and the app answers by restarting the paused goal's
+    // outstanding verification. The delivered answer must end the turn; the
+    // paused work waits for an explicit Start instead.
+    {
+        auto session = sessionWith(actionGoal);
+        session.goalStatus = "paused";
+        session.verificationStatus = "required";
+        session.messages ~= msg("assistant", "The strict result is not certifiable yet.");
+        session.messages ~= msg("user", "Why are you refusing?");
+        session.messages ~= msg("assistant", "I was refusing to certify an unmeasured result.");
+        const decision = decide(session);
+        require(!decision.continues(),
+            "an answer-only question restarted a paused goal's outstanding work");
+        require(decision.settleGoal.length == 0,
+            "a settle after an answered question rewrote the paused goal");
+        require(decision.taskStatus == "verifying",
+            "the paused goal's outstanding verification was dropped");
+    }
+    // The same paused goal continues when the user asks for the work again.
+    {
+        auto session = sessionWith(actionGoal);
+        session.goalStatus = "paused";
+        session.verificationStatus = "required";
+        session.messages ~= msg("assistant", "The strict result is not certifiable yet.");
+        session.messages ~= msg("user", "I said to ensure by developing");
+        const decision = decide(session);
+        require(decision.continues() && decision.guidance.length,
+            "an action request did not resume the paused goal's work");
+    }
+    // A completed goal keeps its paused-like hold on leftover work.
+    {
+        auto session = sessionWith(actionGoal);
+        session.goalStatus = "completed";
+        session.verificationStatus = "required";
+        session.messages ~= msg("user", "What is left?");
+        const decision = decide(session);
+        require(!decision.continues(),
+            "an answered question restarted a completed goal's leftover work");
+    }
+
     writeln("goal settle contracts passed");
     return 0;
 }

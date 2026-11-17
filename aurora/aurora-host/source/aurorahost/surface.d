@@ -11,6 +11,7 @@ import std.conv : to;
 import std.exception : enforce;
 import std.file : exists;
 import std.mmfile : MmFile;
+import std.process : environment;
 import std.stdio : stdout;
 import core.time : MonoTime;
 
@@ -143,16 +144,21 @@ class SurfaceWidget : Widget
     private double _outsideSumMs;
     private double _outsideMaxMs;
     private double _lastInsideMs;
+    private int _paintOver16;
+    private int _paintOver20;
+    private double _paintMaxIntervalMs;
     private MonoTime _tickStart;
     private MonoTime _refreshDone;
     private MonoTime _paintStart;
     private MonoTime _paintEnd;
     private bool _traceFrame;
+    private bool _trace;
 
     void delegate(HostEvent) onInput;
 
     this(const SurfaceSpec spec)
     {
+        _trace = environment.get("AURORA_HOST_TRACE") == "1";
         _path = spec.path;
         _width = spec.width;
         _height = spec.height;
@@ -294,6 +300,10 @@ class SurfaceWidget : Widget
             clearMapping(error);
             return;
         }
+
+        // The producer owns mouse capture. Mirror it so cursor hiding is not
+        // lost when the surface widget is rebuilt or the host misses the down.
+        setCursorHidden((readU32(data, 68) & 1) != 0);
 
         const sequence = readU64(data, 32);
         if (sequence == _lastSequence)
@@ -602,17 +612,20 @@ class SurfaceWidget : Widget
             const intervalMs = (tick - _tickStart).total!"usecs" / 1000.0;
             if (intervalMs > 20.0)
             {
-                stdout.writeln("host frame over20 intervalMs=", intervalMs,
-                    " refreshMs=", (_refreshDone - _tickStart)
-                        .total!"usecs" / 1000.0,
-                    " prePaintMs=", (_paintStart - _refreshDone)
-                        .total!"usecs" / 1000.0,
-                    " paintMs=", (_paintEnd - _paintStart)
-                        .total!"usecs" / 1000.0,
-                    " postPaintMs=", (tick - _paintEnd)
-                        .total!"usecs" / 1000.0,
-                    " postPaintStampUs=", tick.ticks);
-                stdout.flush();
+                if (_trace)
+                {
+                    stdout.writeln("host frame over20 intervalMs=", intervalMs,
+                        " refreshMs=", (_refreshDone - _tickStart)
+                            .total!"usecs" / 1000.0,
+                        " prePaintMs=", (_paintStart - _refreshDone)
+                            .total!"usecs" / 1000.0,
+                        " paintMs=", (_paintEnd - _paintStart)
+                            .total!"usecs" / 1000.0,
+                        " postPaintMs=", (tick - _paintEnd)
+                            .total!"usecs" / 1000.0,
+                        " postPaintStampUs=", tick.ticks);
+                    stdout.flush();
+                }
             }
         }
         _tickStart = tick;
@@ -633,6 +646,10 @@ class SurfaceWidget : Widget
             const deltaMs = (entry - _lastPaint).total!"usecs" / 1000.0;
             _paintSumMs += deltaMs;
             if (deltaMs > _paintMaxMs) _paintMaxMs = deltaMs;
+            if (deltaMs > 16.667) ++_paintOver16;
+            if (deltaMs > 20.0) ++_paintOver20;
+            if (deltaMs > _paintMaxIntervalMs)
+                _paintMaxIntervalMs = deltaMs;
             const outsideMs = deltaMs > _lastInsideMs ?
                 deltaMs - _lastInsideMs : 0.0;
             _outsideSumMs += outsideMs;
@@ -665,14 +682,21 @@ class SurfaceWidget : Widget
         _lastInsideMs = insideMs;
         if (++_paintSamples >= 60)
         {
-            stdout.writeln("host paint intervalAvg=", _paintSumMs / _paintSamples,
-                " max=", _paintMaxMs, " insideAvg=", _insideSumMs / _paintSamples,
-                " insideMax=", _insideMaxMs, " outsideAvg=",
-                _outsideSumMs / _paintSamples, " outsideMax=", _outsideMaxMs,
-                " fillAvg=", _fillSumMs / _paintSamples, " fillMax=", _fillMaxMs,
-                " imageAvg=", _imageSumMs / _paintSamples, " imageMax=",
-                _imageMaxMs);
+            stdout.writeln("host cadence over16=", _paintOver16,
+                " over20=", _paintOver20, " maxMs=", _paintMaxIntervalMs);
             stdout.flush();
+            if (_trace)
+            {
+                stdout.writeln("host paint intervalAvg=",
+                    _paintSumMs / _paintSamples, " max=", _paintMaxMs,
+                    " insideAvg=", _insideSumMs / _paintSamples,
+                    " insideMax=", _insideMaxMs, " outsideAvg=",
+                    _outsideSumMs / _paintSamples, " outsideMax=", _outsideMaxMs,
+                    " fillAvg=", _fillSumMs / _paintSamples, " fillMax=",
+                    _fillMaxMs, " imageAvg=", _imageSumMs / _paintSamples,
+                    " imageMax=", _imageMaxMs);
+                stdout.flush();
+            }
             _paintSumMs = 0;
             _paintMaxMs = 0;
             _insideSumMs = 0;
@@ -683,6 +707,9 @@ class SurfaceWidget : Widget
             _imageMaxMs = 0;
             _outsideSumMs = 0;
             _outsideMaxMs = 0;
+            _paintOver16 = 0;
+            _paintOver20 = 0;
+            _paintMaxIntervalMs = 0;
             _paintSamples = 0;
         }
     }

@@ -238,6 +238,7 @@ final class VulkanRenderer : RenderBackend
     private double _presentMs;
     private double _fenceWaitMs;
     private int _profileFrames;
+    private bool _trace;
     private HostBuffer _atlasStaging;
     private VkImage _atlasImage;
     private VkDeviceMemory _atlasMemory;
@@ -259,6 +260,7 @@ final class VulkanRenderer : RenderBackend
 
     this(WindowOptions options, NativeSurfaceInfo nativeInfo, Size initialSize)
     {
+        _trace = environment.get("AURORA_VULKAN_TRACE") == "1";
         _options = options;
         _native = nativeInfo;
         _requestedSize = initialSize;
@@ -489,9 +491,12 @@ final class VulkanRenderer : RenderBackend
         present.pSwapchains = &_swapchain;
         present.pImageIndices = &imageIndex;
         const presentStamp = MonoTime.currTime;
-        stdout.writeln("vulkan prePresent stampUs=",
-            presentStamp.ticks);
-        stdout.flush();
+        if (_trace)
+        {
+            stdout.writeln("vulkan prePresent stampUs=",
+                presentStamp.ticks);
+            stdout.flush();
+        }
         auto presentStart = MonoTime.currTime;
         const presented = _vk.vkQueuePresentKHR(_presentQueue, &present);
         _presentMs += (MonoTime.currTime - presentStart).total!"usecs" / 1000.0;
@@ -514,13 +519,16 @@ final class VulkanRenderer : RenderBackend
         ++_stats.frames;
         if (++_profileFrames >= 60)
         {
-            stdout.writeln("vulkan profile stagingCopyMs=",
-                _stagingCopyMs / _profileFrames, " copyRecordMs=",
-                _copyRecordMs / _profileFrames, " submitMs=",
-                _submitMs / _profileFrames, " presentMs=",
-                _presentMs / _profileFrames, " fenceWaitMs=",
-                _fenceWaitMs / _profileFrames);
-            stdout.flush();
+            if (_trace)
+            {
+                stdout.writeln("vulkan profile stagingCopyMs=",
+                    _stagingCopyMs / _profileFrames, " copyRecordMs=",
+                    _copyRecordMs / _profileFrames, " submitMs=",
+                    _submitMs / _profileFrames, " presentMs=",
+                    _presentMs / _profileFrames, " fenceWaitMs=",
+                    _fenceWaitMs / _profileFrames);
+                stdout.flush();
+            }
             _stagingCopyMs = 0;
             _copyRecordMs = 0;
             _submitMs = 0;

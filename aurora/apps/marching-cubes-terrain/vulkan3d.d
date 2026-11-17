@@ -1,11 +1,18 @@
 module marchingcubesterrain;
 
 pragma(lib, "user32.lib");
+pragma(lib, "winmm.lib");
 
 private extern(Windows) int SetProcessDPIAware();
 private extern(Windows) int SetProcessDpiAwarenessContext(void*);
 private extern(Windows) void* SetThreadDpiAwarenessContext(void*);
 private extern(Windows) short GetAsyncKeyState(int);
+private extern(Windows) void* GetCurrentProcess();
+private extern(Windows) void* GetCurrentThread();
+private extern(Windows) int SetPriorityClass(void*, uint);
+private extern(Windows) int SetThreadPriority(void*, int);
+private extern(Windows) uint timeBeginPeriod(uint);
+private extern(Windows) uint timeEndPeriod(uint);
 
 import aurora.vulkan.api;
 import mcmesh : MeshData, MeshVertex, buildTerrainMesh, terrainHeight;
@@ -83,7 +90,7 @@ private struct AnimatedSurface
         return value;
     }
 
-    void publish(const(ubyte)[] pixels)
+    void publish(const(ubyte)[] pixels, bool captured = false)
     {
         const active = get!uint(24);
         const target = 1 - active;
@@ -91,6 +98,7 @@ private struct AnimatedSurface
             target * frameBytes;
         memcpy(data.ptr + offset, pixels.ptr, frameBytes);
         put!uint(24, target);
+        put!uint(68, captured ? 1 : 0);
         sequence++;
         put!ulong(32, sequence);
     }
@@ -220,6 +228,7 @@ private final class App
     string mouseTitle = "Marching Cubes Terrain";
     HWND mouseWindow;
     bool mouseCaptured;
+    bool testMotion;
 
     this()
     {
@@ -1068,14 +1077,38 @@ private final class App
         check(vk.vkMapMemory(device, readMemory, 0, Width * Height * 4, 0,
             &readPixels), "mapping animated readback");
         auto readData = cast(ubyte[]) readPixels[0 .. Width * Height * 4];
+
         auto lastTime = MonoTime.currTime;
         double renderMs;
         double publishMs;
         double budgetMs;
         int timingSamples;
+        MonoTime previousFrame;
+        int over16;
+        int over20;
+        int warmOver16;
+        int warmOver20;
+        double maxIntervalMs = 0.0;
         foreach (frame; 0 .. frames)
         {
             auto frameStart = MonoTime.currTime;
+            if (previousFrame != MonoTime.init)
+            {
+                const intervalMs = (frameStart - previousFrame)
+                    .total!"usecs" / 1000.0;
+                if (frame < 60)
+                {
+                    if (intervalMs > 16.667) ++warmOver16;
+                    if (intervalMs > 20.0) ++warmOver20;
+                }
+                else
+                {
+                    if (intervalMs > 16.667) ++over16;
+                    if (intervalMs > 20.0) ++over20;
+                }
+                if (intervalMs > maxIntervalMs) maxIntervalMs = intervalMs;
+            }
+            previousFrame = frameStart;
             auto now = MonoTime.currTime;
             auto dt = (now - lastTime).total!"msecs" / 1000.0;
             lastTime = now;
@@ -1109,15 +1142,19 @@ private final class App
             vk.vkCmdBindVertexBuffers(commands, 0, 1, &vertexBuffer, &offset);
             vk.vkCmdBindIndexBuffer(commands, indexBuffer, 0,
                 VK_INDEX_TYPE_UINT32);
-            updateMouse();
-            updateCamera(frame / 60.0, dt);
-            if (frame % 60 == 0)
+            if (testMotion)
             {
-                stdout.writeln("terrain camera x=", camX, " y=", camY,
-                    " z=", camZ, " yaw=", camYaw,
-                    " mouse=", mouseWindow, " captured=", mouseCaptured);
-                stdout.flush();
+                const t = frame / 60.0;
+                mouseCaptured = false;
+                camYaw += dt * 0.9;
+                camX = 12.0 * sin(t * 0.6);
+                camZ = 40.0 + 8.0 * cos(t * 0.4);
+                camPitch = 0.2 * sin(t * 0.5);
             }
+            else
+                updateMouse();
+            updateCamera(frame / 60.0, dt);
+
             auto matrix = this.matrix(frame / 60.0);
             pushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
                 0, 64, &matrix);
@@ -1155,7 +1192,7 @@ private final class App
             check(vk.vkWaitForFences(device, 1, &fence, 1, ulong.max),
                 "waiting for animated frame");
             const renderDone = MonoTime.currTime;
-            surface.publish(readData);
+            surface.publish(readData, mouseCaptured);
             const publishDone = MonoTime.currTime;
             const target = 1.0 / 61.0;
             while (true)
@@ -1176,21 +1213,13 @@ private final class App
             publishMs += (publishDone - renderDone).total!"usecs" / 1000.0;
             budgetMs += (frameDone - publishDone).total!"usecs" / 1000.0;
             ++timingSamples;
-            if (frame % 60 == 0)
-            {
-                stdout.writeln("terrain timing renderMs=",
-                    renderMs / timingSamples, " publishMs=",
-                    publishMs / timingSamples, " budgetMs=",
-                    budgetMs / timingSamples);
-                stdout.flush();
-                renderMs = 0;
-                publishMs = 0;
-                budgetMs = 0;
-                timingSamples = 0;
-            }
         }
         vk.vkUnmapMemory(device, readMemory);
+
         surface.close();
+        stdout.writeln("terrain cadence over16=", over16, " over20=", over20,
+            " warmOver16=", warmOver16, " warmOver20=", warmOver20,
+            " maxMs=", maxIntervalMs, " frames=", frames);
         stdout.writeln("PASS Vulkan animated surface frames=", frames);
         stdout.flush();
     }
@@ -1391,6 +1420,7 @@ void main(string[] args)
     string hostTitle;
     double seconds = 0.7;
     bool animate;
+    bool testMotion;
     for (size_t i = 0; i < args.length; ++i)
     {
         if (args[i] == "--shaders" && i + 1 < args.length)
@@ -1405,6 +1435,8 @@ void main(string[] args)
             seconds = to!double(args[++i]);
         else if (args[i] == "--animate")
             animate = true;
+        else if (args[i] == "--test-motion")
+            testMotion = true;
     }
     if (!exists(buildPath(shaderDir, "cube.vert.spv")))
         throw new Exception("missing cube.vert.spv in " ~ shaderDir);
@@ -1444,6 +1476,11 @@ void main(string[] args)
         }
     }
     auto app = new App();
+    timeBeginPeriod(1);
+    scope(exit) timeEndPeriod(1);
+    SetPriorityClass(GetCurrentProcess(), 0x100);
+    SetThreadPriority(GetCurrentThread(), 15);
+    app.testMotion = testMotion;
     app.mouseTitle = "Marching Cubes Terrain";
     if (hostTitle.length != 0)
         app.present(cast(int) seconds);

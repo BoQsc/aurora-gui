@@ -22,6 +22,15 @@ import std.file : exists, getcwd, mkdirRecurse, readText, timeLastModified, writ
 import std.path : buildPath, dirName;
 import std.stdio : stderr, stdout, writeln;
 
+pragma(lib, "winmm.lib");
+
+private extern(Windows) uint timeBeginPeriod(uint);
+private extern(Windows) uint timeEndPeriod(uint);
+private extern(Windows) void* GetCurrentProcess();
+private extern(Windows) void* GetCurrentThread();
+private extern(Windows) int SetPriorityClass(void*, uint);
+private extern(Windows) int SetThreadPriority(void*, int);
+
 private enum StarterScene = import("starter.scene.json");
 
 private void usage()
@@ -164,6 +173,10 @@ private int runWindowed(GuiWindow window, NodeRegistry registry, bool control,
 
 int main(string[] args)
 {
+    timeBeginPeriod(1);
+    scope(exit) timeEndPeriod(1);
+    SetPriorityClass(GetCurrentProcess(), 0x100);
+    SetThreadPriority(GetCurrentThread(), 15);
     if (args.length < 2 || args[1] == "--help" || args[1] == "-h")
     {
         usage();

@@ -11,7 +11,8 @@ import auroraopencode.completionhandoff : completionHandoffNeeded, completionHan
     recordedCompletionHandoff;
 import auroraopencode.orchestrator : experimentalOrchestratorIsRouter, experimentalOrchestratorAgentName;
 import auroraopencode.contextpolicy : latestActualUserRequest;
-import auroraopencode.requestintent : workRestrictionRequest;
+import auroraopencode.requestintent : RequestIntent, actionApprovalRequest,
+    requestIntent, workRestrictionRequest;
 import auroraopencode.planmode : planModeProposalPending;
 import auroraopencode.outputrecovery : goalAuditStalled;
 import std.string : strip;
@@ -175,6 +176,26 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     if (!settled)
     {
         const state = execution;
+        // A paused or completed persistent goal no longer owns automatic work.
+        // Its leftover checklist and verification must not restart a turn after
+        // an answer-only request: the user asked "why are you refusing", the
+        // reply was delivered, and the app then injected "Execution recovery:
+        // the requested work has an unresolved outcome" for work the user had
+        // just paused. That read as the agent refusing to do anything at all,
+        // and it repeated until output recovery failed the turn. Only a new
+        // action request ("ensure it by developing") authorizes more work.
+        const humanRequest = latestActualUserRequest(session);
+        const actionRequest = requestIntent(humanRequest) == RequestIntent.implementation ||
+            requestIntent(humanRequest) == RequestIntent.continuation ||
+            actionApprovalRequest(humanRequest);
+        if (session.goal.length && session.goalStatus != "active" &&
+            !session.queuedFollowUps.length && !actionRequest)
+        {
+            result.turnStatus = "completed";
+            result.taskStatus = state.verificationRequired ? "verifying" : "active";
+            result.status = "Answer complete · the paused goal's remaining work waits for Start.";
+            return result;
+        }
         if (state.attempts >= 2)
         {
             // A host fault is not a substantive failure. The answer already
