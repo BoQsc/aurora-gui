@@ -29,8 +29,8 @@ import core.sys.windows.windows : CreateWindowExA, DefWindowProcA, DispatchMessa
     IsIconic, IsWindow, LoadCursorA,
     LPARAM, LRESULT, MSG, POINT, PeekMessageA, RECT, RegisterClassA,
     ScreenToClient, SetCursorPos, SetForegroundWindow, SetWindowPos, SW_SHOW,
-    ShowWindow, TranslateMessage, UINT, WM_CLOSE, WM_DESTROY, WNDCLASSA, WPARAM,
-    WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE;
+    ShowCursor, ShowWindow, TranslateMessage, UINT, WM_CLOSE, WM_DESTROY,
+    WNDCLASSA, WPARAM, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE;
 import std.conv : to;
 import std.file : exists, read, write;
 import std.math : cos, sin, sqrt, tan;
@@ -330,6 +330,7 @@ private final class App
     string mouseTitle = "Marching Cubes Terrain";
     HWND mouseWindow;
     bool mouseCaptured;
+    bool cursorHidden;
     bool testMotion;
     bool extremeMotion;
 
@@ -957,16 +958,48 @@ private final class App
         camY += (targetY - camY) * (dt > 0.08 ? 1.0 : dt * 14.0);
     }
 
+    private void setMouseCapture(bool captured)
+    {
+        if (mouseCaptured == captured) return;
+        mouseCaptured = captured;
+        if (!gStandaloneWindow) return;
+        if (captured)
+        {
+            if (!cursorHidden)
+            {
+                ShowCursor(0);
+                cursorHidden = true;
+            }
+        }
+        else if (cursorHidden)
+        {
+            ShowCursor(1);
+            cursorHidden = false;
+        }
+    }
+
     private void updateMouse()
     {
         if (mouseWindow !is null && !IsWindow(mouseWindow))
+        {
+            setMouseCapture(false);
             mouseWindow = null;
+        }
         if (mouseWindow is null)
             mouseWindow = FindWindowA(null, mouseTitle.toStringz);
-        if (mouseWindow is null) return;
+        if (mouseWindow is null)
+        {
+            setMouseCapture(false);
+            return;
+        }
+        if (IsIconic(mouseWindow))
+        {
+            setMouseCapture(false);
+            return;
+        }
         if (GetForegroundWindow() != mouseWindow)
         {
-            mouseCaptured = false;
+            setMouseCapture(false);
             return;
         }
         RECT client;
@@ -985,14 +1018,14 @@ private final class App
             local.x < client.right && local.y < client.bottom;
         if (keyDown(0x5B) || keyDown(0x5C) || keyDown(0x1B))
         {
-            mouseCaptured = false;
+            setMouseCapture(false);
             return;
         }
         if (!mouseCaptured)
         {
             if (!inRender || !keyDown(0x01)) return;
             SetCursorPos(center.x, center.y);
-            mouseCaptured = true;
+            setMouseCapture(true);
             return;
         }
         camYaw += (cursor.x - center.x) * 0.0026;
@@ -1402,6 +1435,8 @@ private final class App
         VkDeviceSize offset = 0;
         vk.vkCmdBindVertexBuffers(commands, 0, 1, &vertexBuffer, &offset);
         vk.vkCmdBindIndexBuffer(commands, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+        updateMouse();
+        updateCamera(seconds, 1.0 / 60.0);
         auto matrix = this.matrix(seconds, target.width, target.height);
         pushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
             0, 64, &matrix);
@@ -1503,6 +1538,7 @@ private final class App
 
     void presentStandalone()
     {
+        scope(exit) setMouseCapture(false);
         stdout.writeln("vulkan3d: standalone window start"); stdout.flush();
         ulong frame;
         while (!gWindowClosed && IsWindow(gChildWindow))
@@ -1513,6 +1549,12 @@ private final class App
                 continue;
             }
             presentFrame(frame / 60.0);
+            if ((frame % 30) == 0)
+            {
+                stdout.writeln("terrain camera x=", camX, " y=", camY,
+                    " z=", camZ, " yaw=", camYaw);
+                stdout.flush();
+            }
             ++frame;
             Thread.sleep(16.msecs);
         }
@@ -1672,6 +1714,8 @@ void main(string[] args)
         SetForegroundWindow(gChildWindow);
     }
     auto app = new App();
+    if (gStandaloneWindow)
+        app.mouseWindow = gChildWindow;
     timeBeginPeriod(1);
     scope(exit) timeEndPeriod(1);
     SetPriorityClass(GetCurrentProcess(), 0x100);
