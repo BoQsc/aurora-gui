@@ -508,7 +508,6 @@ class SurfaceWidget : Widget
     {
         if (!_pointerEvents)
             return false;
-        requestFocus();
         emitPointer("move", event.position.x, event.position.y, event.button,
             event.modifiers);
         return _pressed;

@@ -17,6 +17,7 @@ import core.time : MonoTime, msecs;
 import core.sys.windows.windows : CreateWindowExA, DefWindowProcA, DispatchMessageA,
     ClientToScreen, FindWindowA, GetClientRect, GetCurrentProcessId,
     GetCursorPos, GetForegroundWindow, GetModuleHandleA, HINSTANCE, HWND,
+    IsWindow,
     LPARAM, LRESULT, MSG, POINT, PeekMessageA, RECT, RegisterClassA,
     ScreenToClient, SetCursorPos, SetWindowPos, SW_SHOW, ShowWindow,
     TranslateMessage, UINT, WNDCLASSA, WPARAM, WS_CHILD, WS_VISIBLE;
@@ -28,8 +29,8 @@ import std.path : buildPath;
 import std.stdio : File, stderr, stdout;
 import std.string : toStringz;
 
-enum int Width = 960;
-enum int Height = 720;
+enum int Width = 1920;
+enum int Height = 1080;
 enum int ColorFormat = VK_FORMAT_R8G8B8A8_UNORM;
 enum int DepthFormat = 126; // VK_FORMAT_D32_SFLOAT
 enum int EventBytes = 24;
@@ -88,7 +89,7 @@ private struct AnimatedSurface
         const target = 1 - active;
         const offset = SurfaceHeader + EventCapacity * EventBytes +
             target * frameBytes;
-        data[offset .. offset + frameBytes] = pixels[];
+        memcpy(data.ptr + offset, pixels.ptr, frameBytes);
         put!uint(24, target);
         sequence++;
         put!ulong(32, sequence);
@@ -719,6 +720,41 @@ private final class App
             "binding buffer memory");
     }
 
+    private void createReadbackBuffer()
+    {
+        VkBufferCreateInfo info;
+        info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        info.size = cast(VkDeviceSize) Width * Height * 4;
+        info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        check(vk.vkCreateBuffer(device, &info, null, &readBuffer),
+            "creating the readback buffer");
+        VkMemoryRequirements requirements;
+        vk.vkGetBufferMemoryRequirements(device, readBuffer, &requirements);
+        const wanted = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        enum uint hostCached = 0x8;
+        uint typeIndex = uint.max;
+        foreach (index; 0 .. memoryProperties.memoryTypeCount)
+            if ((requirements.memoryTypeBits & (1u << index)) != 0 &&
+                (memoryProperties.memoryTypes[index].propertyFlags &
+                    (wanted | hostCached)) == (wanted | hostCached))
+            {
+                typeIndex = index;
+                break;
+            }
+        if (typeIndex == uint.max)
+            typeIndex = memoryType(requirements.memoryTypeBits, wanted);
+        VkMemoryAllocateInfo allocation;
+        allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex = typeIndex;
+        check(vk.vkAllocateMemory(device, &allocation, null, &readMemory),
+            "allocating readback memory");
+        check(vk.vkBindBufferMemory(device, readBuffer, readMemory, 0),
+            "binding readback memory");
+    }
+
     private void upload(VkDeviceMemory memory, const(void)[] data)
     {
         void* mapped;
@@ -741,9 +777,7 @@ private final class App
             cast(VkDeviceSize) mesh.indices.length * uint.sizeof,
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
         upload(indexMemory, mesh.indices);
-        createBuffer(readBuffer, readMemory,
-            cast(VkDeviceSize) Width * Height * 4,
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        createReadbackBuffer();
     }
 
     private void createCommands()
@@ -811,6 +845,8 @@ private final class App
 
     private void updateMouse()
     {
+        if (mouseWindow !is null && !IsWindow(mouseWindow))
+            mouseWindow = null;
         if (mouseWindow is null)
             mouseWindow = FindWindowA(null, mouseTitle.toStringz);
         if (mouseWindow is null) return;
@@ -1028,9 +1064,18 @@ private final class App
         auto surface = AnimatedSurface(surfacePath);
         stdout.writeln("vulkan3d: animated surface ", surfacePath); stdout.flush();
         const frames = seconds * 60;
+        void* readPixels;
+        check(vk.vkMapMemory(device, readMemory, 0, Width * Height * 4, 0,
+            &readPixels), "mapping animated readback");
+        auto readData = cast(ubyte[]) readPixels[0 .. Width * Height * 4];
         auto lastTime = MonoTime.currTime;
+        double renderMs;
+        double publishMs;
+        double budgetMs;
+        int timingSamples;
         foreach (frame; 0 .. frames)
         {
+            auto frameStart = MonoTime.currTime;
             auto now = MonoTime.currTime;
             auto dt = (now - lastTime).total!"msecs" / 1000.0;
             lastTime = now;
@@ -1109,14 +1154,31 @@ private final class App
                 "submitting animated frame");
             check(vk.vkWaitForFences(device, 1, &fence, 1, ulong.max),
                 "waiting for animated frame");
-            void* pixels;
-            check(vk.vkMapMemory(device, readMemory, 0, Width * Height * 4, 0,
-                &pixels), "mapping animated frame");
-            auto data = cast(ubyte[]) pixels[0 .. Width * Height * 4];
-            surface.publish(data);
-            vk.vkUnmapMemory(device, readMemory);
-            surface.waitHost(surface.sequence, 250);
+            const renderDone = MonoTime.currTime;
+            surface.publish(readData);
+            const publishDone = MonoTime.currTime;
+            const target = 1.0 / 60.0;
+            while ((MonoTime.currTime - frameStart).total!"usecs" <
+                cast(long) (target * 1000000.0)) {}
+            const frameDone = MonoTime.currTime;
+            renderMs += (renderDone - frameStart).total!"usecs" / 1000.0;
+            publishMs += (publishDone - renderDone).total!"usecs" / 1000.0;
+            budgetMs += (frameDone - publishDone).total!"usecs" / 1000.0;
+            ++timingSamples;
+            if (frame % 60 == 0)
+            {
+                stdout.writeln("terrain timing renderMs=",
+                    renderMs / timingSamples, " publishMs=",
+                    publishMs / timingSamples, " budgetMs=",
+                    budgetMs / timingSamples);
+                stdout.flush();
+                renderMs = 0;
+                publishMs = 0;
+                budgetMs = 0;
+                timingSamples = 0;
+            }
         }
+        vk.vkUnmapMemory(device, readMemory);
         surface.close();
         stdout.writeln("PASS Vulkan animated surface frames=", frames);
         stdout.flush();

@@ -5,7 +5,7 @@ A walkable first-person example built on the primary host-surface GPU path.
 The terrain is a heightfield isosurface extracted with the standard 256-case
 marching-cubes table. The camera follows the same height function, so walking
 keeps the player on the surface. The Vulkan renderer draws offscreen at
-960x720 and publishes animated `AURSFACE` frames; the host owns the visual
+1920x1080 and publishes animated `AURSFACE` frames; the host owns the visual
 area and scales the native frame into the flexed logical surface.
 
 ## Controls
@@ -52,7 +52,7 @@ aurora-host.exe --run <absolute>/terrain.scene.json
 The scene uses `type: "surface"` with `"flex": 1`; this lets the host fill the
 available window area instead of keeping the logical node fixed. Without
 `flex`, a surface node keeps its preferred height when the host is maximized.
-The host scales the 960x720 native frame into the resulting node bounds.
+The host scales the 1920x1080 native frame into the resulting node bounds.
 
 ## Verification
 

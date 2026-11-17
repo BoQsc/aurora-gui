@@ -150,6 +150,10 @@ private int runWindowed(GuiWindow window, NodeRegistry registry, bool control,
             writeln("LISTEN 127.0.0.1:", listenPort);
         stdout.flush();
     }
+    stdout.writeln("aurora-host: renderer=", window.rendererName(),
+        " hardware=", window.hardwareAccelerated(),
+        " fallback=", window.rendererFallbackReason());
+    stdout.flush();
     const result = window.run();
     if (tcp !is null)
         tcp.stop();
