@@ -183,10 +183,12 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         // the requested work has an unresolved outcome" for work the user had
         // just paused. That read as the agent refusing to do anything at all,
         // and it repeated until output recovery failed the turn. Only a new
-        // action request ("ensure it by developing") authorizes more work.
+        // action request ("ensure it by developing") or a cause question that
+        // authorizes the repair keeps the work going.
         const humanRequest = latestActualUserRequest(session);
         const actionRequest = requestIntent(humanRequest) == RequestIntent.implementation ||
             requestIntent(humanRequest) == RequestIntent.continuation ||
+            requestIntent(humanRequest) == RequestIntent.diagnosis ||
             actionApprovalRequest(humanRequest);
         if (session.goal.length && session.goalStatus != "active" &&
             !session.queuedFollowUps.length && !actionRequest)

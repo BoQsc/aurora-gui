@@ -102,8 +102,13 @@ int main()
         "active-goal prompt lacks the goal or completion instruction");
     session.goalStatus = "paused";
     prompt = goalPromptBlock(session);
-    require(prompt.indexOf("user paused") >= 0,
-        "paused goal prompt must not drive another turn");
+    require(prompt.indexOf("user paused") < 0,
+        "an automatically settled goal was reported as paused by the user");
+    require(prompt.indexOf("do not start another turn") < 0,
+        "the paused goal still told the agent to stop working");
+    require(prompt.indexOf("not a stop of the user's current message") >= 0 &&
+        prompt.indexOf("refuse") >= 0,
+        "the paused goal did not authorize the user's current request");
     writeln("PASS prompt state follows active/paused goals");
 
     session.goalStatus = "active";

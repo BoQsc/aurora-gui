@@ -40,6 +40,13 @@ int main()
         "A why-question would resume stopped desktop input");
     assert(requestIntent("Why does the provider stall?") == RequestIntent.diagnosis);
     assert(requestIntent("Why is it still not switching immediately?") == RequestIntent.diagnosis);
+    // A cause question phrased without "why" still asks for the cause and the
+    // repair. Classifying it as casual conversation settled the app into a
+    // prose-only answer, which the user reads as a refusal to solve it.
+    assert(requestIntent("we need to know what is producing problems") == RequestIntent.diagnosis);
+    assert(requestIntent("what is causing the dropped frames?") == RequestIntent.diagnosis);
+    assert(requestIntent("what causes the stutter?") == RequestIntent.diagnosis);
+    assert(requestIntent("what is left?") == RequestIntent.clarification);
 
     // Explicit explanation-only instructions and explicit repairs keep their
     // prior classification.
@@ -57,6 +64,8 @@ int main()
     assert(answerOnlyRequest(accountability));
     assert(!diagnosticFollowUpRequest(accountability),
         "an accountability question would resume stopped desktop input");
+    assert(requestIntent("Why are you refusing?") == RequestIntent.clarification,
+        "a conduct question authorized another repair");
     ChatSession accountabilitySession;
     request(accountabilitySession, "Add splitpane and progressbar.");
     accountabilitySession.taskSteps =
@@ -117,6 +126,23 @@ int main()
     assert(taskContinuation(task, true).action == TaskContinuationAction.settle,
         "An explicit explanation request resumed the implementation");
     assert(durableTaskPrompt(task, true).indexOf("The latest request asks for an explanation") >= 0);
+
+    // A paused goal (the app pauses it when a turn settles) must not turn a
+    // cause question into a refusal: the current message still owns the work.
+    ChatSession paused;
+    paused.goal = "Reach a stable 60 fps";
+    paused.goalStatus = "paused";
+    paused.objective = paused.goal;
+    paused.contract.id = "paused-task";
+    paused.contract.intent = "implementation";
+    paused.contract.currentIntent = "diagnosis";
+    paused.taskStatus = "active";
+    request(paused, "we need to know what is producing problems");
+    const pausedPrompt = durableTaskPrompt(paused, false);
+    assert(pausedPrompt.indexOf("Diagnose the cause") >= 0, pausedPrompt);
+    assert(pausedPrompt.indexOf("asks for an explanation") < 0, pausedPrompt);
+    assert(pausedPrompt.indexOf("do not start another turn") < 0,
+        "the paused goal still stopped the current request");
 
     writeln("PASS why-question diagnosis authorizes resolution, preserves desktop stops, " ~
         "and explicit explanation requests remain answer-only");

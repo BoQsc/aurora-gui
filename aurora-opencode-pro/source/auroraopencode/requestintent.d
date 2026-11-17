@@ -57,6 +57,12 @@ bool processAccountabilityQuestion(string text)
     if (matchFirst(value, `\bwhy (?:nothing|no work|no action|no progress)\b`) ||
         matchFirst(value, `\bwhy (?:is|are|was|were) (?:you|we)\b.*\b(?:doing|working|acting|responding)\b`))
         return true;
+    // "Why are you refusing?" is an account of the agent's conduct, not a
+    // request to diagnose and repair the product. Reading it as a diagnosis
+    // restarted a paused goal's outstanding work after the answer.
+    if (matchFirst(value,
+        `\bwhy (?:are|is|was|were) (?:you|it|we|they) (?:refusing|declining|stopping|pausing|ignoring)\b`))
+        return true;
     return cast(bool) matchFirst(value,
         `\bwhy (?:did|was|were) (?:you|it|implementation|the implementation|the agent|this work)\b.*\b(?:start|begin|began|implement|implemented|change|changed|edit|edited|write|wrote)\b`);
 }
@@ -233,6 +239,16 @@ RequestIntent requestIntent(string text)
     // An account of the agent's own conduct is not authorization to undo the
     // delivered work; only an explicit repair request above authorizes a change.
     if (processAccountabilityQuestion(text)) return RequestIntent.clarification;
+    // "What is producing/causing this?" asks for the cause of the failure, so
+    // it authorizes the same diagnosis and repair as a why-question. Reading it
+    // as casual conversation settled the app into a prose-only answer, and the
+    // agent then refused to continue the work.
+    import std.regex : matchFirst, regex;
+    if (matchFirst(text.toLower.split().join(" "),
+        `\bwhat(?:'s| is| are| was| were)?\s+(?:producing|causing|triggering)\b|` ~
+        `\bwhat causes\b|\bwhat is behind\b|` ~
+        `\bwhat(?:'s| is)? the (?:cause|reason) (?:of|for|behind)\b`))
+        return RequestIntent.diagnosis;
     // A question about a cause authorizes investigation and correction. It is
     // not a request to stop at an explanation; only an explicit explain-only
     // instruction above remains answer-only.

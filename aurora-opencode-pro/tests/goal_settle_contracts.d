@@ -238,6 +238,19 @@ int main()
         require(decision.continues() && decision.guidance.length,
             "an action request did not resume the paused goal's work");
     }
+    // A cause question also asks for the repair, not for a prose-only answer.
+    // The app pauses a goal whenever a turn settles, so treating this as an
+    // explanation left the reported problem unsolved behind a refusal.
+    {
+        auto session = sessionWith(actionGoal);
+        session.goalStatus = "paused";
+        session.verificationStatus = "required";
+        session.messages ~= msg("assistant", "The strict result is not certifiable yet.");
+        session.messages ~= msg("user", "we need to know what is producing problems");
+        const decision = decide(session);
+        require(decision.continues() && decision.guidance.length,
+            "a cause question did not resume the paused goal's diagnosis");
+    }
     // A completed goal keeps its paused-like hold on leftover work.
     {
         auto session = sessionWith(actionGoal);

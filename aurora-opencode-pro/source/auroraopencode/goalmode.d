@@ -227,8 +227,19 @@ public string goalPromptBlock(const ref ChatSession session)
                 "Don't add hypothetical future work or repeat passing checks for completion bookkeeping.\n");
             break;
         case "paused":
-            output.put("The user paused this goal. Preserve its state and do not start " ~
-                "another turn for it until the user resumes it.\n");
+            // Settling a turn pauses the goal automatically, so this state is
+            // not evidence that the user stopped the work. Telling the model
+            // "the user paused this goal" made it refuse the next request
+            // ("the goal is paused, so I'm not running another test or
+            // changing the build") while the task state still recorded an
+            // active deliverable. The pause withholds self-started goal turns
+            // only; the user's current message still owns this turn.
+            output.put("The goal's automatic continuation is paused; its recorded work waits for " ~
+                "the user to press Start. The pause stops self-started goal turns only. " ~
+                "It is not a stop of the user's current message: answer it, investigate with " ~
+                "the available tools, and make the changes it asks for. Never use the paused " ~
+                "goal, its checklist or its required verification as a reason to refuse, defer " ~
+                "or narrow that work.\n");
             break;
         case "completed":
             output.put("This goal was completed. Do not resume it unless the user edits " ~
