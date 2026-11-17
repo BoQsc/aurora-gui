@@ -147,15 +147,24 @@ rather than claiming the change works.
   increment the sequence, and wait for host consumption.
 - A host surface node must set `"flex": 1` to fill the resized/maximized host.
   Fixed bounds without flex intentionally remain fixed.
+- Surface mouse capture must hide the host window cursor and restore it on
+  Escape or focus loss. Producer-side `ShowCursor` does not affect the host
+  window thread.
 - Publish the native `AURSFACE` at the host-preferred pixel resolution. A small
   fixed surface upscaled by a flexed host is visibly pixelated; this is a
   producer-resolution problem, not a host-layout fix.
+- Size the offscreen/readback target to the host work area and verify the
+  surface publication rate. Oversized targets plus full readback can reduce
+  movement to 15 fps; do not hide it with a fixed sleep. Keep native detail
+  only while meeting the FPS budget.
 - Verify with `../aurora/apps/verify_animated_surface.py`: sequence advance,
   host-ack progress, prior-frame consumption, and changed pixels. `host_read`
   may lag the newest sequence by one; never assert `host_read >= sequence` at
   an arbitrary sample.
 - Verify flex and native sizing with
   `../aurora/apps/verify_native_surface.py --surface ... --title ... --scene ...`.
+- Verify the live publication rate with
+  `../aurora/apps/verify_surface_rate.py --surface ... --min-fps 30`.
 - The full standard is [the app workflow](../aurora/apps/README.md).
 
 ## Conventions

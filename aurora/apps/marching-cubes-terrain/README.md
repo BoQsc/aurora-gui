@@ -12,13 +12,17 @@ area and scales the native frame into the flexed logical surface.
 
 - `W`, `A`, `S`, `D` — move forward, left, back, right
 - Hold `Shift` — sprint
-- Move the mouse while the host window is focused — mouse look
+- Hover the render area — cursor stays visible
+- Click the render area to capture — mouse look, cursor hidden
+- `Windows` or `Escape` — release the mouse for titlebar/maximize use
 - Left/Right arrows — turn
 - Up/Down arrows — look up/down
 
 Keyboard input is read with `GetAsyncKeyState`; no child window is created.
-Mouse look captures the cursor whenever the host window is foreground and
-recenters it; switch away from the host window to release the cursor.
+Mouse look captures only when you click the render area; hovering does not hide
+or recenter the cursor. After releasing with `Windows` or `Escape`, click the
+render area to capture again. While captured, the host hides the regular
+cursor; releasing shows it again.
 Camera movement uses frame-delta timing with acceleration and damping, and the
 camera height follows the terrain smoothly.
 
@@ -64,6 +68,13 @@ The native/flex contract must also pass:
 python -B ../../verify_native_surface.py \
   --surface <absolute>/build/terrain-live.surface \
   --title "Marching Cubes Terrain" --scene terrain.scene.json
+```
+
+The movement-rate contract must pass while the app is running:
+
+```text
+python -B ../../verify_surface_rate.py \
+  --surface <absolute>/build/terrain-live.surface --min-fps 30
 ```
 
 Terrain mesh is 23,244 vertices / 23,244 indices at the current 48x20x48

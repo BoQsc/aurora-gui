@@ -12,6 +12,9 @@ import std.exception : enforce;
 import std.file : exists;
 import std.mmfile : MmFile;
 
+version (Windows)
+    import core.sys.windows.windows : LoadCursorA, SetCursor, ShowCursor;
+
 struct SurfaceSpec
 {
     string path;
@@ -124,6 +127,7 @@ class SurfaceWidget : Widget
     private string _lastError;
     private uint _pixelWidth;
     private uint _pixelHeight;
+    private bool _cursorHidden;
 
     void delegate(HostEvent) onInput;
 
@@ -474,6 +478,19 @@ class SurfaceWidget : Widget
             emitKey(kind, key, modifiers);
     }
 
+    private void setCursorHidden(bool hidden)
+    {
+        version (Windows)
+        {
+            if (_cursorHidden == hidden)
+                return;
+            ShowCursor(hidden ? 0 : 1);
+            SetCursor(hidden ? null :
+                LoadCursorA(null, cast(char*) 32512));
+            _cursorHidden = hidden;
+        }
+    }
+
     override bool onMouseDown(ref Event event)
     {
         if (!_pointerEvents || event.button != MouseButton.left)
@@ -483,6 +500,7 @@ class SurfaceWidget : Widget
         _pressed = true;
         emitPointer("down", event.position.x, event.position.y, event.button,
             event.modifiers);
+        setCursorHidden(true);
         return true;
     }
 
@@ -490,6 +508,7 @@ class SurfaceWidget : Widget
     {
         if (!_pointerEvents)
             return false;
+        requestFocus();
         emitPointer("move", event.position.x, event.position.y, event.button,
             event.modifiers);
         return _pressed;
@@ -520,6 +539,8 @@ class SurfaceWidget : Widget
     {
         if (!_keyEvents)
             return false;
+        if (event.key == Key.escape)
+            setCursorHidden(false);
         emitKey("down", event.key, event.modifiers);
         return true;
     }
@@ -530,6 +551,13 @@ class SurfaceWidget : Widget
             return false;
         emitKey("up", event.key, event.modifiers);
         return true;
+    }
+
+    override void onFocusChanged(bool focused)
+    {
+        if (!focused)
+            setCursorHidden(false);
+        super.onFocusChanged(focused);
     }
 
     override bool onPointerLatch(PointF globalPosition)
@@ -548,6 +576,9 @@ class SurfaceWidget : Widget
 
     protected override void onTick(double deltaSeconds)
     {
+        version (Windows)
+            if (_cursorHidden)
+                SetCursor(null);
         refresh(deltaSeconds);
     }
 

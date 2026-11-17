@@ -18,7 +18,7 @@ import core.sys.windows.windows : CreateWindowExA, DefWindowProcA, DispatchMessa
     ClientToScreen, FindWindowA, GetClientRect, GetCurrentProcessId,
     GetCursorPos, GetForegroundWindow, GetModuleHandleA, HINSTANCE, HWND,
     LPARAM, LRESULT, MSG, POINT, PeekMessageA, RECT, RegisterClassA,
-    SetCursorPos, SetWindowPos, SW_SHOW, ShowWindow,
+    ScreenToClient, SetCursorPos, SetWindowPos, SW_SHOW, ShowWindow,
     TranslateMessage, UINT, WNDCLASSA, WPARAM, WS_CHILD, WS_VISIBLE;
 import std.conv : to;
 import std.file : exists, read, write;
@@ -828,8 +828,18 @@ private final class App
         ClientToScreen(mouseWindow, &center);
         POINT cursor;
         if (!GetCursorPos(&cursor)) return;
+        POINT local = cursor;
+        ScreenToClient(mouseWindow, &local);
+        const bool inRender = local.x >= 0 && local.y >= 32 &&
+            local.x < client.right && local.y < client.bottom;
+        if (keyDown(0x5B) || keyDown(0x5C) || keyDown(0x1B))
+        {
+            mouseCaptured = false;
+            return;
+        }
         if (!mouseCaptured)
         {
+            if (!inRender || !keyDown(0x01)) return;
             SetCursorPos(center.x, center.y);
             mouseCaptured = true;
             return;

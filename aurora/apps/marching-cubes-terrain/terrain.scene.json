@@ -30,7 +30,7 @@
         "height": 240,
         "flex": 1,
         "staleMs": 1000,
-        "events": []
+        "events": ["pointer", "key"]
       }
     ]
   }

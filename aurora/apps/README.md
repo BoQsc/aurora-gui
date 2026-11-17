@@ -19,10 +19,18 @@ These rules are mandatory for app presentation:
 - A host surface node must set `"flex": 1` to consume the remaining layout
   space. Fixed `width`/`height` without `flex` intentionally stays fixed when
   the host window is resized or maximized.
+- A captured surface hides the cursor from the host window thread and restores
+  it on Escape or focus loss. Producer-side `ShowCursor` does not control the
+  host window's cursor state.
 - Render the native `AURSFACE` at a resolution appropriate to the host window;
   a small fixed frame that the host flexes will be visibly upscaled and
   pixelated. Use the host-preferred pixel size when adaptive production is
   available.
+- Size the render/readback target to the host work area and measure its
+  publication rate. An oversized offscreen target plus full readback can drop
+  movement to slideshow rates; do not add a blind fixed frame sleep. Keep the
+  target at or above the host's native size only when the resulting FPS budget
+  is met.
 - Verify animation with `apps/verify_animated_surface.py`: sequence must
   advance, `host_read` must advance and must have consumed the previous
   sequence, and the active pixels must change. `host_read` may legitimately
@@ -173,6 +181,16 @@ This verifies that the surface node is flexed and that the published native
 surface is at least the host's resized DPI-native pixel size. A flexed but
 undersized surface will look visibly pixelated.
 
+6. **Surface publication rate:**
+
+```text
+python -B apps/verify_surface_rate.py --surface <app.surface> --min-fps 30
+```
+
+This measures actual sequence publication over a live interval. Use the
+smallest native target that meets the rate budget; do not mask a slow renderer
+with a fixed sleep.
+
 Use `verify` with the test source as an input when the task requires a tracked
 test receipt.
 
@@ -205,4 +223,5 @@ Close the host window, or stop the supervised hotswap process. Confirm no stale
 - [ ] Animated frames are captured at two times and differ.
 - [ ] `verify_animated_surface.py` passes for animated apps.
 - [ ] `verify_native_surface.py` passes; surface is flexed and native-sized.
+- [ ] `verify_surface_rate.py` meets the agreed FPS minimum.
 - [ ] No app-specific logic was added to the generic host.
