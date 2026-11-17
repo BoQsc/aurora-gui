@@ -21,7 +21,8 @@ import std.path : absolutePath, buildPath;
 import std.stdio : writeln;
 import std.string : indexOf, replace;
 
-private string payload(string program, string[] args, bool background)
+private string payload(string program, string[] args, bool background,
+    bool allowSourceBackground = false)
 {
     auto text = `{"program":"` ~ program.replace("\\", "\\\\") ~ `","args":[`;
     foreach (index, arg; args)
@@ -29,7 +30,10 @@ private string payload(string program, string[] args, bool background)
         if (index > 0) text ~= ",";
         text ~= `"` ~ arg.replace("\\", "\\\\") ~ `"`;
     }
-    text ~= background ? `],"background":true}` : `]}`;
+    text ~= "]";
+    if (background) text ~= `,"background":true`;
+    if (allowSourceBackground) text ~= `,"allowSourceBackground":true`;
+    text ~= "}";
     return text;
 }
 
@@ -103,6 +107,25 @@ int main()
     assert(refused(git),
         "a detached VCS command against the checkout was allowed: " ~ git.output);
     writeln("PASS a detached build/VCS command against the checkout is still refused");
+
+    // The explicit launcher exception covers non-mutating app launches that
+    // merely run from inside the checkout, not build/VCS/source-write commands.
+    auto allowedTree = executeTool(OpenCodeToolCall("tree-allow", "run",
+        payload("where.exe", ["git"], true, true)), absolutePath(source));
+    assert(!allowedTree.failed &&
+        allowedTree.output.indexOf("Background process started") >= 0,
+        "an explicit non-mutating launcher exception was refused: " ~
+        allowedTree.output);
+    writeln("PASS an explicit non-mutating launcher may run in the background");
+
+    auto gitAllowed = executeTool(OpenCodeToolCall("git-allow", "run",
+        payload("git", ["-C", absolutePath(source), "status", "--porcelain"],
+            true, true)), root);
+    assert(gitAllowed.failed &&
+        gitAllowed.output.indexOf("allowSourceBackground") >= 0,
+        "allowSourceBackground bypassed a build/VCS command: " ~
+        gitAllowed.output);
+    writeln("PASS allowSourceBackground does not bypass build/VCS commands");
 
     // So is any command whose working directory is the checkout.
     auto inTree = executeTool(OpenCodeToolCall("tree", "run",

@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Retry the rebuild from committed source dd70293 after the transient release-build failure; the identical source compiles cleanly in a separate-output release check.",
+  "reason": "Deploy the explicit allowSourceBackground run-tool exception and its source-guard tests to the running app.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-16 20:16:51.7409475 UTC",
-  "finishedAt": "2026-11-16 20:17:51.2531685 UTC",
-  "durationMs": 59512,
+  "startedAt": "2026-11-17 07:13:18.6184107 UTC",
+  "finishedAt": "2026-11-17 07:14:15.8725259 UTC",
+  "durationMs": 57253,
   "exitCode": 0,
   "errors": [],
-  "publishStatus": "published",
-  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (452d832d3b5d).",
+  "publishStatus": "failed",
+  "publishDetail": "Publishing with installed runtime required: MSVCR120.dll",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

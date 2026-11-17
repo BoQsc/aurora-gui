@@ -1046,6 +1046,9 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "`-run` to compile and execute in one call; compiler options " ~
             "precede `-run` (example: `-Isource -i -run source/app.d`). " ~
             "Set background=true for work that may run long, " ~
+            "For a long-running app launcher that must touch Aurora's checkout " ~
+            "but does not build, invoke VCS, or write source, set " ~
+            "allowSourceBackground=true with background=true. " ~
             "then use process action=wait for completion or new output, with incremental offsets. Foreground commands " ~
             "return a processId after 30 seconds if still running; inspect that same " ~
             "process instead of starting it again. Emit flushed progress output " ~
@@ -1056,7 +1059,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "and inputs=[actual deliverables, source/checker paths]. This executes once with before/after input hashes and an accepted receipt; " ~
             "do not run it first and repeat it through verify. If behavioral checks prove the requested outcome already holds, " ~
             "set no_change_needed=true; an accepted tracked check can finish without unnecessary edits. Use verify for multi-step or pixel-reference checks.",
-            `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the program in the background"},"no_change_needed":{"type":"boolean","description":"Only when behavioral checks prove the requested outcome already holds without an implementation edit"},"check":{"type":"string","enum":["compile","tests","interaction"],"description":"Optional final check; requires inputs and foreground execution"},"inputs":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64,"description":"Actual deliverables and relevant source/checker files for check"}},"required":["program"]}`
+            `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the program in the background"},"allowSourceBackground":{"type":"boolean","description":"Only with background=true for a long-running app launcher that touches Aurora's checkout but does not build, invoke VCS, or write source. Source mutations still run foreground."},"no_change_needed":{"type":"boolean","description":"Only when behavioral checks prove the requested outcome already holds without an implementation edit"},"check":{"type":"string","enum":["compile","tests","interaction"],"description":"Optional final check; requires inputs and foreground execution"},"inputs":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64,"description":"Actual deliverables and relevant source/checker files for check"}},"required":["program"]}`
         ),
         processToolDefinition(),
         toolStatusDefinition(),
@@ -6680,18 +6683,29 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
             leases ~= new CheckoutLease(identity, cancellation is null ? null : &cancellation.cancelled, -1, observer);
         bool sourceMutation;
         string[] sourceTargets;
+        SourceCommandClassification sourceClassification;
         if (developerSource.length)
         {
-            const classified = classifySourceCommand(developerSource,
+            sourceClassification = classifySourceCommand(developerSource,
                 operationDir, workspace, targets, call, input, command);
-            sourceTargets = classified.targets.dup;
-            sourceMutation = classified.mutation();
+            sourceTargets = sourceClassification.targets.dup;
+            sourceMutation = sourceClassification.mutation();
         }
         if (sourceMutation)
         {
-            if (command && input.type == JSONType.object && jsonBool(input, "background"))
+            const backgroundRequested = command &&
+                input.type == JSONType.object && jsonBool(input, "background");
+            const allowSourceBackground = call.name == "run" &&
+                input.type == JSONType.object &&
+                jsonBool(input, "allowSourceBackground");
+            if (backgroundRequested && !allowSourceBackground)
                 return ToolExecution(call.name,
                     "Error: Aurora source commands must run in the foreground so sync waits for the physical operation to finish.", true);
+            if (backgroundRequested && allowSourceBackground &&
+                (sourceClassification.mutatingTool ||
+                    sourceClassification.targets.length > 0))
+                return ToolExecution(call.name,
+                    "Error: allowSourceBackground is only for non-mutating app launchers; build/VCS commands and source write targets must stay in the foreground.", true);
             if (changeContext.developerCaptured)
             {
                 const blocked = sourceEditBlocked(changeContext.developer, sourceTargets, sourceGitResolutionCommand(call, input));

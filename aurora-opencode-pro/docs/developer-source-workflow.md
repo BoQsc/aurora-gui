@@ -12,6 +12,9 @@ Sync, edits, source reads, publication and rebuild preparation share the physica
 checkout lock. Repository roots, package subfolders, Windows short paths and
 junctions resolve to one checkout. The lock remains held until the actual operation
 finishes, including after Stop. Source commands must run in the foreground.
+An explicit `run` with `background:true` and `allowSourceBackground:true` may
+launch a long-running app launcher only when it has no source write targets and
+does not invoke a build or VCS tool; those still stay in the foreground.
 
 Sync merges maintainer history on every branch, preserving merge-only amendments
 and published commits. It refuses incoming paths that collide with untracked or
