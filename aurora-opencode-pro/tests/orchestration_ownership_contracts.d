@@ -58,8 +58,9 @@ int main()
     session.activeLeafId = "input"; session.taskStatus = "waiting_input";
     session.goal = "Deliver the deployment"; session.goalStatus = "active";
     TurnPolicy turn; turn.toolsEnabled = true; turn.orchestratorEnabled = true;
-    assert(decideTurn(session, turn).action == TurnAction.waitInput,
-        "A validated orchestration question restarted the active goal");
+    const orchestrationWait = decideTurn(session, turn);
+    assert(orchestrationWait.action == TurnAction.request && orchestrationWait.advanceGoal,
+        "A validated orchestration question stopped the active goal chat");
     session.messages = null; session.activeLeafId = "";
     session.taskStatus = "active"; session.activeAgentId = "builder";
     session.agentHops = 100; session.nextSpeakerId = "orchestrator";

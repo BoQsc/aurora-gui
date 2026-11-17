@@ -357,7 +357,7 @@ int main()
         require(automaticGoalRequest(text),
             "first message lost automatic goal adoption: " ~ text);
     require(!automaticGoalRequest("   "), "an empty first message became a goal");
-    writeln("PASS every first message becomes the goal; validated input suspends continuation and a reply releases it");
+    writeln("PASS every first message becomes the goal; validated input is recorded and a reply releases it");
 
     // A prose-only continuation is a stalled goal audit, not a finished turn.
     // Execution recovery and output recovery keep the same audit open until a

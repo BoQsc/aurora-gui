@@ -223,7 +223,8 @@ public string goalPromptBlock(const ref ChatSession session)
                 "Call goal_complete with a concise summary and accepted toolCallId evidence for action goals; an answer-only goal needs no receipt. " ~
                 "A goal whose requested outcome is still unmet or failed is not complete: never call goal_complete to record a failure, " ~
                 "a blocker or a failed audit. Keep working on the unfinished outcome. " ~
-                "If an essential user-owned fact is missing, finish independent work and call request_input with the fact and blocked steps. " ~
+                "Do not stop this goal for a question: decide routine implementation, testing and design choices yourself. " ~
+                "If an essential user-owned fact is missing, finish independent work, record it once with request_input and continue with the best supported default; the app keeps the goal running until it is complete. " ~
                 "Don't add hypothetical future work or repeat passing checks for completion bookkeeping.\n");
             break;
         case "paused":
@@ -265,9 +266,11 @@ public string goalContinuationInstruction(const ref ChatSession session)
             ? "; no tool receipt is required for this answer goal. Otherwise keep "
             : " and concrete evidence; otherwise keep ") ~
         "advancing the unfinished outcomes. Do not close the goal as a failure: an audit that " ~
-        "finds the outcome unmet, blocked or not achieved means more work, not completion. If only an essential user-owned fact prevents completion, " ~
-        "call request_input now with the missing fact and blocked_steps; a prose question does not pause " ~
-        "the goal. Keep the goal active while waiting. Do not repeat completed work just to avoid this boundary. " ~
+        "finds the outcome unmet, blocked or not achieved means more work, not completion. Do not stop " ~
+        "the goal for a question: decide routine implementation, testing and design choices yourself. " ~
+        "If a genuinely user-owned fact is missing, record it once with request_input and continue with " ~
+        "the best supported default; the app keeps the goal running until it is complete. " ~
+        "Do not repeat completed work just to avoid this boundary. " ~
         "The user can pause this goal at any time.";
 }
 
@@ -279,9 +282,20 @@ public enum goalAuditRecoveryInstruction = " The previous goal continuation " ~
     "summary, or the remaining work. Take one concrete action with the " ~
     "available tools and report what actually changed. If the goal is " ~
     "demonstrably complete, call `goal_complete` with a concise summary and " ~
-    "accepted evidence. If an essential user-owned fact prevents completion, " ~
-    "call request_input with that fact and blocked_steps. The goal remains " ~
-    "active; only the user can pause it.";
+    "accepted evidence. Do not stop for a question: decide routine choices " ~
+    "yourself and continue with the best supported default. The goal remains " ~
+    "active until it is complete; only the user can pause it.";
+
+/// Added when the agent asked for input inside an active goal. The request
+/// stays in the transcript as recorded context, but a goal chat never settles
+/// into "waiting for information": the next turn acts on the best evidence.
+public enum goalInputContinuesInstruction = " The previous goal turn requested user input. " ~
+    "This goal does not stop for a question: keep the request in context, do not repeat it, " ~
+    "and take the next concrete action with the available tools. Decide routine " ~
+    "implementation, testing and design questions yourself from the local evidence. " ~
+    "If the missing fact is genuinely user-owned, proceed with the best supported default, " ~
+    "state that assumption in the result, and keep advancing the unfinished outcomes. " ~
+    "Call `goal_complete` only once the requested outcome and its checks are complete.";
 
 /// Retained for reading and retiring control history from older builds.
 public enum goalCompletionAuditMarker = "Persistent goal completion audit:\n";

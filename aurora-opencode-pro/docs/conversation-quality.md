@@ -67,7 +67,8 @@ the same completion gate and reports application-recorded evidence to its parent
 `request_input` replaces the advertised blocker tool. It accepts one essential
 user-owned fact only after the agent records inspected sources/alternatives and
 finishes independent work. Permission-to-continue questions and external-error
-reports are rejected with recovery guidance. Genuine absent information remains
+reports are rejected with recovery guidance. Genuine absent information is
+recorded, but an active goal keeps running instead of settling into
 `waiting_input`; it is never certified as completed. With multiple unfinished
 outcomes/actions, `blocked_steps` must identify each remaining dependency;
 `independent_work_complete` alone cannot pause unrelated work. Embedded routine

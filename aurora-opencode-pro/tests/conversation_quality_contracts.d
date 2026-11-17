@@ -84,7 +84,10 @@ int main()
     append(waiting,"assistant","The customer rate is still pending.");
     assert(taskAwaitingInput(waiting),"An answer-only question discarded the validated wait");
     const waitingDecision=decideTurn(waiting,diagnosticPolicy);
-    assert(waitingDecision.action==TurnAction.waitInput && !waitingDecision.advanceGoal);
+    // The user's "Answer only" request is an explicit work restriction, so this
+    // turn answers and holds the goal's work instead of starting another one.
+    assert(waitingDecision.action==TurnAction.waitInput && !waitingDecision.advanceGoal,
+        "an answer-only request did not hold the goal's recorded input wait");
     ChatSession casual;
     request(casual, "Continue in this chat while I open another.");
     assert(!unfinishedTask(casual), "Casual continuation manufactured an action task");

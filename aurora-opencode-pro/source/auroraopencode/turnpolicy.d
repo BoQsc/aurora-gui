@@ -6,7 +6,8 @@ import auroraopencode.executioncontrol : executionState, executionShouldContinue
 import auroraopencode.taskflow : taskInvestigation;
 import auroraopencode.worktracking : requiredWorkRemaining;
 import auroraopencode.goalmode : goalActive, goalNeedsHumanInput, goalContinuationInstruction,
-    goalAuditRecoveryInstruction, goalIsAnswerTurn, goalAnswerDelivered;
+    goalAuditRecoveryInstruction, goalInputContinuesInstruction, goalIsAnswerTurn,
+    goalAnswerDelivered;
 import auroraopencode.completionhandoff : completionHandoffNeeded, completionHandoffPending,
     recordedCompletionHandoff;
 import auroraopencode.orchestrator : experimentalOrchestratorIsRouter, experimentalOrchestratorAgentName;
@@ -15,8 +16,7 @@ import auroraopencode.requestintent : RequestIntent, actionApprovalRequest,
     requestIntent, workRestrictionRequest;
 import auroraopencode.planmode : planModeProposalPending;
 import auroraopencode.outputguard : outputRecoveryMarker;
-import auroraopencode.outputrecovery : goalAuditStalled, outputRecoveryCount,
-    maxOutputRecoveries;
+import auroraopencode.outputrecovery : goalAuditStalled;
 import std.string : strip;
 
 enum TurnAction { settle, failed, interrupted, applySteering, request, waitInput, waitChildren, reportChild }
@@ -78,7 +78,16 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         result.status = "Applying queued guidance…";
         return result;
     }
-    if (goalNeedsHumanInput(session))
+    // An active action goal never stops for a question. The reported "Aurora
+    // Designer Check" chat ended as waiting_input while its goal still owned
+    // unfinished work: the agent asked which host backend to use and the app
+    // left the goal active with no running turn. The goal continues until the
+    // requested outcome is complete or the user pauses it, so the recorded
+    // input request is carried into the next goal turn instead of settling.
+    const goalKeepsRunning = goalActive(session) && policy.toolsEnabled &&
+        !goalIsAnswerTurn(session.goal) &&
+        !workRestrictionRequest(latestActualUserRequest(session));
+    if (goalNeedsHumanInput(session) && !goalKeepsRunning)
     {
         result.action = TurnAction.waitInput;
         result.turnStatus = "completed";
@@ -239,26 +248,36 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     // active but idle was the reported "goal stopped and does nothing" state.
     // A goal continuation answered with prose only has not advanced the goal.
     // Requesting the same continuation again replayed the refusal, and settling
-    // left the active goal with no running turn. Spend the bounded output
-    // recovery budget on a concrete-action turn instead. The app never pauses
-    // the goal: only the user can pause it.
-    if (goalActive(session) && policy.toolsEnabled &&
-        !goalIsAnswerTurn(session.goal) &&
-        !workRestrictionRequest(latestActualUserRequest(session)))
+    // left the active goal with no running turn. Spend the output recovery turn
+    // on a concrete action instead. The recovery budget never ends an active
+    // goal: only goal_complete, an explicit user pause or a work restriction
+    // stops the chat while the goal still owns unfinished work.
+    if (goalKeepsRunning)
     {
+        if (goalNeedsHumanInput(session))
+        {
+            // The request_input stays in the transcript as recorded context.
+            // Waiting for the answer would stop a goal chat, so continue with
+            // the next concrete action and the best supported default.
+            result.advanceGoal = true;
+            result.clearBlocker = true;
+            request(goalInputContinuesInstruction,
+                "Continuing the goal without stopping for the question…");
+            return result;
+        }
         if (!goalAuditStalled(session))
         {
             result.advanceGoal = true;
             request(goalContinuationInstruction(session), "Continuing toward the goal…");
             return result;
         }
-        if (outputRecoveryCount(session) < maxOutputRecoveries)
-        {
-            result.advanceGoal = true;
-            request(outputRecoveryMarker ~ goalAuditRecoveryInstruction,
-                "Recovering the goal…");
-            return result;
-        }
+        // Exhausted recovery used to settle here, leaving the chat idle while
+        // the goal still advertised itself as active. The goal owns the work
+        // until it is reached or the user stops it, so keep recovering.
+        result.advanceGoal = true;
+        request(outputRecoveryMarker ~ goalAuditRecoveryInstruction,
+            "Recovering the goal…");
+        return result;
     }
     result.turnStatus = "completed";
     if (result.taskStatus == "waiting_input")

@@ -1,7 +1,7 @@
 module goal_hold_contracts;
 
-// Progress audits recover within a bounded budget and settle quietly; an audit
-// never paints a failure row or stops the chat.
+// Progress audits recover and never paint a failure row. A goal chat keeps
+// running past the recovery budget: only completion or the user stops it.
 
 import aurora;
 import auroraopencode.appui : OpenCodeRoot;
@@ -72,18 +72,21 @@ int main()
             root.addConversationForTesting(["assistant"], ["Still done without a check."]);
             root.startTurnClockForTesting(); root.injectOutputFailureForTesting(issue);
         }
-        assert(root.turnStatusForTesting() == "completed" && root.failedMessageCountForTesting() == 0,
-            "Exhausted audit recovery stopped the chat with a failure row");
+        assert(root.turnStatusForTesting() == "running" && root.failedMessageCountForTesting() == 0,
+            "Exhausted goal recovery stopped the active goal chat");
         assert(root.goalStatusForTesting() == "active",
-            "Exhaustion paused the user's goal");
+            "Exhaustion paused or completed the user's goal");
         assert(root.taskStatusForTesting() != "completed",
             "Exhaustion fabricated completion of the unfinished task");
         bool visible;
         foreach (i; 0 .. root.totalMessageCountForTesting())
             if (root.messageContentForTesting(i).indexOf("Agent output stalled") >= 0) visible = true;
         assert(!visible, "Audit exhaustion leaked a failure notice into the transcript");
+        // The goal chat is intentionally still running; stop it so the next
+        // fixture starts from a clean turn.
+        root.stopActiveTurnForTesting();
         pump();
     }
-    writeln("PASS task and goal audits recover quietly; exhaustion settles without stopping the chat");
+    writeln("PASS goal audits recover without stopping the active goal chat");
     return 0;
 }

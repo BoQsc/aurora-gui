@@ -119,6 +119,7 @@ import auroraopencode.goalmode : GoalCommand, GoalCommandKind, goalActive,
     clampGoalText, goalCompletionError,
     goalContinuationInstruction,
     goalNeedsHumanInput, automaticGoalRequest, goalPromptBlock, maxGoalLength,
+    goalIsAnswerTurn,
     parseGoalCommand,
     recordGoalOutcome, recordGoalSet, syncGoalHistory;
 import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, diagnosticToolAllowed;
@@ -15162,13 +15163,14 @@ private string _suggestExcludeId;
     /// Whether a restart must still continue this conversation's active goal.
     /// A rebuild ends the transport turn of a goal, not the objective, so the
     /// note cannot be dismissed merely because `turnStatus` is no longer
-    /// `running`. Paused or completed goals, a validated input wait and finished
-    /// work are left exactly as the user and the agent left them.
+    /// `running`. Paused or completed goals and finished work are left exactly as
+    /// the user and the agent left them; an active goal's unfinished work resumes
+    /// even when a recorded input request had set `waiting_input`.
     private bool resumeGoalWorkRemaining(int index)
     {
         if (index < 0 || index >= cast(int) _sessions.length) return false;
         const ref session = _sessions[cast(size_t) index];
-        if (!goalActive(session) || taskAwaitingInput(session)) return false;
+        if (!goalActive(session)) return false;
         // The evidence-backed unfinished check needs the transcript, which the
         // lazy per-thread store leaves on disk for a conversation that was not
         // the running one at shutdown.
@@ -15183,9 +15185,9 @@ private string _suggestExcludeId;
     /// saved `interrupted` - or even `completed` when the shutdown processed the
     /// cancellation before the snapshot - is a shutdown artifact, not the
     /// agent's verdict that the work ended. Continue that chat unless the user
-    /// explicitly stopped it (a paused goal with no interrupted turn) or it is
-    /// waiting for a required answer. A chat with no transcript left nothing to
-    /// continue.
+    /// explicitly stopped it (a paused goal with no interrupted turn) or an
+    /// ordinary task is waiting for a required answer. A chat with no transcript
+    /// left nothing to continue.
     ///
     /// `turnInFlight` is the note's own record that the shutdown cut off a turn
     /// that was running. A stop pauses the goal *and* ends its turn, so a paused
@@ -15206,7 +15208,8 @@ private string _suggestExcludeId;
         const ref session = _sessions[cast(size_t) index];
         if (session.messages.length == 0) return false;
         if (session.goalStatus == "paused" && !turnInFlight) return false;
-        if (session.taskStatus == "waiting_input" && taskAwaitingInput(session))
+        if (session.taskStatus == "waiting_input" && taskAwaitingInput(session) &&
+            !goalActive(session))
             return false;
         return true;
     }
@@ -23247,19 +23250,29 @@ private void pollButtonSuggestionRequest()
                 event.completionTokens, event.requestId);
         }
         const exhausted = outputRecoveryCount(*session) >= maxOutputRecoveries;
-        const recover = outputRecoveryAllowed(event.outputIssue, exhausted,
-            toolsEnabledForSession(*session), _stopPending,
-            computerUseAbortActive(),
-            explanationOnlyRequest(latestActualUserRequest(*session)));
+        const explanationOnly =
+            explanationOnlyRequest(latestActualUserRequest(*session));
+        const taskAudit = auditStallIssue(event.outputIssue);
+        // An active action goal never stops for exhausted output recovery. The
+        // referenced goal chat settled here with its goal still active, so the
+        // budget applies to ordinary tasks only while a goal still owns work.
+        const goalKeepsRunning = taskAudit && goalActive(*session) &&
+            !goalIsAnswerTurn(session.goal) && !explanationOnly;
+        const recover = goalKeepsRunning
+            ? toolsEnabledForSession(*session) && !_stopPending &&
+                !computerUseAbortActive()
+            : outputRecoveryAllowed(event.outputIssue, exhausted,
+                toolsEnabledForSession(*session), _stopPending,
+                computerUseAbortActive(), explanationOnly);
         logInfo("agent-output request=" ~ to!string(event.requestId) ~
             " thread=" ~ session.id ~ " issue=" ~ event.outputIssue ~
             " recovery=" ~ (recover ? "continuing" : "stopped"));
-        const taskAudit = auditStallIssue(event.outputIssue);
         if (taskAudit)
         {
             // A progress audit is an internal control boundary, not a provider
-            // failure. Keep the reply and finish it here; exhaustion settles
-            // quietly below instead of painting an error that stops the chat.
+            // failure. Keep the reply and finish it here; an ordinary task's
+            // exhausted budget settles quietly below instead of painting an
+            // error, while an active goal keeps recovering.
             _suppressDoneStatus = true;
             finishAssistantMessage(false);
         }

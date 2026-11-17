@@ -11,11 +11,12 @@ tools and new human instructions reset it; plan chatter does not. Stop still
 cancels work.
 
 A goal continuation that answers with prose only is not a provider failure. It
-spends the bounded recovery budget on a concrete-action turn: take a useful tool
-action, call `goal_complete`, or call `request_input`. The goal stays active
-throughout, because only the user can pause it. Exhaustion settles quietly with
-the recorded work and goal preserved; it never adds a failure bubble. A task
-audit keeps its bounded recovery the same way. The session server reports an
+keeps spending recovery turns on a concrete action: take a useful tool action,
+call `goal_complete`, or record a genuinely user-owned fact with `request_input`
+and continue. The goal stays active and running throughout, because only the
+user can pause it. The recovery budget never settles an active goal chat; it
+never adds a failure bubble. An ordinary task audit keeps its bounded recovery.
+The session server reports an
 unexpected post-start idle state as `turn_stalled`, not `turn_not_started`.
 
 Completed plans and current accepted checks trigger a short outcome check in the

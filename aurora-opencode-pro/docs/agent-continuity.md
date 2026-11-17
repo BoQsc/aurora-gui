@@ -23,18 +23,19 @@ owners. It is not a complete actor-engine rewrite or a guarantee of model qualit
   its reply is delivered and the objective resumes. Only an explicit restriction
   ("just explain", "do not edit") holds the continuation. Answer and analysis
   goals settle after their reply and are recorded completed. Every other settle
-  keeps the goal active: the app and the agent never pause the user's goal. A
-  continuation answered with prose only spends one bounded recovery turn on a
-  concrete action instead of settling silently. A queued follow-up keeps the goal
-  active for its own turn.
-- A goal waits only at the same validated `request_input` boundary used by task
-  continuation. Phrases such as “please confirm” in assistant prose no longer
-  silently pause it. Waiting retains the active goal; replying with the missing
-  information releases the wait. Explicit Stop still pauses the goal.
+  keeps the goal active: the app and the agent never pause or idle the user's
+  goal. A continuation answered with prose only keeps spending recovery turns on
+  a concrete action instead of settling silently; exhaustion never ends a goal
+  chat. A queued follow-up keeps the goal active for its own turn.
+- `request_input` is recorded at the same validated boundary used by task
+  continuation, but it does not stop a goal chat. The request stays in context,
+  the goal continues with the best supported default, and only a genuinely
+  user-owned fact should be asked once. Explicit Stop still pauses the goal.
 - A rebuild or restart resumes an active goal whose turn had already settled, not
   only a `running` transport turn: the rebuild ended the turn, not the objective.
-  Paused and completed goals, a validated input wait, finished work and a plain
-  relaunch without a rebuild/crash note still stay stopped.
+  Paused and completed goals, finished work and a plain relaunch without a
+  rebuild/crash note still stay stopped; a recorded input wait does not block an
+  active goal's resume.
 - Shared tool schedulers now join their workers and watchdogs before runtime
   teardown. A post-rebuild multi-turn test exposed an intermittent shutdown
   access violation; the minidump identified a still-running queue watchdog.

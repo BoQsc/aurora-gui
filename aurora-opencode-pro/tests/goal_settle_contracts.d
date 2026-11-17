@@ -193,8 +193,10 @@ int main()
             "a failed reply counted as a delivered answer");
     }
 
-    // A goal waiting for validated input is not paused: it is still the user's
-    // move and the goal stays active.
+    // A request for validated input must not stop a goal chat. The referenced
+    // "Aurora Designer Check" chat ended as waiting_input while its goal still
+    // owned unfinished work, so the user saw the goal stop on a question. The
+    // recorded request stays in the transcript and the goal keeps working.
     {
         auto session = sessionWith(actionGoal);
         session.taskStatus = "waiting_input";
@@ -210,10 +212,15 @@ int main()
             `"independent_work_complete":true}`;
         session.messages ~= tool;
         const decision = decide(session);
-        require(decision.action == TurnAction.waitInput,
-            "a validated input wait did not wait for the user");
+        require(decision.action == TurnAction.request && decision.continues(),
+            "a validated input request stopped the active goal chat");
+        require(decision.advanceGoal, "the input continuation was not a goal turn");
+        require(decision.taskStatus == "active",
+            "the goal kept the waiting_input task status");
+        require(decision.guidance.indexOf("does not stop for a question") >= 0,
+            "the input continuation did not tell the agent to keep working");
         require(decision.settleGoal.length == 0,
-            "a validated input wait paused the active goal");
+            "the input continuation settled the active goal");
     }
 
     // A queued follow-up opens the next turn at once, so the chat is not idle
@@ -230,8 +237,8 @@ int main()
     // Reported: the referenced "Aurora Designer Check" chat answered its goal
     // continuation with prose only while a checklist outcome and verification
     // were still open. The turn settled and the chat sat idle while the goal
-    // still advertised itself as active. The app must spend a bounded recovery
-    // turn on real work; it must never pause the user's goal.
+    // still advertised itself as active. The app must keep spending recovery
+    // turns on real work; an active goal chat never stops.
     {
         auto session = sessionWith(actionGoal);
         session.contract.currentIntent = "analysis";
@@ -256,8 +263,10 @@ int main()
                 outputRecoveryMarker ~ " keep going", true));
         appendLinked(session, msg("assistant", "Still summarizing."));
         const exhausted = decide(session);
-        require(!exhausted.continues(),
-            "exhausted goal recovery kept replaying the request");
+        require(exhausted.continues() && exhausted.advanceGoal,
+            "exhausted goal recovery stopped the active goal chat");
+        require(exhausted.guidance.startsWith("Agent output recovery:"),
+            "exhausted goal recovery did not keep asking for a concrete action");
         require(exhausted.settleGoal.length == 0,
             "exhausted goal recovery paused the user's goal");
         require(session.goalStatus == "active",

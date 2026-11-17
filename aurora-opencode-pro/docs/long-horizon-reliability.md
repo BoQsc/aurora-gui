@@ -19,9 +19,10 @@ remains deferred.
 - Recent human decisions are quoted in both extractive and model-refined
   checkpoints. Later instructions take precedence. Durable task constraints and
   full history remain available for decisions older than this bounded window.
-- Active goals explicitly use `request_input` after independent work when a
-  customer-owned fact is missing. A prose question does not record a wait.
-  Answer-only questions preserve an existing wait and do not restart goal work.
+- Active goals use `request_input` after independent work when a customer-owned
+  fact is missing, record it once and continue with the best supported default.
+  A prose question does not record a wait, and an active goal never settles into
+  `waiting_input`. Answer-only questions hold the continuation without ending it.
 - Substantial goal mutations receive one forward-plan/acceptance preflight when
   a plan or its constraints are missing. It asks for behavioral acceptance rules
   from the original specification. This is a bounded intervention: a provider

@@ -190,6 +190,45 @@ int main()
     pump();
     writeln("PASS a question inside an action goal keeps the goal running");
 
+    // A validated request for user input must not stop a goal chat either. The
+    // reported "Aurora Designer Check" chat ended as waiting_input with its goal
+    // still active; the goal must keep running and decide routine choices.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["Complete the release packaging.", "I need one decision."]);
+    root.setGoalForTesting("Complete the release packaging.", "active");
+    root.applyPlanForTesting(
+        `{"plan":[{"id":"pkg","step":"Build the release package","status":"in_progress"}]}`);
+    root.setTaskStateForTesting("Complete the release packaging.",
+        "waiting_input", "not_required");
+    root.appendToolMessageForTesting("request_input",
+        "Required information: release channel",
+        `{"reason":"The release channel is a user-owned choice",` ~
+        `"required_fact":"Release channel",` ~
+        `"question":"Which release channel should receive it?",` ~
+        `"checked":["Local packaging configuration"],` ~
+        `"independent_work_complete":true}`, 0, 0, "");
+    root.startTurnClockForTesting();
+    root.settleTaskAfterDoneForTesting();
+    pump();
+    assert(root.turnBusyForTesting(),
+        "a validated input request stopped the active goal chat");
+    assert(root.goalStatusForTesting() == "active",
+        "the input continuation changed the user's goal state");
+    assert(root.taskStatusForTesting() == "active",
+        "the input continuation kept the goal waiting: " ~
+        root.taskStatusForTesting());
+    bool inputContinued;
+    foreach (i; 0 .. root.totalMessageCountForTesting())
+        if (root.messageContentForTesting(i).indexOf(
+                "does not stop for a question") >= 0)
+            inputContinued = true;
+    assert(inputContinued,
+        "the input continuation did not tell the agent to keep working");
+    root.stopActiveTurnForTesting();
+    pump();
+    writeln("PASS a validated input request keeps the goal running");
+
     writeln("goal settle UI contracts passed");
     return 0;
 }
