@@ -3,7 +3,7 @@ module hotswap;
 import core.stdc.string : memcpy;
 import core.sys.windows.windows : GetCurrentProcessId;
 import core.thread : Thread;
-import core.time : msecs;
+import core.time : msecs, seconds;
 import std.conv : to;
 import std.file : exists, mkdirRecurse, read, readText, remove, rmdirRecurse,
     rename, tempDir, write, thisExePath;
@@ -211,14 +211,8 @@ class HostLink
         }
     }
 
-    JSONValue request(string command, string[string] fields = null)
+    private JSONValue exchange(JSONValue payload)
     {
-        auto payload = JSONValue(string[string].init);
-        payload.object["id"] = JSONValue(++nextId);
-        payload.object["command"] = JSONValue(command);
-        if (fields !is null)
-            foreach (key, value; fields)
-                payload.object[key] = JSONValue(value);
         socket.send(payload.toJSON() ~ "\n");
 
         while (true)
@@ -229,13 +223,36 @@ class HostLink
             if (text.length < 9 || text[0 .. 9] != "RESPONSE ")
                 throw new Exception("unexpected host line: " ~ text);
             auto response = parseJSON(text[9 .. $]);
-            if (response.object["id"].get!long != nextId)
+            if (response.object["id"].get!long !=
+                payload.object["id"].get!long)
                 throw new Exception("host response id mismatch");
             if (!response.object["ok"].get!bool)
-                throw new Exception("host command failed: " ~ command ~ " " ~
+                throw new Exception("host command failed: " ~
+                    payload.object["command"].get!string ~ " " ~
                     response.object["error"].get!string);
             return response;
         }
+    }
+
+    JSONValue request(string command, string[string] fields = null)
+    {
+        auto payload = JSONValue(string[string].init);
+        payload.object["id"] = JSONValue(++nextId);
+        payload.object["command"] = JSONValue(command);
+        if (fields !is null)
+            foreach (key, value; fields)
+                payload.object[key] = JSONValue(value);
+        return exchange(payload);
+    }
+
+    JSONValue request(string command, JSONValue[string] fields)
+    {
+        auto payload = JSONValue(string[string].init);
+        payload.object["id"] = JSONValue(++nextId);
+        payload.object["command"] = JSONValue(command);
+        foreach (key, value; fields)
+            payload.object[key] = value;
+        return exchange(payload);
     }
 
 
@@ -245,7 +262,8 @@ class HostLink
     }
 }
 
-private void writeScene(string path, string surfacePath, string title)
+private void writeScene(string path, string surfacePath, string title,
+    string[] events = null)
 {
     auto scene = JSONValue(string[string].init);
     scene.object["schemaVersion"] = JSONValue(2);
@@ -261,7 +279,11 @@ private void writeScene(string path, string surfacePath, string title)
     root.object["width"] = JSONValue(Width);
     root.object["height"] = JSONValue(Height);
     root.object["staleMs"] = JSONValue(StaleMs);
-    root.object["events"] = JSONValue(JSONValue[].init);
+    JSONValue[] eventValues;
+    if (events !is null)
+        foreach (eventName; events)
+            eventValues ~= JSONValue(eventName);
+    root.object["events"] = JSONValue(eventValues);
     scene.object["root"] = root;
     const temporary = path ~ ".tmp";
     write(temporary, scene.toJSON());
@@ -448,31 +470,40 @@ private double buildLiveModule(string source, string exe)
     return watch.peek.total!"msecs";
 }
 
-private int parseRevision(string source)
+private JSONValue stateDocument(string path)
 {
-    const marker = "enum Revision = ";
-    const start = source.indexOf(marker);
-    if (start < 0) return 1;
-    const valueStart = start + marker.length;
-    const end = source.indexOf(';', valueStart);
-    if (end < 0) return 1;
-    try
-    {
-        return to!int(source[valueStart .. end].strip);
-    }
-    catch (Exception)
-    {
-        return 1;
-    }
+    return parseJSON(readText(path));
 }
 
-private void liveMain(string[] args)
+private void waitBuild(string path, int build, int timeoutMs = 8000)
+{
+    foreach (i; 0 .. timeoutMs / 50)
+    {
+        if (exists(path))
+        {
+            try
+            {
+                if (stateDocument(path).object["build"].get!int == build)
+                    return;
+            }
+            catch (Exception)
+            {
+            }
+        }
+        Thread.sleep(50.msecs);
+    }
+    throw new Exception("build did not publish: " ~ to!string(build));
+}
+
+private void devMain(string[] args)
 {
     string hostPath = "aurora-host.exe";
-    string source = "projects/aurora-live/module.d";
-    string outDir = "build/live-demo";
-    bool demoEdit;
-    int watchSeconds;
+    string source;
+    string outDir = "build/live-dev";
+    string title = "Live module";
+    string eventKind;
+    int watchSeconds = 600;
+    int holdSeconds;
     for (size_t i = 0; i < args.length; ++i)
     {
         if (args[i] == "--host" && i + 1 < args.length)
@@ -481,30 +512,34 @@ private void liveMain(string[] args)
             source = args[++i];
         else if (args[i] == "--out" && i + 1 < args.length)
             outDir = args[++i];
-        else if (args[i] == "--demo-edit")
-            demoEdit = true;
+        else if (args[i] == "--title" && i + 1 < args.length)
+            title = args[++i];
+        else if (args[i] == "--events" && i + 1 < args.length)
+            eventKind = args[++i];
         else if (args[i] == "--watch" && i + 1 < args.length)
             watchSeconds = to!int(args[++i]);
+        else if (args[i] == "--hold" && i + 1 < args.length)
+            holdSeconds = to!int(args[++i]);
     }
+    if (source.length == 0)
+        throw new Exception("dev requires --source <module.d>");
     if (!exists(hostPath)) throw new Exception("missing host: " ~ hostPath);
     if (!exists(source)) throw new Exception("missing live source: " ~ source);
-    if (!demoEdit && watchSeconds <= 0)
-        throw new Exception("live mode needs --demo-edit or --watch <seconds>");
 
-    const temp = buildPath(tempDir(), "aurora-live-code-" ~
+    string[] events;
+    if (eventKind.length != 0) events ~= eventKind;
+
+    const temp = buildPath(tempDir(), "aurora-live-dev-" ~
         to!string(GetCurrentProcessId()) ~ "-" ~ to!string(uniform(0, 100000)));
     mkdirRecurse(temp);
     scope (exit) if (exists(temp)) rmdirRecurse(temp);
     const artifacts = outDir.length != 0 ? outDir : temp;
     if (outDir.length != 0) mkdirRecurse(artifacts);
 
-    const scenePath = buildPath(temp, "live.scene.json");
-    const statePath = buildPath(temp, "live.state.json");
-    const surface1 = buildPath(temp, "live-v1.surface");
-    const surface2 = buildPath(temp, "live-v2.surface");
-    const shot1 = buildPath(artifacts, "live-v1.ppm");
-    const shot2 = buildPath(artifacts, "live-v2.ppm");
-    writeScene(scenePath, surface1, "Live code v1");
+    const scenePath = buildPath(temp, "dev.scene.json");
+    const statePath = buildPath(temp, "dev.state.json");
+    const firstSurface = buildPath(temp, "dev-1.surface");
+    writeScene(scenePath, firstSurface, title, events);
 
     const port = uniform(20000, 40000);
     auto host = spawnProcess([hostPath, "--run", scenePath,
@@ -527,82 +562,69 @@ private void liveMain(string[] args)
     if (socket is null) throw new Exception("cannot connect to aurora-host");
     auto link = new HostLink(socket);
 
-    Pid v1;
-    Pid v2;
+    Pid current;
     scope (exit)
     {
-        stopQuietly(v2);
-        stopQuietly(v1);
+        stopQuietly(current);
         closeQuietly(link);
         stopQuietly(host);
     }
 
-    auto exe1 = buildPath(temp, "live-v1.exe");
-    auto original = readText(source);
-    const revision1 = parseRevision(original);
-    const build1 = buildLiveModule(source, exe1);
-    v1 = spawnProcess([exe1, "--surface", surface1, "--state", statePath,
-        "--seconds", "20"]);
-    waitState(statePath, revision1);
+    int build = 1;
+    auto firstExe = buildPath(temp, "dev-1.exe");
+    const firstBuildMs = buildLiveModule(source, firstExe);
+    current = spawnProcess([firstExe, "--surface", firstSurface,
+        "--state", statePath, "--build", "1", "--seconds", "900"]);
+    waitBuild(statePath, 1);
     waitSurface(link);
-    capture(link, shot1);
-    const value1 = parseJSON(readText(statePath)).object["value"].get!int;
+    capture(link, buildPath(artifacts, "build-1.ppm"));
+    auto last = readText(source);
+    stdout.writeln("[1] build=1 buildMs=", firstBuildMs,
+        " hostPid=", host.processID);
+    stdout.writeln("host stays open; edit ", source, " to rebuild");
+    stdout.flush();
 
-    if (demoEdit)
+    void swap()
     {
-        auto changed = original;
-        if (changed.indexOf("enum Revision = 1;") >= 0)
-            changed = changed.replace("enum Revision = 1;",
-                "enum Revision = 2;");
-        else
-            changed = changed.replace("enum Revision = 2;",
-                "enum Revision = 1;");
-        write(source, changed);
-        Thread.sleep(150.msecs);
+        build++;
+        const surface = buildPath(temp, "dev-" ~ to!string(build) ~ ".surface");
+        auto exe = buildPath(temp, "dev-" ~ to!string(build) ~ ".exe");
+        const buildMs = buildLiveModule(source, exe);
+        auto next = spawnProcess([exe, "--surface", surface,
+            "--state", statePath, "--build", to!string(build),
+            "--seconds", "900"]);
+        waitBuild(statePath, build);
+        writeScene(scenePath, surface, title, events);
+        link.request("reload");
+        waitSurface(link);
+        capture(link, buildPath(artifacts, "build-" ~ to!string(build) ~ ".ppm"));
+        stdout.writeln("[", build, "] buildMs=", buildMs,
+            " hostPid=", host.processID);
+        stdout.flush();
+        stopQuietly(current);
+        current = next;
     }
-    else
-    {
-        stdout.writeln("watching ", source, " for ",
-            watchSeconds, " seconds...");
-        foreach (i; 0 .. watchSeconds * 10)
-        {
-            if (readText(source) != original) break;
-            Thread.sleep(100.msecs);
-        }
-    }
-
-    auto exe2 = buildPath(temp, "live-v2.exe");
-    const revision2 = parseRevision(readText(source));
-    if (revision2 == revision1)
-        throw new Exception("live source edit did not change Revision");
-    const build2 = buildLiveModule(source, exe2);
-    v2 = spawnProcess([exe2, "--surface", surface2, "--state", statePath,
-        "--seconds", "20"]);
-    waitState(statePath, revision2);
-    writeScene(scenePath, surface2, "Live code v2");
 
     import std.datetime.stopwatch : StopWatch, AutoStart;
-    auto swapWatch = StopWatch(AutoStart.yes);
-    link.request("reload");
-    waitSurface(link);
-    swapWatch.stop();
-    capture(link, shot2);
+    auto watch = StopWatch(AutoStart.yes);
+    while (watchSeconds <= 0 ||
+        watch.peek.total!"seconds" < watchSeconds)
+    {
+        if (readText(source) != last)
+        {
+            last = readText(source);
+            swap();
+        }
+        Thread.sleep(100.msecs);
+    }
 
-    const value2 = parseJSON(readText(statePath)).object["value"].get!int;
-    if (read(shot1) == read(shot2))
-        throw new Exception("live code change did not change pixels");
-    if (value2 <= value1)
-        throw new Exception("live module state did not carry over");
-
-    stdout.writeln("PASS live code swap");
-    stdout.writeln("host: pid=", host.processID, " stable");
-    stdout.writeln("build v1: ", build1, " ms; build v2: ", build2, " ms");
-    stdout.writeln("v1: pid=", v1.processID, " value=", value1);
-    stdout.writeln("v2: pid=", v2.processID, " value=", value2);
-    stdout.writeln("reload + remap: ", swapWatch.peek.total!"msecs", " ms");
-    stdout.writeln("screenshots: ", shot1, " -> ", shot2);
+    if (holdSeconds > 0)
+    {
+        stdout.writeln("host stays open for ", holdSeconds, " seconds");
+        stdout.flush();
+        Thread.sleep(seconds(holdSeconds));
+    }
 }
-
 int main(string[] args)
 {
     try
@@ -617,12 +639,12 @@ int main(string[] args)
             supervisorMain(args[2 .. $]);
             return 0;
         }
-        if (args.length >= 2 && args[1] == "live")
+        if (args.length >= 2 && args[1] == "dev")
         {
-            liveMain(args[2 .. $]);
+            devMain(args[2 .. $]);
             return 0;
         }
-        stderr.writeln("usage: aurora-hotswap module ... | supervisor ... | live --demo-edit");
+        stderr.writeln("usage: aurora-hotswap module ... | supervisor ... | dev ...");
         return 2;
     }
     catch (Exception error)

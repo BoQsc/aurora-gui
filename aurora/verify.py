@@ -109,25 +109,7 @@ def main() -> int:
         ],
         HOST,
     )
-    live_source = HOST / "build" / "verify-live-module.d"
-    live_source.parent.mkdir(parents=True, exist_ok=True)
-    live_source.write_bytes(
-        (HOST / "projects" / "aurora-live" / "module.d").read_bytes()
-    )
-    run(
-        [
-            host_executable("aurora-hotswap"),
-            "live",
-            "--source",
-            live_source,
-            "--host",
-            host_executable("aurora-host"),
-            "--out",
-            "build/verify-live",
-            "--demo-edit",
-        ],
-        HOST,
-    )
+    run([PYTHON, "-B", "apps/breakout/dev_swap_test.py"], HOST)
 
     print()
     print("Aurora v2 verification passed.")
