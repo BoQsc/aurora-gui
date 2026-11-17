@@ -114,8 +114,8 @@ int main()
             "the continuation did not state that the side request was answered");
     }
 
-    // An explicit restriction holds the goal, but never leaves it claiming to be
-    // active while no turn runs.
+    // An explicit restriction holds the goal. The agent's turn settling must
+    // not pause the user's goal: only the user pauses.
     {
         auto session = sessionWith(actionGoal);
         session.messages ~= msg("user", "Just explain why it failed. Do not edit anything.");
@@ -125,19 +125,23 @@ int main()
             "an explain-only request was not treated as a restriction");
         const decision = decide(session);
         require(!decision.continues(), "an explain-only request continued the goal");
-        require(decision.settleGoal == "paused",
-            "an explained goal stayed active with no running turn");
+        require(decision.settleGoal.length == 0,
+            "the agent paused a goal the user had not paused");
+        require(session.goalStatus == "active",
+            "an explained goal was paused by the turn settle");
     }
 
-    // No tools means the goal cannot progress; the settle pauses it instead of
-    // leaving an active goal with nothing running.
+    // No tools means the goal cannot progress in this turn. The goal stays
+    // active for the user's next move instead of being paused by the app.
     {
         auto session = sessionWith(actionGoal);
         session.messages ~= msg("assistant", "Working on it.");
         const decision = decide(session, false);
         require(!decision.continues(), "a tool-free request continued goal work");
-        require(decision.settleGoal == "paused",
-            "a tool-free settle left the goal active");
+        require(decision.settleGoal.length == 0,
+            "a tool-free settle paused the goal");
+        require(session.goalStatus == "active",
+            "a tool-free settle changed the user's goal state");
     }
 
     // An answer-shaped goal is finished by its delivered reply: it completes
@@ -156,13 +160,15 @@ int main()
     }
     {
         // The same goal with outstanding verification still has work left, so it
-        // pauses rather than claiming completion.
+        // neither completes nor pauses; the work stays active.
         auto session = sessionWith("Explain why the goal stops without reaching completion");
         session.verificationStatus = "required";
         session.messages ~= msg("assistant", "It stops because the settle left the goal active.");
         const decision = decide(session);
-        require(decision.settleGoal == "paused",
-            "an answer goal with outstanding verification was completed");
+        require(decision.settleGoal.length == 0,
+            "an answer goal with outstanding verification was completed or paused");
+        require(session.goalStatus == "active",
+            "outstanding verification was turned into an app pause");
     }
 
     // A failed reply is not a delivered answer.

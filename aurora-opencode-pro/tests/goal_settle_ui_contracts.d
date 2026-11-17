@@ -95,8 +95,9 @@ int main()
         toUTF8(requireWidget!Label(root, "oc-goal-prefix").text()));
     writeln("PASS an answered goal completes instead of idling as active");
 
-    // An explicit restriction keeps the goal's work but never leaves it
-    // advertising itself as active; Start is the way back.
+    // An explicit restriction keeps the goal's work. The agent's turn settling
+    // must not pause the goal: only the user pauses, and Continue is the way
+    // back while the work stays active.
     root.newChatForTesting();
     root.addConversationForTesting(["user", "assistant"],
         ["Just explain the failure. Do not edit anything.", "The step was never recorded."]);
@@ -108,21 +109,21 @@ int main()
     root.settleTaskAfterDoneForTesting();
     pump();
     assert(!root.turnBusyForTesting(), "the restricted turn kept running");
-    assert(root.goalStatusForTesting() == "paused",
-        "an explained goal stayed active with no running turn");
+    assert(root.goalStatusForTesting() == "active",
+        "the agent paused a goal the user had not paused");
     assert(root.taskStatusForTesting() == "active",
         "the restricted settle dropped the goal's work");
-    assert(root.goalHistoryOutcomesForTesting()[$ - 1] == "paused",
-        "the paused goal was not recorded in goal history");
-    assert(driver.paint(), "goal row paint failed after the goal paused");
+    assert(root.goalHistoryOutcomesForTesting()[$ - 1] == "active",
+        "the settle rewrote the goal's recorded outcome");
+    assert(driver.paint(), "goal row paint failed after the restricted settle");
     assert(toUTF8(requireWidget!Label(root, "oc-goal-prefix").text()).toLower()
-        .indexOf("paused") >= 0,
-        "the goal row did not show the paused goal: " ~
+        .indexOf("active") >= 0,
+        "the goal row did not show the goal as active: " ~
         toUTF8(requireWidget!Label(root, "oc-goal-prefix").text()));
     assert(toUTF8(requireWidget!Label(root, "oc-goal-text").text()).indexOf(
         "Fix the parser crash") >= 0,
-        "the paused goal lost the user's completion condition");
-    writeln("PASS an explained goal pauses instead of idling as active");
+        "the active goal lost the user's completion condition");
+    writeln("PASS an explained goal stays active; only the user pauses it");
 
     // A question answered inside an action goal no longer ends it: the goal
     // continues and the turn stays busy.

@@ -55,8 +55,8 @@ int main()
     assert(readText(buildPath(workspace, "out.txt")) == "success");
     const state = sessionToJson(states[0]);
     assert(state["messages"].array[$ - 1]["content"].str == "READY" && state["verificationStatus"].str == "passed");
-    if (stalled) assert(state["goalStatus"].str == "paused",
-        "An idle no-action goal was left looking active");
+    if (stalled) assert(state["goalStatus"].str == "active",
+        "An idle no-action goal was paused by the app");
     ChatSession view = initial; auto projection = new ConversationProjection(view);
     foreach (delivery; registry.takeChanges(16))
     {

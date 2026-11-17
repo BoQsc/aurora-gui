@@ -74,8 +74,8 @@ int main()
         }
         assert(root.turnStatusForTesting() == "completed" && root.failedMessageCountForTesting() == 0,
             "Exhausted audit recovery stopped the chat with a failure row");
-        assert(root.goalStatusForTesting() == "paused",
-            "Exhaustion left the goal active with no running turn");
+        assert(root.goalStatusForTesting() == "active",
+            "Exhaustion paused the user's goal");
         assert(root.taskStatusForTesting() != "completed",
             "Exhaustion fabricated completion of the unfinished task");
         bool visible;

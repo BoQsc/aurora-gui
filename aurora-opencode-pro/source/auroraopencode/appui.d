@@ -22703,7 +22703,7 @@ private void pollButtonSuggestionRequest()
         const decision = decideTurn(*session, turnPolicy(sessionIndex, cancelled));
         if (decision.action == TurnAction.failed)
         {
-            failAssistantMessage(decision.status, true);
+            failAssistantMessage(decision.status);
             session.turnStatus = "failed"; session.taskStatus = "active";
             publishThreadUpdated(*session); markDirty();
             return;
@@ -22743,21 +22743,12 @@ private void pollButtonSuggestionRequest()
         session.taskStatus = decision.taskStatus;
         publishThreadUpdated(*session);
         markDirty();
-        // A settle that starts no further turn must not leave the goal looking
-        // active: complete an answer goal whose reply was delivered, otherwise
-        // pause the goal so its work is kept and Start resumes it.
+        // A settle that starts no further turn completes an answer goal whose
+        // reply was delivered. It never pauses the user's goal: pausing is the
+        // user's control alone, so unfinished work stays active for Continue.
         if (decision.settleGoal == "completed")
             applyGoalCompletion(*session, "");
-        else if (decision.settleGoal == "paused")
-        {
-            pauseActiveGoal(*session);
-            updateGoalBar();
-        }
-        string statusText = decision.status;
-        if (decision.settleGoal == "paused")
-            statusText = (statusText.length ? statusText ~ " " : "") ~
-                "Goal paused — press Start to continue it.";
-        if (statusText.length) updateStatus(statusText);
+        if (decision.status.length) updateStatus(decision.status);
         if (!decision.continues())
         {
             // finishAssistantMessage keeps the clock alive while a continuation
@@ -22819,7 +22810,7 @@ private void pollButtonSuggestionRequest()
         return error;
     }
 
-    private void failAssistantMessage(string error, bool preserveGoal = true)
+    private void failAssistantMessage(string error)
     {
         error = clarifyProviderRequestError(error);
         const sessionIndex = turnOwnerSessionIndex();
@@ -22834,7 +22825,6 @@ private void pollButtonSuggestionRequest()
             return;
         }
         auto session = &_sessions[sessionIndex];
-        if (!preserveGoal) pauseActiveGoal(*session);
         // Attach the failure to the reply the ACTIVE branch is waiting on, not
         // merely the last stored message. The two differ after a Retry: the
         // re-run branches from the abandoned reply's parent, so the old failed
@@ -23277,7 +23267,7 @@ private void pollButtonSuggestionRequest()
                 outputIssueDescription(event.outputIssue) ~
                 (exhausted
                     ? " Recovery requests also produced no useful action. Work and the active goal are saved; retry with a working provider to continue."
-                    : ""), true);
+                    : ""));
         dropAutoResendSchedule();
         _autoContinuePendingSession = -1;
         _autoContinueRetries = 0;
@@ -23321,8 +23311,9 @@ private void pollButtonSuggestionRequest()
     }
 
     /// End an exhausted progress audit without a failure row or another
-    /// request. The reply and recorded work stay; an active goal pauses so Start
-    /// is the explicit way back. Audit bookkeeping must never stop the chat.
+    /// request. The reply and recorded work stay and the goal remains active;
+    /// Continue is the explicit way back. Audit bookkeeping must never pause
+    /// the user's goal or stop the chat.
     private void settleStalledAudit(int sessionIndex)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
@@ -23330,13 +23321,7 @@ private void pollButtonSuggestionRequest()
         session.turnStatus = "completed";
         session.taskStatus = session.verificationStatus == "required" ||
             session.verificationStatus == "failed" ? "verifying" : "active";
-        if (goalActive(*session))
-        {
-            pauseActiveGoal(*session);
-            updateGoalBar();
-            updateStatus("Goal paused — press Start to continue it.");
-        }
-        else updateStatus("Unfinished work remains recorded. Press Continue to resume it.");
+        updateStatus("Unfinished work remains recorded. Press Continue to resume it.");
         setTurnInFlight(false);
         freezeTurnTiming();
         markUnreadIfBackground(sessionIndex);

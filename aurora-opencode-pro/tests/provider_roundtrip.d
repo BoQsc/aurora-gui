@@ -76,14 +76,14 @@ int main()
         assert(driver.paint());
         if (!root.turnBusyForTesting() &&
             (stalledGoal
-                ? root.goalStatusForTesting() == "paused"
+                ? root.verificationStatusForTesting() == "passed"
                 : root.lastAssistantContentForTesting() == "READY"))
             break;
         Thread.sleep(10.msecs);
     }
     assert(!root.turnBusyForTesting() &&
         (stalledGoal
-            ? root.goalStatusForTesting() == "paused"
+            ? root.verificationStatusForTesting() == "passed"
             : root.lastAssistantContentForTesting() == "READY"),
         "Round trip did not settle: " ~ root.lastAssistantContentForTesting());
     if (stalledGoal)
@@ -97,8 +97,8 @@ int main()
     assert(root.verificationStatusForTesting() == "passed");
     assert(root.taskStatusForTesting() == "completed");
     if (stalledGoal)
-        assert(root.goalStatusForTesting() == "paused",
-            "An idle no-action goal was left looking active");
+        assert(root.goalStatusForTesting() == "active",
+            "An idle no-action goal was paused by the app");
     const latency = root.latencyPaintForTesting();
     assert(latency.microseconds[LatencyStage.firstToken] >= 0 &&
         latency.microseconds[LatencyStage.applied] >= latency.microseconds[LatencyStage.firstToken] &&

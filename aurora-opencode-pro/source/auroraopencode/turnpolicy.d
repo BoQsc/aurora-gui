@@ -35,8 +35,8 @@ struct TurnDecision
     TurnAction action;
     string turnStatus, taskStatus, guidance, recordedSummary, status, nextSpeaker;
     /// Outcome an active goal takes when this settle starts no further turn:
-    /// "completed" for an answer goal whose reply is delivered, otherwise
-    /// "paused" so an idle chat never keeps claiming an active goal.
+    /// "completed" for an answer goal whose reply is delivered. A settle never
+    /// pauses the goal: pausing is the user's control alone.
     string settleGoal;
     bool advanceHop, clearNextSpeaker, clearDiagnostic, clearBlocker, advanceGoal;
     int diagnosticRequests;
@@ -103,8 +103,6 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         result.taskStatus = "waiting_input";
         result.status = "Plan proposed · approve or adjust it to continue.";
         result.clearDiagnostic = true;
-        if (goalActive(session) && !session.queuedFollowUps.length)
-            result.settleGoal = "paused";
         return result;
     }
     // A handoff saved by an older build is completed from recorded evidence;
@@ -210,8 +208,6 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
                 result.taskStatus = state.verificationRequired ? "verifying" : "active";
                 result.status = "Tool host unavailable; the delivered answer and remaining work are preserved. Retry when the host responds.";
                 result.clearDiagnostic = true;
-                if (goalActive(session) && !session.queuedFollowUps.length)
-                    result.settleGoal = "paused";
                 return result;
             }
             // The recovery budget is an internal control boundary, not a
@@ -223,8 +219,6 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
             result.taskStatus = state.verificationRequired ? "verifying" : "active";
             result.status = "Unfinished work remains recorded. Press Continue to resume it.";
             result.clearDiagnostic = true;
-            if (goalActive(session) && !session.queuedFollowUps.length)
-                result.settleGoal = "paused";
             return result;
         }
         request(state.guidance(), state.attempts ? "Recovering the unresolved outcome…" : "Completing the requested outcome…");
@@ -275,11 +269,10 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         result.status = "Answer complete · verification is still required.";
     }
     else result.taskStatus = "completed";
-    // This settle starts no further turn, so an active goal must not survive it
-    // as "active": an idle chat advertising a running goal is exactly the state
-    // the user reads as "the goal is active but does nothing". An answer goal
-    // finished by its delivered reply is complete; every other blocked goal is
-    // paused, which keeps its work and makes Start the explicit way back.
+    // This settle starts no further turn. An answer goal finished by its
+    // delivered reply is complete. Every other goal stays active with its work
+    // recorded: the agent's turn ending must not pause the user's goal, so
+    // Continue is the explicit way back and only the user can pause it.
     // A queued follow-up opens the next turn immediately, so that chat is not
     // idle and the goal keeps owning the follow-up's work.
     if (goalActive(session) && !session.queuedFollowUps.length)
@@ -288,7 +281,7 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
             session.verificationStatus == "required" ||
             session.verificationStatus == "failed";
         result.settleGoal = goalIsAnswerTurn(session.goal) && !outstanding &&
-            goalAnswerDelivered(session) ? "completed" : "paused";
+            goalAnswerDelivered(session) ? "completed" : "";
     }
     return result;
 }
