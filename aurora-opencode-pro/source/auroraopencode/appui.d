@@ -26006,12 +26006,12 @@ private void pollButtonSuggestionRequest()
 
     /// Queue one suggestion for this conversation's newest settled reply. The
     /// anchor prevents asking twice for the same reply (retries, reloads).
+    /// The reply can settle while another conversation is open, so the job
+    /// stays with its own conversation and starts when that one is shown.
     private void queueComposerSuggestion(int sessionIndex)
     {
         if (!_settings.composerSuggestion) return;
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
-        if (_current < 0 || _sessions[_current].id != _sessions[sessionIndex].id)
-            return;
         auto runtime = runtimeForSession(sessionIndex);
         if (runtime is null) return;
         const anchor = lastSettledAssistantId(_sessions[sessionIndex]);
@@ -26063,12 +26063,11 @@ private void pollButtonSuggestionRequest()
             runtime.suggestionPending = false;
             return;
         }
-        // Only the visible conversation owns the composer the line appears in.
+        // Only the visible conversation owns the composer the line appears in,
+        // so a background job waits for its conversation to be shown again.
+        // Dropping it here lost the guess for good after switching back.
         if (_current < 0 || _sessions[_current].id != _sessions[sessionIndex].id)
-        {
-            runtime.suggestionPending = false;
             return;
-        }
         if (runtime.phase == RequestPhase.waiting || runtime.effectPending() ||
             runtime.client.busy()) return;
         auto session = &_sessions[sessionIndex];

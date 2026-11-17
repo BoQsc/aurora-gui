@@ -113,6 +113,35 @@ int main()
     assert(root.composerSuggestionForTesting().length == 0,
         "accepting a suggestion should clear it");
 
+    // A reply that settles while another conversation is open still earns its
+    // automatic guess: coming back makes it now instead of losing it.
+    root.setInputForTesting("");
+    root.addConversationForTesting(["user", "assistant"],
+        ["Add a stop button", "The stop button is in place."]);
+    root.newChatForTesting();
+    root.tickTree(0.02);
+    root.finishStreamInSessionForTesting(1);
+    root.selectSessionForTesting(1);
+    root.tickTree(0.02);
+    assert(root.composerSuggestionPendingForTesting(),
+        "returning to a conversation that settled in the background " ~
+        "did not request a guess");
+
+    // A guess already requested must survive a switch away before it starts.
+    root.newChatForTesting();
+    root.tickTree(0.02);
+    const int guessIndex = cast(int) root.sessionCountForTesting() - 1;
+    root.focusComposerForTesting();
+    driver.pressKey(Key.tab);
+    assert(root.composerSuggestionPendingForTesting(),
+        "Tab did not request a guess in the new chat");
+    root.selectSessionForTesting(0);
+    root.tickTree(0.02);
+    root.selectSessionForTesting(guessIndex);
+    root.tickTree(0.02);
+    assert(root.composerSuggestionPendingForTesting(),
+        "a queued guess was dropped when its conversation was left");
+
     // A new chat has no turns of its own, but Tab may read a bounded digest of
     // recent conversations. One small request, and only when asked.
     root.newChatForTesting();
