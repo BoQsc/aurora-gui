@@ -126,8 +126,8 @@ int main()
     writeln("PASS an explained goal stays active; only the user pauses it");
 
     // Reported: the goal continuation was answered with prose only while a
-    // checklist outcome and verification remained. The settle left the chat
-    // idle while the goal bar still showed it as active.
+    // checklist outcome and verification remained. The app must spend a bounded
+    // recovery turn on real work and must not pause the user's goal.
     root.newChatForTesting();
     const stalledGoal = "Reach 100% stable 60 fps while moving the camera.";
     root.addConversationForTesting(["user", "assistant"], [stalledGoal, "I will."]);
@@ -142,18 +142,25 @@ int main()
     root.startTurnClockForTesting();
     root.settleTaskAfterDoneForTesting();
     pump();
-    assert(!root.turnBusyForTesting(), "the stalled goal left a running turn");
-    assert(root.goalStatusForTesting() == "paused",
-        "a stalled goal stayed active with no running turn: task=" ~
+    bool recovered;
+    foreach (i; 0 .. root.totalMessageCountForTesting())
+        if (root.messageContentForTesting(i).indexOf("Agent output recovery:") >= 0)
+            recovered = true;
+    assert(recovered, "a stalled goal continuation did not get a recovery turn");
+    assert(root.turnBusyForTesting(), "the stalled goal recovery did not keep running");
+    assert(root.goalStatusForTesting() == "active",
+        "the app paused a goal the user had not paused: task=" ~
         root.taskStatusForTesting() ~ " turn=" ~ root.turnStatusForTesting());
-    assert(root.goalHistoryOutcomesForTesting()[$ - 1] == "paused",
-        "the paused stalled goal was not recorded in goal history");
-    assert(driver.paint(), "goal row paint failed after the stalled goal paused");
+    assert(root.goalHistoryOutcomesForTesting()[$ - 1] == "active",
+        "the goal recovery rewrote the goal's recorded outcome");
+    assert(driver.paint(), "goal row paint failed after the goal recovery");
     assert(toUTF8(requireWidget!Label(root, "oc-goal-prefix").text()).toLower()
-        .indexOf("pause") >= 0,
-        "the goal row still did not show the stalled goal as paused: " ~
+        .indexOf("active") >= 0,
+        "the goal row did not show the recovering goal as active: " ~
         toUTF8(requireWidget!Label(root, "oc-goal-prefix").text()));
-    writeln("PASS a stalled goal continuation pauses instead of idling as active");
+    root.stopActiveTurnForTesting();
+    pump();
+    writeln("PASS a stalled goal continuation recovers without pausing the goal");
 
     // A question answered inside an action goal no longer ends it: the goal
     // continues and the turn stays busy.

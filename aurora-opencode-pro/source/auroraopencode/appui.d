@@ -22744,17 +22744,10 @@ private void pollButtonSuggestionRequest()
         publishThreadUpdated(*session);
         markDirty();
         // A settle that starts no further turn completes an answer goal whose
-        // reply was delivered. A goal whose continuation produced prose only is
-        // paused instead of staying active with no turn running.
+        // reply was delivered. It never pauses the user's goal: pausing is the
+        // user's control alone, so unfinished work stays active for Continue.
         if (decision.settleGoal == "completed")
             applyGoalCompletion(*session, "");
-        else if (decision.settleGoal == "paused")
-        {
-            pauseActiveGoal(*session);
-            publishThreadUpdated(*session);
-            markDirty();
-            updateGoalBar();
-        }
         if (decision.status.length) updateStatus(decision.status);
         if (!decision.continues())
         {
@@ -34204,9 +34197,9 @@ private void pollButtonSuggestionRequest()
                         break;
                     }
                     // A prose-only goal continuation is not a failure. The
-                    // ordinary settle below keeps the reply and pauses a goal
-                    // whose continuation produced no action, so the chat never
-                    // stays idle while advertising that goal as active.
+                    // ordinary settle below keeps the reply; decideTurn spends
+                    // a bounded recovery turn on a concrete action instead of
+                    // pausing the user's goal.
                     const completedRequestId = event.requestId;
                     const taskContinues = taskContinuesAfterDone(event.cancelled, event.finishReason);
                     finishAssistantMessage(event.cancelled, event.promptTokens,

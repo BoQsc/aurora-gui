@@ -6,7 +6,7 @@ import auroraopencode.executioncontrol : executionState, executionShouldContinue
 import auroraopencode.taskflow : taskInvestigation;
 import auroraopencode.worktracking : requiredWorkRemaining;
 import auroraopencode.goalmode : goalActive, goalNeedsHumanInput, goalContinuationInstruction,
-    goalIsAnswerTurn, goalAnswerDelivered;
+    goalAuditRecoveryInstruction, goalIsAnswerTurn, goalAnswerDelivered;
 import auroraopencode.completionhandoff : completionHandoffNeeded, completionHandoffPending,
     recordedCompletionHandoff;
 import auroraopencode.orchestrator : experimentalOrchestratorIsRouter, experimentalOrchestratorAgentName;
@@ -14,7 +14,9 @@ import auroraopencode.contextpolicy : latestActualUserRequest;
 import auroraopencode.requestintent : RequestIntent, actionApprovalRequest,
     requestIntent, workRestrictionRequest;
 import auroraopencode.planmode : planModeProposalPending;
-import auroraopencode.outputrecovery : goalAuditStalled;
+import auroraopencode.outputguard : outputRecoveryMarker;
+import auroraopencode.outputrecovery : goalAuditStalled, outputRecoveryCount,
+    maxOutputRecoveries;
 import std.string : strip;
 
 enum TurnAction { settle, failed, interrupted, applySteering, request, waitInput, waitChildren, reportChild }
@@ -236,18 +238,27 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     // edit") holds the continuation until the user lifts it. Leaving the goal
     // active but idle was the reported "goal stopped and does nothing" state.
     // A goal continuation answered with prose only has not advanced the goal.
-    // Requesting the same continuation again replayed the refusal until an
-    // internal audit painted a failed turn over it. Settle instead: the reply
-    // and recorded work stay, and the goal pauses below so Start is the explicit
-    // way back. An audit must never stop the chat.
+    // Requesting the same continuation again replayed the refusal, and settling
+    // left the active goal with no running turn. Spend the bounded output
+    // recovery budget on a concrete-action turn instead. The app never pauses
+    // the goal: only the user can pause it.
     if (goalActive(session) && policy.toolsEnabled &&
-        !goalAuditStalled(session) &&
         !goalIsAnswerTurn(session.goal) &&
         !workRestrictionRequest(latestActualUserRequest(session)))
     {
-        result.advanceGoal = true;
-        request(goalContinuationInstruction(session), "Continuing toward the goal…");
-        return result;
+        if (!goalAuditStalled(session))
+        {
+            result.advanceGoal = true;
+            request(goalContinuationInstruction(session), "Continuing toward the goal…");
+            return result;
+        }
+        if (outputRecoveryCount(session) < maxOutputRecoveries)
+        {
+            result.advanceGoal = true;
+            request(outputRecoveryMarker ~ goalAuditRecoveryInstruction,
+                "Recovering the goal…");
+            return result;
+        }
     }
     result.turnStatus = "completed";
     if (result.taskStatus == "waiting_input")
@@ -270,25 +281,18 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     }
     else result.taskStatus = "completed";
     // This settle starts no further turn. An answer goal finished by its
-    // delivered reply is complete. A goal whose continuation produced prose
-    // only is paused: leaving it active while the chat is idle is the reported
-    // "goal is active but doing nothing" state. Other goal settles keep their
-    // recorded work active for Continue (an explicit user restriction, a
-    // tool-free request). A queued follow-up opens the next turn immediately,
-    // so that chat is not idle and the goal keeps owning the follow-up's work.
+    // delivered reply is complete. Every other goal keeps its recorded work
+    // active: the app and the agent never pause the user's goal, so Continue is
+    // the explicit way back and only the user can pause it. A queued follow-up
+    // opens the next turn immediately, so that chat is not idle and the goal
+    // keeps owning the follow-up's work.
     if (goalActive(session) && !session.queuedFollowUps.length)
     {
         const outstanding = hasIncompleteTaskSteps(session) ||
             session.verificationStatus == "required" ||
             session.verificationStatus == "failed";
-        if (goalIsAnswerTurn(session.goal) && !outstanding &&
-            goalAnswerDelivered(session))
-            result.settleGoal = "completed";
-        else if (goalAuditStalled(session))
-        {
-            result.settleGoal = "paused";
-            result.status = "Goal paused · the last continuation made no progress. Press Start to resume it.";
-        }
+        result.settleGoal = goalIsAnswerTurn(session.goal) && !outstanding &&
+            goalAnswerDelivered(session) ? "completed" : "";
     }
     return result;
 }

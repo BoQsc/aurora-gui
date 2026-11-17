@@ -120,9 +120,9 @@ int main()
     assert(!taskAuditStalled(session) && !goalAuditStalled(session),"A validated input wait inherited an earlier prose-stall counter");
 
     // A goal continuation answered with prose only may be a goal the model
-    // finished without recording. The app must offer one completion audit -
-    // call goal_complete or keep working with tools - before pausing the goal on
-    // a summary that lists its own limitations and remaining work.
+    // finished without recording. The app must offer a completion audit -
+    // call goal_complete or keep working with tools - before settling with the
+    // goal still active; the app never pauses the user's goal.
     {
         ChatSession goalSession;
         goalSession.goal = "Write and verify the requested artifact";

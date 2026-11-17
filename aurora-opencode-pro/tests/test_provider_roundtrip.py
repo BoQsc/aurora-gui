@@ -218,11 +218,11 @@ try:
                                  *(["registry_roundtrip", "conversation_registry_contracts", "actor_branch_contracts"] if registry_mode else
                                    ["actor_roundtrip", "actor_mailbox_contracts", "actor_branch_contracts"] if actor_mode else ["provider_roundtrip"])], cwd=package.parent, env=env, timeout=120)
         assert result.returncode == 0, "Desktop round trip failed"
-    expected_rounds = 5 if (audit_stall or stalled_goal) else 4
+    expected_rounds = 8 if (audit_stall or stalled_goal) else 4
     assert len(main_rounds) == expected_rounds, f"Unexpected continuation count: {len(main_rounds)}"
     assert not failures, failures
     if audit_stall:
-        assert recovery_requests == 0, "A no-action goal audit spent recovery requests instead of settling"
+        assert recovery_requests == 3, "A no-action goal audit did not spend its bounded recovery turns"
     if actor_mode:
         assert len(branch_requests) == 7, f"Unexpected branch request count: {len(branch_requests)}"
     if "--production" not in sys.argv and not actor_mode:

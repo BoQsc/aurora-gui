@@ -10,13 +10,13 @@ consecutive unsuccessful repairs of unusable provider output. Useful successful
 tools and new human instructions reset it; plan chatter does not. Stop still
 cancels work.
 
-A goal continuation that answers with prose only is not a provider failure. The
-turn settles normally, the reply and recorded work stay, and an active goal
-pauses so Start is the explicit way back. An audit never adds a failure bubble
-and never stops the chat. A task audit keeps its bounded recovery; if repairs
-keep producing no progress it settles the same quiet way. The session server
-reports an unexpected post-start idle state as `turn_stalled`, not
-`turn_not_started`.
+A goal continuation that answers with prose only is not a provider failure. It
+spends the bounded recovery budget on a concrete-action turn: take a useful tool
+action, call `goal_complete`, or call `request_input`. The goal stays active
+throughout, because only the user can pause it. Exhaustion settles quietly with
+the recorded work and goal preserved; it never adds a failure bubble. A task
+audit keeps its bounded recovery the same way. The session server reports an
+unexpected post-start idle state as `turn_stalled`, not `turn_not_started`.
 
 Completed plans and current accepted checks trigger a short outcome check in the
 existing final request. It keeps the exact user's triggers and constraints in
@@ -52,9 +52,9 @@ in the logs, so inspect them before sharing. Tracing is off by default.
 
 Local HTTP/SSE tests cover native calls, paired results, streamed argument bursts,
 cancellation, four-round normal settlement, and bounded task/goal recovery.
-A prose-only goal continuation now settles on the fifth request, preserves the
-reply and pauses the goal, with no failure row and no recovery requests. The
-ordinary task uses four requests.
+A prose-only goal continuation now uses three recovery requests after the fifth
+round, preserves the reply and keeps the goal active, with no failure row. The
+ordinary task uses four requests; the stalled goal uses eight.
 
 ```text
 python aurora-opencode-pro/tests/test_provider_roundtrip.py --actor --stream-tools

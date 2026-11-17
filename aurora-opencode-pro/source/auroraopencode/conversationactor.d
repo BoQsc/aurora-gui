@@ -1275,8 +1275,6 @@ public final class ConversationActor
         // records the same outcome the UI applies.
         if (decision.settleGoal == "completed")
         { session.goalStatus = "completed"; recordGoalOutcome(session, "completed", frameUnix); }
-        else if (decision.settleGoal == "paused")
-        { session.goalStatus = "paused"; recordGoalOutcome(session, "paused", frameUnix); }
         if (decision.action == TurnAction.reportChild) session.turnStatus = "completed";
         if (decision.continues()) { metadata(); request(); return; }
         running = false; engine.activeRequestId = 0;

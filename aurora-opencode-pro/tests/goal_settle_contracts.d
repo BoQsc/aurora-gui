@@ -10,11 +10,13 @@ import auroraopencode.core : ChatMessage, ChatSession, TaskStep,
     ensureMessageGraph;
 import auroraopencode.contextpolicy : durableTaskPrompt;
 import auroraopencode.goalmode : goalAnswerDelivered;
+import auroraopencode.outputguard : outputRecoveryMarker;
 import auroraopencode.requestintent : workRestrictionRequest;
 import auroraopencode.taskflow : taskInvestigation;
 import auroraopencode.turnpolicy : TurnAction, TurnDecision, TurnPolicy, decideTurn;
+import std.conv : to;
 import std.stdio : writeln;
-import std.string : indexOf;
+import std.string : indexOf, startsWith;
 
 void require(bool condition, string message)
 {
@@ -31,6 +33,17 @@ ChatMessage msg(string role, string content, bool internal = false,
     message.toolName = toolName;
     message.failed = failed;
     return message;
+}
+
+/// Append after the graph already has ids, so the new tail stays on the
+/// active branch instead of becoming an unreferenced side chain.
+void appendLinked(ref ChatSession session, ChatMessage message)
+{
+    ensureMessageGraph(session);
+    message.id = "settle-" ~ to!string(session.messages.length);
+    message.parentId = session.activeLeafId;
+    session.messages ~= message;
+    session.activeLeafId = message.id;
 }
 
 ChatSession sessionWith(string goal)
@@ -217,7 +230,8 @@ int main()
     // Reported: the referenced "Aurora Designer Check" chat answered its goal
     // continuation with prose only while a checklist outcome and verification
     // were still open. The turn settled and the chat sat idle while the goal
-    // still advertised itself as active.
+    // still advertised itself as active. The app must spend a bounded recovery
+    // turn on real work; it must never pause the user's goal.
     {
         auto session = sessionWith(actionGoal);
         session.contract.currentIntent = "analysis";
@@ -229,12 +243,25 @@ int main()
         session.messages ~= msg("assistant",
             "The last change is live; the strict target remains open.");
         const decision = decide(session);
-        require(!decision.continues(),
-            "a prose-only goal continuation kept replaying the same request");
-        require(decision.settleGoal == "paused",
-            "a stalled goal settled while still advertising itself as active");
-        require(decision.status.indexOf("paused") >= 0,
-            "the stalled goal settle did not explain the pause");
+        require(decision.continues() && decision.advanceGoal,
+            "a stalled goal continuation settled instead of recovering");
+        require(decision.guidance.startsWith("Agent output recovery:"),
+            "the goal recovery did not use the bounded output-recovery turn");
+        require(decision.settleGoal.length == 0,
+            "the goal recovery also paused or completed the goal");
+        require(session.goalStatus == "active",
+            "the goal recovery changed the user's goal state");
+        foreach (_; 0 .. 3)
+            appendLinked(session, msg("user",
+                outputRecoveryMarker ~ " keep going", true));
+        appendLinked(session, msg("assistant", "Still summarizing."));
+        const exhausted = decide(session);
+        require(!exhausted.continues(),
+            "exhausted goal recovery kept replaying the request");
+        require(exhausted.settleGoal.length == 0,
+            "exhausted goal recovery paused the user's goal");
+        require(session.goalStatus == "active",
+            "exhausted goal recovery paused the user's goal");
     }
 
     // The reported refusal: the user pauses an unmet goal, asks why the agent

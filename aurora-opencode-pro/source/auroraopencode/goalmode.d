@@ -271,6 +271,18 @@ public string goalContinuationInstruction(const ref ChatSession session)
         "The user can pause this goal at any time.";
 }
 
+/// Text appended after a goal continuation that replied with prose only. The
+/// app never pauses the goal on the agent's behalf; it spends one bounded
+/// recovery turn on a concrete action or an explicit completion instead.
+public enum goalAuditRecoveryInstruction = " The previous goal continuation " ~
+    "replied with prose only and took no action. Do not restate the goal, the " ~
+    "summary, or the remaining work. Take one concrete action with the " ~
+    "available tools and report what actually changed. If the goal is " ~
+    "demonstrably complete, call `goal_complete` with a concise summary and " ~
+    "accepted evidence. If an essential user-owned fact prevents completion, " ~
+    "call request_input with that fact and blocked_steps. The goal remains " ~
+    "active; only the user can pause it.";
+
 /// Retained for reading and retiring control history from older builds.
 public enum goalCompletionAuditMarker = "Persistent goal completion audit:\n";
 

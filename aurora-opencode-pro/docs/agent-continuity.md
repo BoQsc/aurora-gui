@@ -22,9 +22,11 @@ owners. It is not a complete actor-engine rewrite or a guarantee of model qualit
   or side investigation answered inside a goal thread no longer ends the goal:
   its reply is delivered and the objective resumes. Only an explicit restriction
   ("just explain", "do not edit") holds the continuation. Answer and analysis
-  goals settle after their reply and are recorded completed; every other settle
-  that starts no further turn pauses the goal, so an idle chat never advertises
-  an active goal. A queued follow-up keeps the goal active for its own turn.
+  goals settle after their reply and are recorded completed. Every other settle
+  keeps the goal active: the app and the agent never pause the user's goal. A
+  continuation answered with prose only spends one bounded recovery turn on a
+  concrete action instead of settling silently. A queued follow-up keeps the goal
+  active for its own turn.
 - A goal waits only at the same validated `request_input` boundary used by task
   continuation. Phrases such as “please confirm” in assistant prose no longer
   silently pause it. Waiting retains the active goal; replying with the missing
@@ -67,7 +69,7 @@ provider. They do not contact a hosted model or use real user chats as fixtures.
 | --- | --- |
 | Fact in the middle of omitted history | Exact fact recovered through search and message paging; five main HTTP requests, one summary request; original accepted text retained |
 | Active goal needs an unavailable fact | Waits, resumes on an ordinary reply, writes the requested artifact and completes; five HTTP requests |
-| Settle of an active goal | An answered question continues an action goal; an explicit explain-only request, a tool-free request and an answered answer-goal complete or pause it, so no settle leaves the goal active with no running turn |
+| Settle of an active goal | An answered question continues an action goal; a prose-only continuation spends its bounded recovery turns; an explicit explain-only request and a tool-free request keep the goal active; an answered answer-goal completes |
 | Truncated, oversized, timed-out or stale summary | Existing checkpoint retained; successful summary retains constraints, current outcome and goal |
 | UTF-8 paging, branch and internal-message isolation | Exact byte reconstruction and inaccessible-message rejection pass |
 | Context selection across budgets and tool envelopes | Same cutoff as the previous algorithm, including complete and incomplete tool groups |
