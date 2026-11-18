@@ -21,15 +21,18 @@ public string followUpInstruction()
     return "You suggest follow-up messages for the user in a chat with a coding " ~
         "assistant. Read the excerpt in the next message and reply with a JSON " ~
         "array of exactly 2 strings. Each string is a message the user could " ~
-        "send next: at most 14 words, in the user's own voice, as a direct " ~
-        "instruction or question referring to the work actually in progress. " ~
-        "Make the two genuinely different in direction. Do not suggest " ~
-        "verifying, testing, checking, confirming, or re-running the work; " ~
-        "those are predictable and rarely what the user wants next. Prefer " ~
-        "directions such as extending the result, exploring an alternative, " ~
-        "improving a related part, or asking about a design trade-off or " ~
-        "remaining risk. Do not repeat the same request with different " ~
-        "wording. No labels and no explanation; output only the JSON array.";
+        "send next: at most 14 words, in the user's own voice, referring to " ~
+        "the work actually in progress. Use varied sentence forms: at least " ~
+        "one must be an imperative instruction that starts with a verb (such " ~
+        "as \"Add a keyboard shortcut\" or \"Move the setting\"); at most one " ~
+        "may be a question. Do not make both questions. Make the two " ~
+        "genuinely different in direction. Do not suggest verifying, testing, " ~
+        "checking, confirming, or re-running the work; those are predictable " ~
+        "and rarely what the user wants next. Prefer directions such as " ~
+        "extending the result, exploring an alternative, improving a related " ~
+        "part, or naming a design trade-off or remaining risk. Do not repeat " ~
+        "the same request with different wording. No labels and no " ~
+        "explanation; output only the JSON array.";
 }
 
 /// Drop leading list markers (bullets, numbers, blockquote marks) from a line.
@@ -108,11 +111,32 @@ private bool isDirectVerification(string value)
     return false;
 }
 
+/// Whether a candidate is phrased as a question rather than an instruction.
+/// The trailing question mark is the reliable signal; the wh-word/auxiliary
+/// check covers a reply that forgot it. `do`/`have` are deliberately absent so
+/// imperatives such as "Do a pass" or "Have a look" are not misread.
+private bool isQuestionFollowUp(string value)
+{
+    auto text = value.strip;
+    if (text.length == 0) return false;
+    if (text[$ - 1] == '?') return true;
+    auto lower = text.toLower;
+    static immutable string[] openers = [
+        "what", "why", "how", "when", "where", "which", "who", "whom",
+        "whose", "can", "could", "should", "would", "will", "shall", "may",
+        "might", "is", "are", "was", "were", "does", "did", "has", "had", "am",
+    ];
+    foreach (opener; openers)
+        if (startsWithPhrase(lower, opener)) return true;
+    return false;
+}
+
 /// Accept a model reply as up to `maxItems` distinct follow-up messages.
 /// Handles the requested JSON array of strings (or objects with a text-like
 /// field), and falls back to one item per line. Fenced code, labels, duplicate
-/// wording (ignoring case), direct verification directions and blank entries
-/// are dropped; an unusable reply yields an empty list so nothing is shown.
+/// wording (ignoring case), direct verification directions, a second question
+/// and blank entries are dropped; an unusable reply yields an empty list so
+/// nothing is shown.
 public string[] cleanFollowUps(string raw, size_t maxItems = 2,
     size_t maxChars = 120)
 {
@@ -135,6 +159,11 @@ public string[] cleanFollowUps(string raw, size_t maxItems = 2,
         if (text.length == 0) return;
         const key = text.toLower;
         if (key in seen) return;
+        // Two question-shaped chips read as an interview, not as options. Keep
+        // the first question and let a later instruction fill the second slot.
+        if (maxItems == 2 && result.length == 1 &&
+            isQuestionFollowUp(result[0]) && isQuestionFollowUp(text))
+            return;
         seen[key] = true;
         result ~= text;
     }
@@ -191,6 +220,21 @@ public string[] cleanFollowUps(string raw, size_t maxItems = 2,
 
 unittest
 {
+    // A mixed pair is fine, but two questions collapse to one. A later
+    // imperative still fills the second slot.
+    auto mixed = cleanFollowUps(
+        `["How should the stop path handle retries?", "Add a keyboard shortcut"]`);
+    assert(mixed.length == 2, mixed.length.to!string);
+    auto questions = cleanFollowUps(
+        `["How should the stop path handle retries?", "What about mobile?"]`);
+    assert(questions.length == 1, questions.length.to!string);
+    auto backfilled = cleanFollowUps(
+        `["Why is the button hidden?", "Where should it live?", ` ~
+        `"Add a tooltip"]`);
+    assert(backfilled.length == 2, backfilled.length.to!string);
+    assert(backfilled[0] == "Why is the button hidden?");
+    assert(backfilled[1] == "Add a tooltip");
+
     // Direct verification directions are dropped instead of offered.
     auto filtered = cleanFollowUps(
         `["Run the tests", "Verify the build", "Check the logs", ` ~
@@ -248,6 +292,8 @@ unittest
     const instruction = followUpInstruction();
     assert(instruction.indexOf("exactly 2") > 0);
     assert(instruction.indexOf("genuinely different") > 0);
+    assert(instruction.indexOf("at least one must be an imperative") > 0);
+    assert(instruction.indexOf("Do not make both questions") > 0);
     assert(instruction.indexOf("Do not suggest verifying") > 0);
     assert(instruction.indexOf("verify or finish") < 0);
     assert(instruction.indexOf("JSON") > 0);
