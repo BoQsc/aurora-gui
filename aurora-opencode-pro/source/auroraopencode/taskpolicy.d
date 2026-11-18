@@ -8,7 +8,7 @@ import std.file : exists, isDir;
 import std.path : buildPath, dirName, isAbsolute;
 import std.regex : matchAll;
 import std.string : strip, toLower, startsWith, split, join;
-import auroraopencode.taskflow : taskMessagePath, taskEvidenceIndex;
+import auroraopencode.taskflow : taskMessagePath;
 import auroraopencode.requestintent : answerOnlyRequest, requestIntent, RequestIntent, reportedFailureRequest, artifactChangeRequested;
 
 /// Only real user messages can retarget a task. Tool output, summaries and
@@ -198,12 +198,57 @@ string verificationCoverage(const ref ChatSession session, string extraCheck = "
         else if (check.canFind("test")) supplied = ["tests"];
         foreach (kind; supplied) if (kind.length && !kinds.canFind(kind)) kinds ~= kind;
     }
-    const evidence = taskEvidenceIndex(session);
-    foreach (index; taskMessagePath(session))
+    // A long task can hold hundreds of check receipts, and a tool result used
+    // to revalidate every one of them on the window thread (re-reading each
+    // recipe and re-walking its declared inputs). That scan measured 1.6-3.4 s
+    // on a 29k-message conversation and held the UI for the same duration.
+    // Only the newest fresh receipt that supplies each category can change the
+    // coverage union, so validate at most one receipt per needed category
+    // instead of one per historical row. A receipt whose categories are
+    // already covered adds nothing, and a stale receipt is skipped exactly as
+    // before; older rows remain the fallback when the newest one fails.
+    import auroraopencode.recipeevidence : RecipeEvidenceCache;
+    RecipeEvidenceCache recipes;
+    void categories(string check, scope void delegate(string) sink)
     {
+        if (check.startsWith("verify:"))
+        {
+            foreach (kind; check[7 .. $].split(","))
+                if (kind.length) sink(kind);
+        }
+        else if (check.canFind("compile") || check.canFind("build") || check == "cargo check") sink("compile");
+        else if (check.canFind("test")) sink("tests");
+    }
+    bool[string] remaining;
+    const path = taskMessagePath(session);
+    foreach (index; path)
+        categories(session.messages[index].verificationCheck, (kind) { remaining[kind] = true; });
+    bool current = true;
+    bool contradicted;
+    foreach_reverse (index; path)
+    {
+        if (!remaining.length) break;
         const ref message = session.messages[index];
-        if (auto proof = message.id in evidence)
-            if ((*proof).startsWith("verify-current|")) add(message.verificationCheck);
+        if (message.role == "user" && !message.internal &&
+            reportedFailureRequest(message.content)) contradicted = true;
+        // Everything older than a later failure report is already stale.
+        if (contradicted) break;
+        recipes.observe(message);
+        const recipe = recipes.key(message);
+        if (!recipe.length && session.verificationScope.length &&
+            message.verificationScope == session.verificationScope &&
+            (message.failed || !message.verificationCheck.length)) current = false;
+        if (!message.verificationCheck.length) continue;
+        bool contributes;
+        categories(message.verificationCheck, (kind) { if (kind in remaining) contributes = true; });
+        if (!contributes) continue;
+        bool fresh;
+        if (recipe.length) fresh = recipes.current(message, session.verificationScope);
+        else fresh = current && session.verificationScope.length &&
+            message.verificationScope == session.verificationScope;
+        if (!fresh) continue;
+        add(message.verificationCheck);
+        categories(message.verificationCheck, (kind) { remaining.remove(kind); });
     }
     if (extraCheck.length) add(extraCheck);
     return "verify:" ~ kinds.join(",");

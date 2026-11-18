@@ -374,7 +374,7 @@ void restoreBranchTask(ref ChatSession session)
 string evidenceKind(const ref ChatMessage message)
 {
     if (message.failed) return "";
-    if (message.internal && message.taskStateJson.length)
+    if (message.internal && message.taskStateJson.canFind("taskActionEvidence"))
         try
         {
             const state = parseJSON(message.taskStateJson);
