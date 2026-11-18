@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Instrument the tool-result commit path and stamp the UI heartbeat before history/journal application, so a future stall names the real blocking phase instead of the last painted bubble.",
+  "reason": "Deploy the cross-surface failed-check comparison so a passing check clears the same obligation; then clear the remaining ledger entries with one accepted recipe.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-18 09:51:01.8851686 UTC",
-  "finishedAt": "2026-11-18 09:52:05.0068746 UTC",
-  "durationMs": 63122,
+  "startedAt": "2026-11-18 21:00:33.1161372 UTC",
+  "finishedAt": "2026-11-18 21:01:34.9939682 UTC",
+  "durationMs": 61877,
   "exitCode": 0,
   "errors": [],
-  "publishStatus": "failed",
-  "publishDetail": "Publishing with installed runtime required: MSVCR120.dll",
+  "publishStatus": "published",
+  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (d901ca122de8).",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

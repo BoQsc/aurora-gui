@@ -20,6 +20,7 @@ import aurora.font : GlyphAdvance, GlyphHeight, GlyphWidth, LineAdvance,
 import engine.runtime : TerrainRuntime, defaultRuntime;
 import engine.player : PlayerInput, PlayerState, updatePlayer;
 import engine.game : GameState, initGame, updateGame;
+import engine.collision : RayHit, raycastSolid, surfaceHeight;
 import engine.world : TerrainMaterial, materialName;
 import mcmesh : MeshData, MeshVertex, TerrainChunk, TerrainChunkRebuild,
     TerrainChunkStream, buildTerrainChunk;
@@ -467,6 +468,9 @@ private final class App
     bool cursorHidden;
     bool testMotion;
     bool extremeMotion;
+    bool pitchTest;
+    bool inputTrace;
+    bool propsTraceOnce;
 
     this(string surfacePath = null)
     {
@@ -607,7 +611,7 @@ private final class App
         createHudBuffers();
         createSkyBuffers();
         camZ = 40;
-        camY = runtime.world.terrainHeight(camX, camZ) + 2.26;
+        camY = surfaceHeight(runtime.world, camX, camZ) + 2.26;
         player.x = camX;
         player.y = camY;
         player.z = camZ;
@@ -623,6 +627,9 @@ private final class App
         initGame(game, runtime.world);
         createVegetationMesh();
         createActorMeshBuffers();
+        stdout.writeln("vulkan3d: vegetationIndices=", vegetationIndexCount,
+            " actorIndices=", actorIndexCount);
+        stdout.flush();
         GC.minimize();
         if (gChildWindow !is null) { stdout.writeln("vulkan3d: commands"); stdout.flush(); }
     }
@@ -947,6 +954,13 @@ private final class App
         viewportState.pViewports = &viewport;
         viewportState.scissorCount = 1;
         viewportState.pScissors = &scissor;
+        int[2] dynamicStates = [VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR];
+        VkPipelineDynamicStateCreateInfo dynamicState;
+        dynamicState.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamicState.dynamicStateCount = 2;
+        dynamicState.pDynamicStates = dynamicStates.ptr;
         VkPipelineRasterizationStateCreateInfo raster;
         raster.sType =
             VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -986,6 +1000,7 @@ private final class App
         info.pVertexInputState = &vertexInput;
         info.pInputAssemblyState = &assembly;
         info.pViewportState = &viewportState;
+        info.pDynamicState = &dynamicState;
         info.pRasterizationState = &raster;
         info.pMultisampleState = &multisample;
         info.pDepthStencilState = &depth;
@@ -1684,28 +1699,59 @@ private final class App
         ];
     }
 
+    private void addCanopy(ref MeshVertex[] vertices, ref uint[] indices,
+        double cx, double baseY, double cz, double width, double height,
+        float r, float g, float b)
+    {
+        const uint base = cast(uint) vertices.length;
+        const float x0 = cast(float) (cx - width / 2);
+        const float x1 = cast(float) (cx + width / 2);
+        const float z0 = cast(float) (cz - width / 2);
+        const float z1 = cast(float) (cz + width / 2);
+        const float y0 = cast(float) baseY;
+        const float y1 = cast(float) (baseY + height);
+        vertices ~= MeshVertex(x0, y0, z0, r, g, b);
+        vertices ~= MeshVertex(x1, y0, z0, r * 0.92f, g * 0.92f, b * 0.92f);
+        vertices ~= MeshVertex(x1, y0, z1, r * 0.84f, g * 0.84f, b * 0.84f);
+        vertices ~= MeshVertex(x0, y0, z1, r * 0.92f, g * 0.92f, b * 0.92f);
+        vertices ~= MeshVertex(cast(float) cx, y1, cast(float) cz, r, g, b);
+        indices ~= [
+            base, base + 1, base + 4,
+            base + 1, base + 2, base + 4,
+            base + 2, base + 3, base + 4,
+            base + 3, base, base + 4,
+            base, base + 2, base + 1,
+            base, base + 3, base + 2
+        ];
+    }
+
     private void createVegetationMesh()
     {
         MeshVertex[] vertices;
         uint[] indices;
         foreach (plant; game.plants)
         {
-            const y = cast(float) runtime.world.terrainHeight(plant.x, plant.z);
+            const y = cast(float) surfaceHeight(runtime.world, plant.x, plant.z);
             if (plant.kind == 1)
             {
-                addBox(vertices, indices, plant.x, y + 1.1 * plant.scale,
-                    plant.z, 0.24, 2.2 * plant.scale, 0.24,
+                addBox(vertices, indices, plant.x, y + 0.8 * plant.scale,
+                    plant.z, 0.24, 3.6 * plant.scale, 0.24,
                     0.24f, 0.16f, 0.08f);
-                addBox(vertices, indices, plant.x, y + 2.8 * plant.scale,
-                    plant.z, 1.2 * plant.scale, 1.8 * plant.scale,
-                    1.2 * plant.scale, 0.13f, 0.38f, 0.12f);
+                addCanopy(vertices, indices, plant.x,
+                    y + 1.8 * plant.scale, plant.z,
+                    1.7 * plant.scale, 2.0 * plant.scale,
+                    0.13f, 0.38f, 0.12f);
+                addCanopy(vertices, indices, plant.x,
+                    y + 3.1 * plant.scale, plant.z,
+                    1.15 * plant.scale, 1.8 * plant.scale,
+                    0.18f, 0.46f, 0.15f);
             }
             else
             {
-                addBox(vertices, indices, plant.x, y + 0.35 * plant.scale,
+                addBox(vertices, indices, plant.x, y + 0.25 * plant.scale,
                     plant.z, 0.12, 0.7 * plant.scale, 0.12,
                     0.20f, 0.50f, 0.14f);
-                addBox(vertices, indices, plant.x, y + 0.35 * plant.scale,
+                addBox(vertices, indices, plant.x, y + 0.25 * plant.scale,
                     plant.z, 0.48, 0.08 * plant.scale, 0.12,
                     0.24f, 0.56f, 0.16f);
             }
@@ -1780,6 +1826,13 @@ private final class App
     private void drawWorldProps(VkCommandBuffer commandBuffer, uint width,
         uint height, float[16] mvp)
     {
+        if (hudTrace && !propsTraceOnce)
+        {
+            propsTraceOnce = true;
+            stdout.writeln("props draw vegetation=", vegetationIndexCount,
+                " actors=", actorIndexCount);
+            stdout.flush();
+        }
         if (vegetationIndexCount == 0 && actorIndexCount == 0) return;
         VkViewport viewport = VkViewport(0, 0, width, height, 0, 1);
         VkRect2D scissor = VkRect2D(VkOffset2D(0, 0),
@@ -2374,29 +2427,33 @@ private final class App
         const double fx = sin(camYaw) * cp;
         const double fy = sin(camPitch);
         const double fz = -cos(camYaw) * cp;
-        bool found;
-        double hitX, hitZ;
-        for (double distance = 1.0; distance < 90.0; distance += 0.5)
-        {
-            const x = camX + fx * distance;
-            const y = camY + fy * distance;
-            const z = camZ + fz * distance;
-            if (y <= runtime.world.terrainHeight(x, z))
-            {
-                hitX = x;
-                hitZ = z;
-                found = true;
-                break;
-            }
-        }
-        if (!found)
+        RayHit hit;
+        if (!raycastSolid(runtime.world, camX, camY, camZ,
+            fx, fy, fz, 90.0, hit))
         {
             digHeld = dig;
             buildHeld = build;
             return;
         }
+        const hitX = hit.x;
+        const hitY = hit.y;
+        const hitZ = hit.z;
         const material = cast(TerrainMaterial) materialIndex;
         runtime.world.addEdit(hitX, hitZ, 8.0, dig ? -5.0 : 5.0, material);
+        if (dig)
+        {
+            enum double caveRadius = 4.0;
+            foreach (step; 0 .. 5)
+            {
+                const distance = 2.0 + step * 3.5;
+                const caveX = hitX + fx * distance;
+                const caveY = hitY + fy * distance;
+                const caveZ = hitZ + fz * distance;
+                runtime.world.addCave(caveX, caveY, caveZ, caveRadius,
+                    material);
+                rebuildTerrainAround(caveX, caveZ, caveRadius + 2.0);
+            }
+        }
         rebuildTerrainAround(hitX, hitZ, 8.0);
         notifications ~= format("%s  %s", dig ? "DIG" : "BUILD",
             materialName(material));
@@ -2485,6 +2542,11 @@ private final class App
         if (keyDown(0x28)) camPitch -= 1.4 * dt;
         if (camPitch < -1.15) camPitch = -1.15;
         if (camPitch > 1.15) camPitch = 1.15;
+        if (hudTrace && (keyDown(0x26) || keyDown(0x28)))
+        {
+            stdout.writeln("camera pitch=", camPitch);
+            stdout.flush();
+        }
         PlayerInput input;
         input.forward = keyDown(0x57);
         input.back = keyDown(0x53);
@@ -2526,6 +2588,11 @@ private final class App
     {
         if (mouseCaptured == captured) return;
         mouseCaptured = captured;
+        if (inputTrace)
+        {
+            stdout.writeln("mouse capture=", captured);
+            stdout.flush();
+        }
         if (!gStandaloneWindow) return;
         if (captured)
         {
@@ -2593,10 +2660,18 @@ private final class App
             buildHeld = true;
             return;
         }
-        camYaw += (cursor.x - center.x) * 0.0026;
-        camPitch -= (cursor.y - center.y) * 0.0026;
+        const int dx = cursor.x - center.x;
+        const int dy = cursor.y - center.y;
+        camYaw += dx * 0.0026;
+        camPitch -= dy * 0.0026;
         if (camPitch < -1.15) camPitch = -1.15;
         if (camPitch > 1.15) camPitch = 1.15;
+        if (inputTrace && (dx != 0 || dy != 0))
+        {
+            stdout.writeln("mouse delta dx=", dx, " dy=", dy,
+                " yaw=", camYaw, " pitch=", camPitch);
+            stdout.flush();
+        }
         SetCursorPos(center.x, center.y);
     }
 
@@ -2718,6 +2793,23 @@ private final class App
         vk.vkCmdSetViewport(commands, 0, 1, &viewport);
         vk.vkCmdSetScissor(commands, 0, 1, &scissor);
         updateCamera(seconds, 0);
+        if (testMotion)
+        {
+            const t = seconds;
+            camX = 280.0 * sin(t * 0.55);
+            camZ = 40.0 + 620.0 * cos(t * 0.45);
+            camY = runtime.world.terrainHeight(camX, camZ) + 2.26;
+            camYaw = t * 0.45;
+            camPitch = 0.16 * sin(t * 0.7);
+        }
+        if (pitchTest)
+        {
+            camX = 0;
+            camZ = 40;
+            camY = surfaceHeight(runtime.world, camX, camZ) + 2.26;
+            camYaw = 0;
+            camPitch = seconds;
+        }
         auto matrix = this.matrix(seconds, Width, Height);
         pushConstants(commands, terrainPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
             0, 64, &matrix);
@@ -3293,6 +3385,8 @@ void main(string[] args)
     bool offscreen;
     bool testMotion;
     bool extremeMotion;
+    bool pitchTest;
+    bool inputTrace;
     bool hudTrace;
     for (size_t i = 0; i < args.length; ++i)
     {
@@ -3312,6 +3406,10 @@ void main(string[] args)
             offscreen = true;
         else if (args[i] == "--test-motion")
             testMotion = true;
+        else if (args[i] == "--test-pitch")
+            pitchTest = true;
+        else if (args[i] == "--trace-input")
+            inputTrace = true;
         else if (args[i] == "--extreme-motion")
             extremeMotion = true;
         else if (args[i] == "--trace-hud")
@@ -3388,6 +3486,8 @@ void main(string[] args)
     SetThreadPriority(GetCurrentThread(), 2);
     app.testMotion = testMotion;
     app.extremeMotion = extremeMotion;
+    app.pitchTest = pitchTest;
+    app.inputTrace = inputTrace;
     app.hudTrace = hudTrace;
     app.mouseTitle = "Large Marching Cubes Terrain";
     if (hostTitle.length != 0)

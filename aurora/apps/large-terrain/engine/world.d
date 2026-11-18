@@ -1,6 +1,6 @@
 module engine.world;
 
-import std.math : cos, sin;
+import std.math : cos, sin, sqrt;
 
 enum TerrainMaterial : ubyte
 {
@@ -19,6 +19,15 @@ struct TerrainEdit
     TerrainMaterial material;
 }
 
+struct CaveEdit
+{
+    double x;
+    double y;
+    double z;
+    double radius;
+    TerrainMaterial material;
+}
+
 struct WorldConfig
 {
     string title = "Large Marching Cubes Terrain";
@@ -33,6 +42,7 @@ struct WorldConfig
     double lodNearDistance = 600;
     double farPlane = 5000;
     TerrainEdit[] edits;
+    CaveEdit[] caves;
 
     double minX() const { return -extentX / 2; }
     double minZ() const { return -extentZ / 2; }
@@ -64,6 +74,21 @@ struct WorldConfig
         return height;
     }
 
+    double density(double x, double y, double z) const
+    {
+        double value = y - terrainHeight(x, z);
+        foreach (cave; caves)
+        {
+            const dx = x - cave.x;
+            const dy = y - cave.y;
+            const dz = z - cave.z;
+            const caveValue = cave.radius -
+                sqrt(dx * dx + dy * dy + dz * dz);
+            if (caveValue > value) value = caveValue;
+        }
+        return value;
+    }
+
     TerrainMaterial materialAt(double x, double z, double height) const
     {
         foreach_reverse (edit; edits)
@@ -82,6 +107,12 @@ struct WorldConfig
         TerrainMaterial material)
     {
         edits ~= TerrainEdit(x, z, radius, delta, material);
+    }
+
+    void addCave(double x, double y, double z, double radius,
+        TerrainMaterial material)
+    {
+        caves ~= CaveEdit(x, y, z, radius, material);
     }
 }
 

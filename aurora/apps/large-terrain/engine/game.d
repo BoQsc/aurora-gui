@@ -1,6 +1,7 @@
 module engine.game;
 
 import engine.world : WorldConfig;
+import engine.collision : surfaceHeight;
 import std.math : cos, sin, sqrt;
 
 struct Actor
@@ -60,7 +61,7 @@ void initGame(ref GameState game, WorldConfig world)
         const radius = 25.0 + random01(seed) * 55.0;
         const x = sin(angle) * radius;
         const z = 40.0 + cos(angle) * radius;
-        game.actors ~= Actor(x, world.terrainHeight(x, z), z,
+        game.actors ~= Actor(x, surfaceHeight(world, x, z), z,
             angle, 100, 0, 0, cast(float) random01(seed), true, true);
     }
     foreach (i; 0 .. 8)
@@ -69,18 +70,26 @@ void initGame(ref GameState game, WorldConfig world)
         const radius = 12.0 + random01(seed) * 25.0;
         const x = sin(angle) * radius;
         const z = 40.0 + cos(angle) * radius;
-        game.actors ~= Actor(x, world.terrainHeight(x, z), z,
+        game.actors ~= Actor(x, surfaceHeight(world, x, z), z,
             angle, 100, 0, 0, cast(float) random01(seed), false, true);
     }
-    foreach (i; 0 .. 900)
+    foreach (i; 0 .. 20000)
     {
         const angle = random01(seed) * 6.283185307179586;
-        const radius = 22.0 + random01(seed) * 180.0;
+        const radius = 22.0 + random01(seed) * 320.0;
         const x = sin(angle) * radius;
         const z = 40.0 + cos(angle) * radius;
         game.plants ~= Vegetation(x, z,
             cast(float) (0.7 + random01(seed) * 0.8),
-            random01(seed) < 0.18 ? 1 : 0);
+            random01(seed) < 0.26 ? 1 : 0);
+    }
+    foreach (i; 0 .. 30000)
+    {
+        const x = world.minX() + random01(seed) * world.extentX;
+        const z = world.minZ() + random01(seed) * world.extentZ;
+        game.plants ~= Vegetation(x, z,
+            cast(float) (0.7 + random01(seed) * 0.8),
+            random01(seed) < 0.22 ? 1 : 0);
     }
 }
 
@@ -143,7 +152,7 @@ void updateGame(ref GameState game, WorldConfig world, double px,
                 actor.health = 100;
                 actor.x = px + 20.0;
                 actor.z = pz + 20.0;
-                actor.y = world.terrainHeight(actor.x, actor.z);
+                actor.y = surfaceHeight(world, actor.x, actor.z);
             }
             continue;
         }
@@ -172,14 +181,14 @@ void updateGame(ref GameState game, WorldConfig world, double px,
                     game.damageFlash = 0.25f;
                 }
             }
-            actor.y = world.terrainHeight(actor.x, actor.z);
+            actor.y = surfaceHeight(world, actor.x, actor.z);
         }
         else
         {
             actor.wanderPhase += cast(float) (dt * 0.7);
             actor.x += sin(actor.wanderPhase) * dt * 0.8;
             actor.z += cos(actor.wanderPhase * 0.7) * dt * 0.8;
-            actor.y = world.terrainHeight(actor.x, actor.z);
+            actor.y = surfaceHeight(world, actor.x, actor.z);
         }
     }
     if (game.playerHealth <= 0)

@@ -1,5 +1,6 @@
 import engine.lighting : LightingModel;
 import engine.world : TerrainMaterial, WorldConfig;
+import engine.collision : RayHit, raycastSolid, solidAt;
 import core.time : MonoTime;
 import mcmesh : TerrainChunkRebuild, buildTerrainChunk;
 import std.stdio : writeln;
@@ -33,6 +34,28 @@ void main()
     auto chunk = buildTerrainChunk(world, lights, 0);
     assert(chunk.lods[0].indices.length > 0, "edited chunk has no mesh");
     assert(chunk.lods[0].vertices.length > 0, "edited chunk has no vertices");
+
+    auto caveWorld = WorldConfig();
+    caveWorld.chunksX = 1;
+    caveWorld.chunksZ = 1;
+    caveWorld.extentX = 128;
+    caveWorld.extentZ = 128;
+    caveWorld.baseCells = 8;
+    caveWorld.verticalCells = 16;
+    const caveSurface = caveWorld.terrainHeight(0, 0);
+    caveWorld.addCave(0, caveSurface - 8, 0, 4, TerrainMaterial.rock);
+    assert(caveWorld.density(0, caveSurface - 8, 0) > 0,
+        "cave did not create a volumetric cavity");
+    assert(!solidAt(caveWorld, 0, caveSurface - 8, 0),
+        "collision system still treats cave air as solid");
+    auto caveChunk = buildTerrainChunk(caveWorld, lights, 0);
+    assert(caveChunk.lods[0].indices.length > 0,
+        "cave chunk did not produce a mesh");
+
+    RayHit surfaceHit;
+    assert(raycastSolid(caveWorld, 0, caveWorld.maxY, 0, 0, -1, 0,
+        caveWorld.extentY, surfaceHit), "collision ray missed terrain");
+    assert(surfaceHit.hit, "collision ray produced no hit");
 
     auto fullWorld = WorldConfig();
     fullWorld.addEdit(0, 0, 8, -5, TerrainMaterial.dirt);

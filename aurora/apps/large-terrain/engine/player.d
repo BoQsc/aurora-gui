@@ -1,6 +1,7 @@
 module engine.player;
 
 import engine.world : WorldConfig;
+import engine.collision : surfaceHeight;
 import std.math : cos, sin;
 
 struct PlayerInput
@@ -62,7 +63,7 @@ void updatePlayer(ref PlayerState player, WorldConfig world,
     player.jumpHeld = input.jump;
     player.velocityY -= 24.0 * dt;
     player.y += player.velocityY * dt;
-    const ground = world.terrainHeight(player.x, player.z) + 2.26;
+    const ground = surfaceHeight(world, player.x, player.z) + 2.26;
     if (player.y <= ground)
     {
         player.y = ground;

@@ -8,7 +8,7 @@ void main()
     auto game = GameState();
     initGame(game, world);
     assert(game.actors.length == 26, "actor count");
-    assert(game.plants.length == 900, "vegetation count");
+    assert(game.plants.length == 50000, "vegetation count");
     int zombies;
     int npcs;
     foreach (actor; game.actors)

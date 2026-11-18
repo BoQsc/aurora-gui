@@ -444,9 +444,8 @@ private MeshData buildChunkMesh(WorldConfig config, LightingModel lights,
     foreach (z; 0 .. NZ)
         foreach (y; 0 .. NY)
             foreach (x; 0 .. NX)
-                values[(z * NY + y) * NX + x] =
-                    (y0 + y * dy) -
-                    config.terrainHeight(x0 + x * dx, z0 + z * dz);
+                values[(z * NY + y) * NX + x] = config.density(
+                    x0 + x * dx, y0 + y * dy, z0 + z * dz);
 
     static immutable double[3][8] offsets = [
         [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
