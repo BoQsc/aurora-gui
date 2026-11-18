@@ -715,12 +715,14 @@ private OpenCodeToolDef updatePlanToolDefinition()
 {
     if (!experimentalStrictPlanEnabled())
         return OpenCodeToolDef("update_plan",
+            // Kept under 500 characters: the compact default schema is a
+            // contract (tests/agent_baseline_contracts.d), so added guidance
+            // replaces wording instead of extending the description.
             "Maintain a short live outcome plan for substantial work. Update finished and next active outcomes together; " ~
         "revise or prune when evidence changes. Additions and reordering are normal; explain a dropped unfinished outcome or changed acceptance. " ~
-        "For a large objective, record the general approach and whole scope before local steps, and plan the class of fix " ~
-        "rather than one-off patches. " ~
-        "Default planning needs no evidence-ID bookkeeping; checks are tracked separately. " ~
-        "Send the current list. Preserve the user's acceptance; keep optional future work outside it. Small requests need no plan.",
+        "For a large objective, record the whole scope before local steps and plan the class of fix rather than one-off patches. " ~
+        "Checks are tracked separately; no evidence-ID bookkeeping is needed. " ~
+        "Send the current list; small requests need no plan.",
         `{"type":"object","properties":{"explanation":{"type":"string"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["step","status"],"additionalProperties":false}}},"required":["plan"],"additionalProperties":false}`);
     return OpenCodeToolDef(
         "update_plan",
