@@ -5247,8 +5247,8 @@ private int planStepCount(string toolArgs)
 }
 
 /// The body a mutating tool is producing, for the in-flight action row's
-/// preview: `write` -> the file content streamed so far, `edit` -> the new
-/// text, `bash`/`run`/`dshell` -> the command. Empty when there is nothing
+/// preview: `write`/`edit`/`apply_patch` -> the change streamed so far,
+/// `bash`/`run`/`dshell` -> the command. Empty when there is nothing
 /// meaningful to show (e.g. a read/write whose `content` has not arrived yet).
 /// `partialStringArg` tolerates the truncated JSON a tool call streams.
 private string humanToolDetail(string toolName, string toolArgs)
@@ -5257,6 +5257,7 @@ private string humanToolDetail(string toolName, string toolArgs)
     {
         case "write":
         case "edit":
+        case "apply_patch":
         {
             // An editing tool previews its diff: the row is about the change,
             // not about the raw replacement text.

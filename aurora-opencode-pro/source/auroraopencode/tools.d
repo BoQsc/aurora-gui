@@ -7561,10 +7561,64 @@ public string partialStringArg(string argsJson, string key)
     return extractPartialJsonString(argsJson, key);
 }
 
+/// The `patch` argument of an `apply_patch` call with the Codex
+/// `*** Begin Patch` / `*** End Patch` envelope removed. Tolerates a truncated
+/// JSON payload while the arguments are still streaming: the newest line may be
+/// incomplete, and showing it as it arrives is exactly what a live preview is
+/// for. Empty before the patch text has started.
+public string applyPatchBody(string argsJson)
+{
+    import std.string : splitLines;
+
+    // The tool itself accepts any of these keys for the patch text.
+    string patch;
+    foreach (key; ["patch", "input", "text"])
+    {
+        patch = partialStringArg(argsJson, key);
+        if (patch.length > 0) break;
+    }
+    if (patch.length == 0) return "";
+    auto body = appender!string();
+    foreach (raw; patch.splitLines())
+    {
+        auto line = raw;
+        if (line.length > 0 && line[$ - 1] == '\r') line = line[0 .. $ - 1];
+        const text = strip(line);
+        // The envelope markers are not part of the diff, and while the payload
+        // streams the newest one can be a partial marker (`*`, `*** En`). Drop
+        // those instead of previewing a stray `*` row.
+        if (text.length > 0 && "*** Begin Patch".startsWith(text)) continue;
+        if (text.length > 0 && "*** End Patch".startsWith(text)) break;
+        body.put(line);
+        body.put('\n');
+    }
+    return body.data;
+}
+
+/// Count the added and removed lines a streamed `apply_patch` body already
+/// carries. Codex patch format marks a body line with ' ', '+' or '-', so the
+/// change counts grow with the text instead of waiting for the tool to run.
+public bool applyPatchDiffCounts(string body, out int additions,
+    out int deletions)
+{
+    import std.string : splitLines;
+
+    additions = 0;
+    deletions = 0;
+    foreach (line; body.splitLines())
+    {
+        if (line.length == 0) continue;
+        if (line[0] == '+') ++additions;
+        else if (line[0] == '-') ++deletions;
+    }
+    return additions > 0 || deletions > 0;
+}
+
 /// Best-effort additions/deletions for a file-mutating tool whose arguments
 /// are still streaming (or have just arrived). `write` reports the line count
 /// of the partial `content` as additions; `edit` diffs the partial
-/// `oldString`/`newString`. Returns false when there is nothing meaningful to
+/// `oldString`/`newString`; `apply_patch` counts the Codex patch's own
+/// added/removed lines. Returns false when there is nothing meaningful to
 /// show yet, or for tools that do not produce a diff. The exact diff replaces
 /// this preview once the tool executes.
 public bool previewToolDiff(string toolName, string argsJson,
@@ -7589,13 +7643,24 @@ public bool previewToolDiff(string toolName, string argsJson,
         deletions = diff.deletions;
         return additions > 0 || deletions > 0;
     }
+    if (toolName == "apply_patch")
+    {
+        // The batch editing tool: its body is a Codex patch, so the streamed
+        // '+'/'-' lines are the change and the row can count them live the same
+        // way an edit's newString is counted. Without this an `apply_patch` row
+        // showed no counters at all while the patch streamed, so the transcript
+        // looked frozen behind its Thinking header until the tool had run.
+        return applyPatchDiffCounts(applyPatchBody(argsJson), additions,
+            deletions);
+    }
     return false;
 }
 
 /// The unified diff a file-mutating tool's arguments already imply, for a row
 /// whose tool has not reported a diff yet (an in-flight call, or a restored
 /// message that lost its stored diff). `edit` diffs `oldString` against
-/// `newString`; `write` renders the partial `content` as pure additions. Empty
+/// `newString`; `write` renders the partial `content` as pure additions;
+/// `apply_patch` returns the Codex patch body as it has streamed so far. Empty
 /// for tools that do not edit, or when there is nothing to show yet.
 public string previewToolDiffText(string toolName, string argsJson)
 {
@@ -7605,6 +7670,13 @@ public string previewToolDiffText(string toolName, string argsJson)
         const newText = partialStringArg(argsJson, "newString");
         if (oldText.length == 0 && newText.length == 0) return "";
         return computeTextDiff(oldText, newText).unified;
+    }
+    if (toolName == "apply_patch")
+    {
+        const body = applyPatchBody(argsJson);
+        int additions, deletions;
+        if (!applyPatchDiffCounts(body, additions, deletions)) return "";
+        return body;
     }
     if (toolName == "write")
     {
