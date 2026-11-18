@@ -25468,17 +25468,35 @@ private void pollButtonSuggestionRequest()
         if (_current < 0) return;
         auto session = &_sessions[_current];
         string text;
+        // A promoted prompt opens the next turn, so guidance typed after it
+        // belongs to that turn: draining it while this turn stops would place
+        // it above the prompt the user just promoted. Hold it back and keep it
+        // queued across the stop. A promoted follow-up has no guidance-relative
+        // position, so all pending guidance is treated as later.
+        string[] heldGuidance;
+        void holdGuidance()
+        {
+            if (heldGuidance.length == 0) return;
+            if (_current < 0 || _current >= cast(int) _sessions.length) return;
+            auto resumed = &_sessions[_current];
+            resumed.queuedGuidance = heldGuidance ~ resumed.queuedGuidance;
+            publishThreadUpdated(*resumed);
+            markDirty();
+            rebuildMessageColumn();
+        }
         if (steering)
         {
             if (index >= session.queuedGuidance.length) return;
             text = session.queuedGuidance[index];
-            session.queuedGuidance = session.queuedGuidance[0 .. index] ~
-                session.queuedGuidance[index + 1 .. $];
+            heldGuidance = session.queuedGuidance[index + 1 .. $].dup;
+            session.queuedGuidance = session.queuedGuidance[0 .. index].dup;
         }
         else
         {
             if (index >= session.queuedFollowUps.length) return;
             text = session.queuedFollowUps[index];
+            heldGuidance = session.queuedGuidance.dup;
+            session.queuedGuidance = null;
             session.queuedFollowUps = session.queuedFollowUps[0 .. index] ~
                 session.queuedFollowUps[index + 1 .. $];
         }
@@ -25498,10 +25516,12 @@ private void pollButtonSuggestionRequest()
             // `startInterruptedSendIfReady` once the request has released.
             _interruptSendSession = _current;
             stopActiveTurn(false);
+            holdGuidance();
             updateStatus("Interrupting — the queued message starts the next turn.");
             return;
         }
         // Nothing is running, so the promoted message simply starts now.
+        holdGuidance();
         rebuildMessageColumn();
         startNextQueuedFollowUp(_current);
     }
