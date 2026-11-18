@@ -23399,6 +23399,10 @@ private void pollButtonSuggestionRequest()
             }
             updateStatus("Stopped repeated agent output. See the conversation for details.");
             refreshBubbleActions();
+            // A steering prompt belongs to the turn that just ended: drain it
+            // before a queued follow-up opens the next turn, so the transcript
+            // and the next request keep the order the user typed.
+            appendQueuedGuidance(*session);
             startNextQueuedFollowUp(sessionIndex);
             return;
         }
@@ -23435,6 +23439,10 @@ private void pollButtonSuggestionRequest()
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
         auto session = &_sessions[sessionIndex];
+        // Same typed-order rule as the ordinary settle: guidance first, then a
+        // queued follow-up. This drain sets taskStatus to active, so the audit's
+        // own settled status is assigned afterwards and stays authoritative.
+        appendQueuedGuidance(*session);
         session.turnStatus = "completed";
         session.taskStatus = session.verificationStatus == "required" ||
             session.verificationStatus == "failed" ? "verifying" : "active";
