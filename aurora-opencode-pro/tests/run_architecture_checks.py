@@ -6,6 +6,7 @@ import json
 import time
 import hashlib
 import os
+import sys
 import atexit
 import importlib.util
 from architecture_retention import FileLease, prune_runs
@@ -25,6 +26,13 @@ def resolve_git():
 
 
 git_executable = resolve_git()
+# A fixture whose driver needs a synthetic provider cannot run in this
+# isolated runner. Its python harness builds the fixture, starts the provider
+# and asserts the provider round counts, so a mixed fixture list delegates
+# instead of failing on a missing AURORA_CONTRACT_PROVIDER_BASE.
+provider_harnesses = {
+    'resume_tool_handoff_contracts': 'test_resume_tool_handoff.py',
+}
 parser = argparse.ArgumentParser()
 parser.add_argument('--release', action='store_true', help='Measure optimized fixtures using release compiler flags')
 parser.add_argument('--keep-runs', type=int, default=3, help='Retain this many completed runs, plus every active run')
@@ -79,6 +87,18 @@ proof = {'sourceSha256': fingerprint, 'gitHead': head,
 print('ARTIFACTS', directory, 'SOURCE', fingerprint, flush=True)
 env = dict(os.environ)
 for fixture in ['filesystem_host', *args.fixtures]:
+    if fixture in provider_harnesses and not env.get('AURORA_CONTRACT_PROVIDER_BASE'):
+        harness = package / 'tests' / provider_harnesses[fixture]
+        harness_output = directory / (fixture + '-harness') / 'result.json'
+        print('HARNESS', fixture, 'via', harness.name, flush=True)
+        subprocess.run([sys.executable, str(harness), '--build',
+                        '--output', str(harness_output)],
+                       cwd=package, check=True, timeout=900)
+        subprocess.run([sys.executable, str(harness), '--output',
+                        str(harness_output)],
+                       cwd=package, check=True, timeout=900)
+        print('PASS', fixture, 'LOG', harness_output.parent, flush=True)
+        continue
     executable = directory / (fixture + '.exe')
     compile_command = [
         'dmd', '-i', '-verrors=20',

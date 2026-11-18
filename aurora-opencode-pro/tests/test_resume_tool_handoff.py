@@ -1,8 +1,13 @@
 """Real Continue/Regenerate/queued callbacks after Stop, then native tool delivery."""
-import argparse, collections, hashlib, http.server, json, os, subprocess, threading
+import argparse, collections, hashlib, http.server, importlib.util, json, os, subprocess, threading
 from pathlib import Path
 
 package=Path(__file__).resolve().parents[1];repo=package.parent
+def git_executable():
+    """Locate git even when the launching environment omits it from PATH."""
+    spec=importlib.util.spec_from_file_location('aurora_build_provenance',package/'tools/build_provenance.py')
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module._git_executable()
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--build',action='store_true')
@@ -13,7 +18,7 @@ if args.build:
                     '-I'+str(repo/'aurora-opencode-core/source'),'-I'+str(repo/'vendor/aurora-d-0.4.5/source'),
                     '-J'+str(package/'assets'),'-of'+str(exe),str(package/'tests/resume_tool_handoff_contracts.d'),
                     'user32.lib','gdi32.lib','wininet.lib','shell32.lib','winmm.lib'],cwd=directory,check=True,timeout=180)
-    (directory/'provenance.json').write_text(json.dumps(dict(gitHead=subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip(),
+    (directory/'provenance.json').write_text(json.dumps(dict(gitHead=subprocess.check_output([git_executable(),'rev-parse','HEAD'],cwd=repo,text=True).strip(),
         appuiSha256=hashlib.sha256((package/'source/auroraopencode/appui.d').read_bytes()).hexdigest(),
         fixtureSha256=hashlib.sha256((package/'tests/resume_tool_handoff_contracts.d').read_bytes()).hexdigest()),indent=2),encoding='utf-8')
     raise SystemExit
