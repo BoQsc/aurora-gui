@@ -84,12 +84,15 @@ int main()
             "Streaming lost the latest line");
         assert(root.transcriptRowsSequentialForTesting(), "Rows overlap");
     }
+    // The turn is still active, so a scroll-up may not hand auto-follow over:
+    // the live answer must stay in view while it is still being written.
     root.scrollTranscriptUpForTesting(200);
-    const readerOffset = view.scrollY();
+    assert(root.followForTesting() && view.scrollY() == view.maxScroll(),
+        "Scrolling up detached an active answer from the newest content");
     root.streamContentForTesting("Another paragraph.\n\n");
     root.tickTree(0.02); driver.paint();
-    assert(!root.followForTesting() && view.scrollY() == readerOffset,
-        "Streaming moved a reader looking at history");
+    assert(root.followForTesting() && view.scrollY() == view.maxScroll(),
+        "Streaming lost the fixed newest content while the turn was active");
     root.scrollToForTesting(int.max);
     root.finishStreamForTesting();
     root.tickTree(0.02); driver.paint();

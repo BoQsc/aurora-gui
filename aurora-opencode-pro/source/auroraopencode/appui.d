@@ -11053,6 +11053,11 @@ private final class ChatScrollView : ScrollView
     private static immutable int topLoadThreshold = 24;
     // Invoked when the reader reaches the top of the transcript.
     void delegate() onReachedTop;
+    // True while the assistant is still working on the selected conversation.
+    // A user scroll may not hand auto-follow over during that time: the live
+    // answer must stay in view instead of finishing off-screen. Once the turn
+    // settles the reader can scroll history freely again.
+    bool delegate() fixateToNewest;
 
     this(Widget content)
     {
@@ -11076,6 +11081,11 @@ private final class ChatScrollView : ScrollView
             }
     }
 
+    private bool fixedToNewest()
+    {
+        return fixateToNewest !is null && fixateToNewest();
+    }
+
     protected override void onLayout()
     {
         const previousY = scrollY();
@@ -11085,6 +11095,13 @@ private final class ChatScrollView : ScrollView
         _layoutScrollChange = true;
         scope (exit) _layoutScrollChange = false;
         super.onLayout();
+        if (fixedToNewest())
+        {
+            follow = true;
+            _anchorGrow = 0;
+            setScrollY(maxScroll());
+            return;
+        }
         if (_anchorGrow != 0)
         {
             setScrollY(previousY + _anchorGrow);
@@ -11108,10 +11125,20 @@ private final class ChatScrollView : ScrollView
     {
         if (_layoutScrollChange) return;
         _holdPending = false;
-        // Any user scroll (thumb drag, track click, wheel, keys) moves away
-        // from the auto-follow position. Re-engage follow only once the view
-        // is back at the bottom; otherwise onLayout keeps snapping the
-        // scrollbar back down and the user cannot scroll up at all.
+        if (fixedToNewest())
+        {
+            follow = true;
+            _anchorGrow = 0;
+            _layoutScrollChange = true;
+            setScrollY(maxScroll());
+            _layoutScrollChange = false;
+            if (scrollY() > topLoadThreshold) _topNotified = false;
+            return;
+        }
+        // With no active turn, any user scroll (thumb drag, track click, wheel,
+        // keys) moves away from the auto-follow position. Re-engage follow only
+        // once the view is back at the bottom; otherwise onLayout keeps snapping
+        // the scrollbar back down and the user cannot scroll up at all.
         follow = scrollY() >= maxScroll() - 4;
         // Reaching the top uncollapses the older messages: load the next page
         // automatically instead of waiting for the loader button to be clicked.
@@ -18031,6 +18058,11 @@ private string _suggestExcludeId;
         messageCenter.setId("oc-message-center");
         _messagesScroll = new ChatScrollView(messageCenter);
         _messageColumn.following = delegate() { return _messagesScroll.follow; };
+        _messagesScroll.fixateToNewest = delegate()
+        {
+            return _streamBubble !is null ||
+                (turnIsBusy() && viewingTurnOwner());
+        };
         _messageColumn.onAnchorCorrection = delegate(int delta) { _messagesScroll._anchorGrow += delta; };
         _messagesScroll.setId("oc-scroll");
         _messagesScroll.layoutHints().flex = 1.0;
@@ -20563,11 +20595,11 @@ private string _suggestExcludeId;
                 _messageColumn.add(queuedBubble);
             }
         addFollowUpSuggestions(*session, path);
-        // Deliberately do NOT set `_messagesScroll.follow = true` here. A rebuild
-        // happens many times while a reply and its tools stream (e.g. every
-        // throttled tool-argument delta), and forcing follow each time yanked a
-        // reader who had scrolled up back to the bottom. Callers that append a
-        // new message already turn follow on when a jump is actually wanted.
+        // Deliberately do NOT set `_messagesScroll.follow = true` here. While a
+        // turn is active ChatScrollView keeps the transcript fixed to the
+        // newest content; once it settles, a rebuild must not yank a reader who
+        // scrolled up back to the bottom. Callers that append a new message
+        // already turn follow on when a jump is actually wanted.
         // Carry the selection captured before the rebuild onto the freshly
         // built bubble for the same message, so a live turn's frequent rebuilds
         // no longer clear the reader's highlight.
@@ -22759,15 +22791,15 @@ private void pollButtonSuggestionRequest()
         // otherwise stay ABOVE the reply it describes. rebuildMessageColumn
         // nests the live reply before its phase row.
         rebuildMessageColumn();
-        // Respect the reader's scroll position. A turn can contain several
+        // An active turn fixes the transcript to the newest content, so this
+        // path does not need its own forced jump. A turn can contain several
         // assistant rounds (the tool loop begins one per round, and retries and
-        // continuations begin more), and every round reaches here. Forcing
-        // auto-follow on each round yanked a reader who had scrolled up back to
-        // the bottom as new content arrived, so a live chat could never be read
-        // from a stable offset. The reader's intent already lives in `follow`:
-        // sending a message engages it via addUserBubble, and a reader who stays
-        // at the bottom keeps it engaged (see onScrollChanged). The jump-to-
-        // latest pill is the explicit way back to automatic scrolling.
+        // continuations begin more), and every round reaches here. The reader's
+        // intent lives in `follow`: sending a message engages it via
+        // addUserBubble, an active turn keeps it engaged (see
+        // ChatScrollView.fixateToNewest), and a settled chat hands it back to
+        // the reader. The jump-to-latest pill is the explicit way back after
+        // they scroll away.
         _messagesScroll.invalidate();
         refreshBubbleActions();
     }

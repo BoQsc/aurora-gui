@@ -247,6 +247,40 @@ int main()
         "jump to latest did not restore the newest content view: " ~ regionWhy);
     writeln("Jump to latest lands on the newest content in one frame");
 
+    // While a turn is active the transcript stays fixed to the newest content.
+    // A scroll-up during generation must not hand auto-follow over, or the
+    // answer finishes off-screen and the reader silently loses the live tail.
+    root.startTurnClockForTesting();
+    root.beginStreamForTesting();
+    root.streamContentForTesting("Streaming answer first paragraph.\n\n");
+    root.tickTree(0.02);
+    assert(driver.paint(), "the live stream did not paint");
+    assert(root.followForTesting() && view.scrollY() == view.maxScroll(),
+        "a live turn did not fixate the transcript to the newest content");
+    root.scrollTranscriptUpForTesting(300);
+    assert(root.followForTesting() && view.scrollY() == view.maxScroll(),
+        "scrolling up detached an active answer from the newest content");
+    root.streamContentForTesting(
+        "More answer text while the turn is still active.\n\n");
+    root.tickTree(0.02);
+    assert(driver.paint(), "the continued live stream did not paint");
+    assert(root.followForTesting() && view.scrollY() == view.maxScroll(),
+        "the active answer was allowed to finish off-screen");
+    assert(!root.followPillShownForTesting(),
+        "the jump-to-latest pill appeared while the active turn fixed the tail");
+    root.finishStreamForTesting();
+    root.tickTree(0.02);
+    assert(root.followForTesting() && view.scrollY() == view.maxScroll(),
+        "settling the turn moved the transcript away from the newest content");
+    // After the turn settles, scrolling up is the reader's choice again.
+    root.scrollTranscriptUpForTesting(300);
+    root.tickTree(0.02);
+    assert(!root.followForTesting(),
+        "an idle transcript still refused to hand auto-follow over");
+    assert(root.followPillShownForTesting(),
+        "the jump-to-latest pill did not return after an idle scroll-up");
+    writeln("An active turn fixes the newest content, then releases it when settled");
+
     root.shutdownClient();
     return 0;
 }
