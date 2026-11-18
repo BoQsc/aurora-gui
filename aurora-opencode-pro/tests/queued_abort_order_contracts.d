@@ -1,0 +1,124 @@
+module auroraopencode_pro_queued_abort_order_contracts;
+
+import aurora;
+import auroraopencode.appui : OpenCodeRoot;
+import auroraopencode.core : opencodeTheme, setOpencodeStateDirectoryForTesting;
+import auroraopencode.outputguard : outputRecoveryMarker;
+import auroraopencode.outputrecovery : maxOutputRecoveries;
+import core.thread : Thread;
+import core.time : msecs, seconds;
+import std.conv : to;
+import std.datetime : Clock;
+import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir;
+import std.path : buildPath;
+import std.stdio : writeln;
+
+/// A steering prompt typed during a turn belongs to that turn. Both terminal
+/// output aborts must drain it before a queued follow-up opens the next turn,
+/// or the later-typed follow-up lands above earlier steering text.
+int main()
+{
+    const stateDir = buildPath(tempDir(),
+        "aurora-opencode-pro-queued-abort-order-state");
+    if (exists(stateDir)) rmdirRecurse(stateDir);
+    mkdirRecurse(stateDir);
+    setOpencodeStateDirectoryForTesting(stateDir);
+
+    WindowOptions options;
+    options.title = "Aurora OpenCode Pro queued abort order contracts";
+    options.width = 1200;
+    options.height = 800;
+    options.renderer = RendererPreference.software;
+    auto window = new GuiWindow(options, opencodeTheme());
+    auto root = new OpenCodeRoot(window);
+    window.setRoot(root);
+
+    const startupDeadline = Clock.currTime + 5.seconds;
+    while (root.startupPendingForTesting() && Clock.currTime < startupDeadline)
+    {
+        root.tickTree(0.02);
+        Thread.sleep(20.msecs);
+    }
+    assert(!root.startupPendingForTesting(), "startup history did not finish");
+
+    int indexOf(string content)
+    {
+        foreach (i; 0 .. root.messageCountForTesting())
+            if (root.messageContentForTesting(i) == content) return i;
+        return -1;
+    }
+
+    // The terminal abort branch is chosen only once the shared recovery budget
+    // is spent; seed it exactly as the recovery path records itself.
+    void exhaustRecovery()
+    {
+        foreach (_; 0 .. maxOutputRecoveries)
+            root.addInternalNoteForTesting(
+                outputRecoveryMarker ~ " seeded recovery budget");
+    }
+
+    void checkOrder(string steering, string followUp, string site)
+    {
+        assert(root.queuedGuidanceCountForTesting() == 0,
+            "the " ~ site ~ " settle did not drain queued guidance");
+        assert(root.queuedFollowUpCountForTesting() == 0,
+            "the " ~ site ~ " settle did not start the queued follow-up");
+        const steerIndex = indexOf(steering);
+        const followIndex = indexOf(followUp);
+        assert(steerIndex >= 0,
+            "queued guidance was lost at the " ~ site ~ " settle");
+        assert(followIndex >= 0,
+            "the queued follow-up was lost at the " ~ site ~ " settle");
+        assert(followIndex > steerIndex,
+            "typed order was inverted at the " ~ site ~ " settle: guidance=" ~
+            to!string(steerIndex) ~ " follow-up=" ~ to!string(followIndex));
+        assert(root.lastSubmittedUserMessageForTesting() == followUp,
+            "the queued follow-up did not open the next turn at the " ~
+            site ~ " settle");
+    }
+
+    // 1. Ordinary output abort ("Stopped repeated agent output.").
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Fix the failing test."]);
+    root.startTurnClockForTesting();
+    exhaustRecovery();
+    root.queueGuidanceForTesting("STEER: keep the change small.");
+    root.queueFollowUpForTesting("FOLLOW: summarize the result.");
+    root.projectTranscriptForTesting();
+    assert(root.queuedGuidanceCountForTesting() == 1 &&
+        root.queuedFollowUpCountForTesting() == 1,
+        "the fixture did not populate both queues");
+    assert(root.queuedPromptBubbleCountForTesting() == 2,
+        "both pending prompts must be visible before the abort");
+
+    root.injectOutputFailureForTesting("provider_error");
+    root.projectTranscriptForTesting();
+
+    checkOrder("STEER: keep the change small.", "FOLLOW: summarize the result.",
+        "output-abort");
+    assert(root.queuedPromptBubbleCountForTesting() == 0,
+        "the abort settle left a pending prompt bubble behind");
+    root.stopActiveTurnForTesting();
+
+    // 2. Exhausted progress audit ("Unfinished work remains recorded.").
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Audit the unfinished task."]);
+    root.startTurnClockForTesting();
+    exhaustRecovery();
+    root.queueGuidanceForTesting("STEER: record what is left.");
+    root.queueFollowUpForTesting("FOLLOW: then stop.");
+    root.projectTranscriptForTesting();
+    assert(root.queuedGuidanceCountForTesting() == 1 &&
+        root.queuedFollowUpCountForTesting() == 1,
+        "the audit fixture did not populate both queues");
+
+    root.injectOutputFailureForTesting("task_audit_stalled");
+    root.projectTranscriptForTesting();
+
+    checkOrder("STEER: record what is left.", "FOLLOW: then stop.",
+        "stalled-audit");
+    root.stopActiveTurnForTesting();
+
+    writeln("PASS queued guidance flushes before a queued follow-up on both abort settles");
+    return 0;
+}
