@@ -72,7 +72,11 @@ int main(string[] arguments)
         root.addConversationForTesting(["assistant"], [""]);
         const count = root.toolMessageCountForTesting();
         root.injectToolCallsForTesting([call]);
-        const until = MonoTime.currTime + 15.seconds;
+        // A command waits for the shared command lane before it starts. When
+        // this fixture runs as a nested tool call inside Aurora, that lane is
+        // held by the outer call for up to its 30 s queue deadline, so a 15 s
+        // wait lost the race even though the command ran correctly.
+        const until = MonoTime.currTime + 60.seconds;
         while ((root.toolMessageCountForTesting() == count || root.pendingToolResultsForTesting()) && MonoTime.currTime < until) pump();
         assert(root.toolMessageCountForTesting() == count + 1 && !root.pendingToolResultsForTesting(), root.lastToolResultForTesting());
     }
@@ -86,9 +90,15 @@ int main(string[] arguments)
     dispatch(OpenCodeToolCall("partial", "verify", partialArgs.toString()));
     const partialResult = parseJSON(root.lastToolResultForTesting());
     assert(partialResult["receipt"]["acceptedForCurrentSource"].type == JSONType.true_);
-    assert(partialResult["receipt"]["coverageComplete"].type == JSONType.false_);
+    // Required evidence is the behavioral test category (taskpolicy: incidental
+    // "render"/"interaction" wording must not manufacture extra receipt
+    // categories), so tests plus render completes the requirement. The
+    // compilation-only gate above is what keeps a cheap check from passing.
+    assert(partialResult["receipt"]["coverageComplete"].type == JSONType.true_,
+        "Behavioral plus visual evidence left the required coverage open");
     assert(partialResult["receipt"]["toolCallId"].str == "partial");
-    assert(root.verificationStatusForTesting() == "required");
+    assert(root.verificationStatusForTesting() == "passed",
+        "Required behavioral coverage did not clear the verification state");
     root.applyPlanForTesting(`{"plan":[{"id":"pixels","step":"Check pixels","kind":"verify","done":"Render matches","status":"in_progress"}]}`);
     dispatch(OpenCodeToolCall("finish-pixels", "update_plan",
         `{"plan":[{"id":"pixels","step":"Check pixels","status":"completed","evidence":["partial"]}]}`));
@@ -96,7 +106,8 @@ int main(string[] arguments)
     foreach (row; parseJSON(root.taskStateJsonForTesting())["taskSteps"].array)
         if (row["id"].str == "pixels") pixelsComplete = row["status"].str == "completed";
     assert(pixelsComplete, root.lastToolResultForTesting());
-    assert(root.verificationStatusForTesting() == "required");
+    assert(root.verificationStatusForTesting() == "passed",
+        "A plan edit re-opened coverage the accepted receipt already satisfied");
     auto interactionOnly = parseJSON(recipe.toString());
     interactionOnly["steps"] = JSONValue([interaction]);
     const interactionPath = buildPath(source,"interaction.json");
