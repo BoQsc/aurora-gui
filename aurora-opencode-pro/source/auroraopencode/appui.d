@@ -19291,11 +19291,21 @@ private string _suggestExcludeId;
             boundary.content = controlHistoryBoundary;
             appendMessage(session, boundary);
         }
-        import auroraopencode.executioncontrol : executionState;
         import std.digest.sha : sha256Of;
         import std.digest : toHexString;
-        const key = sha256Of(executionState(session).fingerprint ~ "\n" ~ latestActualUserRequest(session) ~
-            "\n" ~ session.objective ~ "\n" ~ taskStepsToJson(session.taskSteps).toString() ~ "\n" ~ session.contract.constraints.join("\n")).toHexString().idup;
+        // A checkpoint identifies the contract the model must satisfy, never
+        // derived execution status. Keying it on verification state meant 366 of
+        // 1,169 checkpoints in one real task differed only in
+        // "Verification: required/passed": a supervisor turn then landed after
+        // nearly every tool round, and the model answered it with a short
+        // "I'm doing X now" line instead of continuing the work (2,866 of 3,482
+        // assistant messages in that task were under 220 characters). The tool
+        // results that changed the status are already in the transcript.
+        const key = sha256Of(latestActualUserRequest(session) ~ "\n" ~ session.objective ~ "\n" ~
+            session.goal ~ "\n" ~ session.goalStatus ~ "\n" ~
+            taskStepsToJson(session.taskSteps).toString() ~ "\n" ~
+            nestedPlansToJson(session.nestedPlans).toString() ~ "\n" ~
+            session.contract.constraints.join("\n")).toHexString().idup;
         const content = durableTaskCheckpointPrefix ~ "Execution: " ~ key ~ "\n" ~ state;
         foreach_reverse (index; activeMessagePath(session))
         {

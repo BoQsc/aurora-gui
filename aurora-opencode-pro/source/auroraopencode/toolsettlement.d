@@ -13,8 +13,26 @@ import auroraopencode.historyrecall : readHistory;
 import auroraopencode.taskcontinuation : taskInputError;
 import auroraopencode.goalmode : goalCompletionError;
 import auroraopencode.taskpolicy : verificationCoverage, requiredEvidence, satisfiesEvidence, sameCheckout;
+import std.algorithm : canFind;
+import std.array : join;
 import std.json : JSONValue, JSONType, parseJSON;
-import std.string : startsWith, indexOf;
+import std.string : startsWith, indexOf, toLower;
+
+/// What a recorded check actually establishes. A receipt that only said
+/// "physicalInteraction: not established by a checker receipt" told the model
+/// its proof never counted, on every attempt: one real task recorded 555 such
+/// lines and 294 compile receipts against 36 behavioral ones, because the
+/// cheapest check kept being re-run instead of the required test.
+private string establishedEvidence(string check)
+{
+    const lower = check.toLower;
+    if (lower.canFind("interaction")) return "interaction evidence on the actual execution path";
+    if (lower.canFind("render")) return "pixel comparison against the independent reference";
+    if (lower.canFind("test")) return "behavioral test execution on the current inputs";
+    if (lower.canFind("compile") || lower.canFind("build") || lower == "cargo check")
+        return "compilation of the current source only; it does not establish behavior or a user-visible result";
+    return "the recorded check on the current source";
+}
 
 struct ToolResultPolicy
 {
@@ -83,7 +101,6 @@ ToolSettlement settleToolResult(const ref ChatSession session,
         JSONValue receipt;
         receipt["toolCallId"] = event.toolCallId;
         receipt["evidenceLevel"] = event.verificationCheck == "dmd compile" ? "compilation" : "executed_checker";
-        receipt["physicalInteraction"] = "not established by a checker receipt";
         receipt["check"] = event.verificationCheck;
         receipt["acceptedForCurrentSource"] = scopedVerification;
         receipt["coverageComplete"] = acceptedVerification;
@@ -92,8 +109,19 @@ ToolSettlement settleToolResult(const ref ChatSession session,
         foreach (kind; requiredEvidence(session))
             if (!satisfiesEvidence(coverage, [kind])) remaining ~= kind;
         receipt["remaining"] = JSONValue(remaining);
+        if (scopedVerification) receipt["establishes"] = establishedEvidence(event.verificationCheck);
         if (!scopedVerification) receipt["reason"] = toolFailed ? "The checker failed." : "Checker workspace or source revision does not match the current task.";
-        else if (!acceptedVerification) receipt["reason"] = "This check is valid evidence; overall task verification still needs the remaining required categories.";
+        else if (!acceptedVerification)
+        {
+            receipt["reason"] = "This check is valid evidence for " ~
+                establishedEvidence(event.verificationCheck) ~ "; required verification is still outstanding.";
+            // Name the missing proof instead of leaving the model to guess which
+            // category is open. Without this the recorded receipt was a status
+            // note and the next round re-ran the same cheap check.
+            receipt["nextProof"] = "Run the required " ~ remaining.join(", ") ~
+                " check now on the current inputs; another " ~ event.verificationCheck ~
+                " receipt does not advance this task.";
+        }
         if (event.toolName == "verify" || event.verificationCheck.startsWith("verify:"))
         {
             try { auto result = parseJSON(toolText); result["receipt"] = receipt; toolText = result.toPrettyString(); }
