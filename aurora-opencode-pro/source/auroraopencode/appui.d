@@ -23792,7 +23792,10 @@ private void pollButtonSuggestionRequest()
         changeContext.planMode = _sessions[sessionIndex].planMode &&
             experimentalPlanModeEnabled();
         changeContext.developerCaptured = true;
-        changeContext.developer.source = developerSourceDirectory();
+        // Resolve through the tool-source handler: production returns the same
+        // detected checkout, while an isolated sandbox can pin it away so its
+        // tools do not serialize against the real source lease.
+        changeContext.developer.source = developerToolSourceDirectory();
         changeContext.developer.requireLatest = _settings.developerRequireLatestSource;
         changeContext.developer.autoReapply = _settings.developerAutoReapply;
         changeContext.developer.operationPending = _updateChecking || _sourceFetching || _developerPublishing ||

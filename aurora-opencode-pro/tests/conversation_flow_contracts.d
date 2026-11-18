@@ -19,6 +19,13 @@ int main()
     const state = absolutePath("conversation-" ~ to!string(MonoTime.currTime.ticks));
     const workspace = buildPath(state, "workspace");
     mkdirRecurse(workspace);
+    // The fixture state lives beneath the Aurora checkout, so without its own
+    // marker every path here inherits the repository's checkout identity. The
+    // app's source lease then serializes this sandbox's first file write
+    // behind whichever source command launched the contract, and the fixture
+    // only reaches its deadline. A private checkout marker keeps the sandbox
+    // isolated from that lock without changing what the scenario exercises.
+    mkdirRecurse(buildPath(state, ".git"));
     setOpencodeStateDirectoryForTesting(state);
     Settings settings;
     settings.baseUrl = base; settings.apiKey = "fixture"; settings.model = "conversation-fixture";
@@ -30,6 +37,16 @@ int main()
     options.width = 1000; options.height = 700; options.renderer = RendererPreference.software;
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
+    // This fixture is a private sandbox, not the Aurora source tree. Without
+    // this pin, the fixture executable sits under the package's build folder,
+    // so the app detects the real checkout as its developer source and every
+    // command tool also leases that checkout. A live source command launching
+    // this contract then blocks the fixture's own `run` steps until the
+    // deadline. Pinning an empty source keeps the scenario intact while the
+    // sandbox remains the only checkout it serializes against.
+    import auroraopencode.tools : installDeveloperToolSource, restoreDeveloperToolSource;
+    auto pinnedSource = installDeveloperToolSource("");
+    scope(exit) restoreDeveloperToolSource(pinnedSource);
     window.setRoot(root);
     scope(exit) root.shutdownClient();
     auto driver = new UiTestDriver(window);
