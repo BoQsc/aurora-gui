@@ -19,6 +19,7 @@ import aurora.font : GlyphAdvance, GlyphHeight, GlyphWidth, LineAdvance,
     glyphBits, glyphPixel;
 import engine.runtime : TerrainRuntime, defaultRuntime;
 import engine.player : PlayerInput, PlayerState, updatePlayer;
+import engine.game : GameState, initGame, updateGame;
 import engine.world : TerrainMaterial, materialName;
 import mcmesh : MeshData, MeshVertex, TerrainChunk, TerrainChunkRebuild,
     TerrainChunkStream, buildTerrainChunk;
@@ -205,7 +206,7 @@ private class SurfacePresenter
 
     private void run()
     {
-        SetThreadPriority(GetCurrentThread(), 15);
+        SetThreadPriority(GetCurrentThread(), 2);
         while (true)
         {
             bool captured;
@@ -389,6 +390,7 @@ private final class App
     TerrainChunkStream chunkStream;
     TerrainChunkRebuild rebuildJob;
     TerrainRuntime runtime;
+    GameState game;
     SurfacePresenter presenter;
     int materialIndex;
     bool digHeld;
@@ -407,6 +409,18 @@ private final class App
     VkBuffer skyIndexBuffer;
     VkDeviceMemory skyIndexMemory;
     uint skyIndexCount;
+    VkBuffer vegetationVertexBuffer;
+    VkDeviceMemory vegetationVertexMemory;
+    VkBuffer vegetationIndexBuffer;
+    VkDeviceMemory vegetationIndexMemory;
+    uint vegetationIndexCount;
+    VkBuffer actorVertexBuffer;
+    VkDeviceMemory actorVertexMemory;
+    VkBuffer actorIndexBuffer;
+    VkDeviceMemory actorIndexMemory;
+    uint actorIndexCount;
+    MeshVertex[] actorVertexCache;
+    uint[] actorIndexCache;
     VkBuffer hudVertexBuffer;
     VkDeviceMemory hudVertexMemory;
     VkBuffer hudIndexBuffer;
@@ -606,6 +620,9 @@ private final class App
         if (gChildWindow !is null) { stdout.writeln("vulkan3d: buffers"); stdout.flush(); }
         createCommands();
         createTexturedTerrain();
+        initGame(game, runtime.world);
+        createVegetationMesh();
+        createActorMeshBuffers();
         GC.minimize();
         if (gChildWindow !is null) { stdout.writeln("vulkan3d: commands"); stdout.flush(); }
     }
@@ -1638,6 +1655,160 @@ private final class App
         vk.vkCmdDrawIndexed(commandBuffer, skyIndexCount, 1, 0, 0, 0);
     }
 
+    private void addBox(ref MeshVertex[] vertices, ref uint[] indices,
+        double cx, double cy, double cz, double sx, double sy, double sz,
+        float r, float g, float b)
+    {
+        const uint base = cast(uint) vertices.length;
+        const float x0 = cast(float) (cx - sx / 2);
+        const float x1 = cast(float) (cx + sx / 2);
+        const float y0 = cast(float) (cy - sy / 2);
+        const float y1 = cast(float) (cy + sy / 2);
+        const float z0 = cast(float) (cz - sz / 2);
+        const float z1 = cast(float) (cz + sz / 2);
+        vertices ~= MeshVertex(x0, y0, z0, r, g, b);
+        vertices ~= MeshVertex(x1, y0, z0, r, g, b);
+        vertices ~= MeshVertex(x1, y1, z0, r, g, b);
+        vertices ~= MeshVertex(x0, y1, z0, r, g, b);
+        vertices ~= MeshVertex(x0, y0, z1, r, g, b);
+        vertices ~= MeshVertex(x1, y0, z1, r, g, b);
+        vertices ~= MeshVertex(x1, y1, z1, r, g, b);
+        vertices ~= MeshVertex(x0, y1, z1, r, g, b);
+        indices ~= [
+            base, base + 1, base + 2, base, base + 2, base + 3,
+            base + 4, base + 6, base + 5, base + 4, base + 7, base + 6,
+            base, base + 4, base + 5, base, base + 5, base + 1,
+            base + 3, base + 2, base + 6, base + 3, base + 6, base + 7,
+            base, base + 3, base + 7, base, base + 7, base + 4,
+            base + 1, base + 5, base + 6, base + 1, base + 6, base + 2
+        ];
+    }
+
+    private void createVegetationMesh()
+    {
+        MeshVertex[] vertices;
+        uint[] indices;
+        foreach (plant; game.plants)
+        {
+            const y = cast(float) runtime.world.terrainHeight(plant.x, plant.z);
+            if (plant.kind == 1)
+            {
+                addBox(vertices, indices, plant.x, y + 1.1 * plant.scale,
+                    plant.z, 0.24, 2.2 * plant.scale, 0.24,
+                    0.24f, 0.16f, 0.08f);
+                addBox(vertices, indices, plant.x, y + 2.8 * plant.scale,
+                    plant.z, 1.2 * plant.scale, 1.8 * plant.scale,
+                    1.2 * plant.scale, 0.13f, 0.38f, 0.12f);
+            }
+            else
+            {
+                addBox(vertices, indices, plant.x, y + 0.35 * plant.scale,
+                    plant.z, 0.12, 0.7 * plant.scale, 0.12,
+                    0.20f, 0.50f, 0.14f);
+                addBox(vertices, indices, plant.x, y + 0.35 * plant.scale,
+                    plant.z, 0.48, 0.08 * plant.scale, 0.12,
+                    0.24f, 0.56f, 0.16f);
+            }
+        }
+        vegetationIndexCount = cast(uint) indices.length;
+        if (indices.length == 0) return;
+        createBuffer(vegetationVertexBuffer, vegetationVertexMemory,
+            cast(VkDeviceSize) vertices.length * MeshVertex.sizeof,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        upload(vegetationVertexMemory, vertices);
+        createBuffer(vegetationIndexBuffer, vegetationIndexMemory,
+            cast(VkDeviceSize) indices.length * uint.sizeof,
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        upload(vegetationIndexMemory, indices);
+    }
+
+    private void createActorMeshBuffers()
+    {
+        enum uint maxVertices = 8192;
+        enum uint maxIndices = 16384;
+        createBuffer(actorVertexBuffer, actorVertexMemory,
+            cast(VkDeviceSize) maxVertices * MeshVertex.sizeof,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        createBuffer(actorIndexBuffer, actorIndexMemory,
+            cast(VkDeviceSize) maxIndices * uint.sizeof,
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    }
+
+    private void updateActorMesh()
+    {
+        actorVertexCache.length = 0;
+        actorIndexCache.length = 0;
+        foreach (actor; game.actors)
+        {
+            if (!actor.alive) continue;
+            const float br = actor.zombie ? 0.62f : 0.18f;
+            const float bg = actor.zombie ? 0.10f : 0.30f;
+            const float bb = actor.zombie ? 0.08f : 0.62f;
+            addBox(actorVertexCache, actorIndexCache, actor.x,
+                actor.y + 1.0, actor.z, 0.72, 1.25, 0.42, br, bg, bb);
+            addBox(actorVertexCache, actorIndexCache, actor.x,
+                actor.y + 1.85, actor.z, 0.42, 0.42, 0.42,
+                actor.zombie ? 0.78f : 0.58f,
+                actor.zombie ? 0.42f : 0.68f,
+                actor.zombie ? 0.34f : 0.45f);
+            addBox(actorVertexCache, actorIndexCache, actor.x - 0.43,
+                actor.y + 1.0, actor.z, 0.18, 0.75, 0.24, br, bg, bb);
+            addBox(actorVertexCache, actorIndexCache, actor.x + 0.43,
+                actor.y + 1.0, actor.z, 0.18, 0.75, 0.24, br, bg, bb);
+            addBox(actorVertexCache, actorIndexCache, actor.x - 0.2,
+                actor.y + 0.25, actor.z, 0.22, 0.75, 0.28, br, bg, bb);
+            addBox(actorVertexCache, actorIndexCache, actor.x + 0.2,
+                actor.y + 0.25, actor.z, 0.22, 0.75, 0.28, br, bg, bb);
+        }
+        const float cp = cast(float) cos(camPitch);
+        const float fx = cast(float) (sin(camYaw) * cp);
+        const float fy = cast(float) sin(camPitch);
+        const float fz = cast(float) (-cos(camYaw) * cp);
+        const float rx = cast(float) cos(camYaw);
+        const float rz = cast(float) sin(camYaw);
+        addBox(actorVertexCache, actorIndexCache,
+            camX + fx * 1.0 + rx * 0.28,
+            camY + fy * 1.0 - 0.25,
+            camZ + fz * 1.0 + rz * 0.28,
+            0.10, 0.10, 0.28, 0.10f, 0.12f, 0.16f);
+        actorIndexCount = cast(uint) actorIndexCache.length;
+        if (actorIndexCount == 0) return;
+        upload(actorVertexMemory, actorVertexCache);
+        upload(actorIndexMemory, actorIndexCache);
+    }
+
+    private void drawWorldProps(VkCommandBuffer commandBuffer, uint width,
+        uint height, float[16] mvp)
+    {
+        if (vegetationIndexCount == 0 && actorIndexCount == 0) return;
+        VkViewport viewport = VkViewport(0, 0, width, height, 0, 1);
+        VkRect2D scissor = VkRect2D(VkOffset2D(0, 0),
+            VkExtent2D(width, height));
+        vk.vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        vk.vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+        vk.vkCmdBindPipeline(commandBuffer, 0, pipeline);
+        pushConstants(commandBuffer, pipelineLayout,
+            VK_SHADER_STAGE_VERTEX_BIT, 0, 64, &mvp);
+        VkDeviceSize offset = 0;
+        if (vegetationIndexCount != 0)
+        {
+            vk.vkCmdBindVertexBuffers(commandBuffer, 0, 1,
+                &vegetationVertexBuffer, &offset);
+            vk.vkCmdBindIndexBuffer(commandBuffer, vegetationIndexBuffer, 0,
+                VK_INDEX_TYPE_UINT32);
+            vk.vkCmdDrawIndexed(commandBuffer, vegetationIndexCount, 1, 0, 0,
+                0);
+        }
+        if (actorIndexCount != 0)
+        {
+            vk.vkCmdBindVertexBuffers(commandBuffer, 0, 1, &actorVertexBuffer,
+                &offset);
+            vk.vkCmdBindIndexBuffer(commandBuffer, actorIndexBuffer, 0,
+                VK_INDEX_TYPE_UINT32);
+            vk.vkCmdDrawIndexed(commandBuffer, actorIndexCount, 1, 0, 0, 0);
+        }
+    }
+
     private float[16] hudMatrix(uint width, uint height)
     {
         float[16] result;
@@ -1745,7 +1916,7 @@ private final class App
             cast(string) yawBuffer[0 .. yawLength],
             cast(string) materialBuffer[0 .. materialLength],
             "WASD MOVE  SHIFT SPRINT  SPACE JUMP",
-            "LMB CAPTURE/CONSTRUCT  RMB DIG",
+            "LMB FIRE  RMB DIG  B BUILD",
             "1-4 MATERIAL  ESC RELEASE",
             "F1 HIDE INFO"
         ];
@@ -1874,6 +2045,36 @@ private final class App
             staminaY + 16, 0.30f, 0.72f, 0.30f);
         hudQuad(vertices, indices, barX, staminaY, barX + 2,
             staminaY + 16, 0.55f, 0.88f, 0.45f);
+
+        const float crossX = cast(float) width / 2;
+        const float crossY = cast(float) height / 2;
+        const float crossColor = game.hitFlash > 0 ? 1.0f : 0.86f;
+        hudQuad(vertices, indices, crossX - 12, crossY - 1,
+            crossX + 12, crossY + 1, crossColor, 0.86f, 0.86f);
+        hudQuad(vertices, indices, crossX - 1, crossY - 12,
+            crossX + 1, crossY + 12, crossColor, 0.86f, 0.86f);
+        const float combatX = cast(float) width - 430;
+        const float combatY = cast(float) height - 320;
+        hudQuad(vertices, indices, combatX - 10, combatY - 10,
+            cast(float) width - 16, combatY + 64,
+            0.012f, 0.025f, 0.045f);
+        char[96] combatBuffer;
+        int aliveZombies;
+        foreach (actor; game.actors)
+            if (actor.zombie && actor.alive) ++aliveZombies;
+        const combatLength = snprintf(combatBuffer.ptr, combatBuffer.length,
+            "AMMO %d / %d   SCORE %d", game.ammo, game.reserve,
+            game.score);
+        hudText(vertices, indices, combatX, combatY,
+            cast(string) combatBuffer[0 .. combatLength],
+            0.90f, 0.82f, 0.42f);
+        char[64] zombieBuffer;
+        const zombieLength = snprintf(zombieBuffer.ptr, zombieBuffer.length,
+            "ZOMBIES %d   KILLS %d", aliveZombies,
+            game.zombieKills);
+        hudText(vertices, indices, combatX, combatY + 28,
+            cast(string) zombieBuffer[0 .. zombieLength],
+            0.55f, 0.82f, 0.62f);
 
         const float notifyWidth = 350;
         const float notifyHeight = 116;
@@ -2160,7 +2361,7 @@ private final class App
             return;
         }
         const bool dig = keyDown(0x02);
-        const bool build = keyDown(0x01);
+        const bool build = keyDown(0x42);
         if (!dig && !build)
         {
             digHeld = false;
@@ -2313,6 +2514,12 @@ private final class App
                 stamina + 12.0 * dt;
         pollTerrainRebuild();
         updateTerrainTools();
+        bool didFire;
+        updateGame(game, runtime.world, camX, camZ, camY, camYaw, dt,
+            mouseCaptured && keyDown(0x01), mouseCaptured, didFire);
+        health = game.playerHealth;
+        if (didFire || game.damageFlash > 0)
+            hudDirty = true;
     }
 
     private void setMouseCapture(bool captured)
@@ -2515,6 +2722,8 @@ private final class App
         pushConstants(commands, terrainPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
             0, 64, &matrix);
         drawTerrain(commands);
+        updateActorMesh();
+        drawWorldProps(commands, Width, Height, matrix);
         vk.vkCmdEndRenderPass(commands);
 
         VkImageMemoryBarrier barrier;
@@ -2591,6 +2800,11 @@ private final class App
         int warmOver16;
         int warmOver20;
         double maxIntervalMs = 0.0;
+        double cadenceSumMs = 0;
+        double cadenceMaxMs = 0;
+        int cadenceSamples;
+        int cadenceOver16;
+        int cadenceOver20;
         foreach (frame; 0 .. frames)
         {
             auto frameStart = MonoTime.currTime;
@@ -2609,6 +2823,39 @@ private final class App
                     if (intervalMs > 20.0) ++over20;
                 }
                 if (intervalMs > maxIntervalMs) maxIntervalMs = intervalMs;
+                cadenceSumMs += intervalMs;
+                if (intervalMs > cadenceMaxMs) cadenceMaxMs = intervalMs;
+                ++cadenceSamples;
+                if (intervalMs > 16.667) ++cadenceOver16;
+                if (intervalMs > 20.0) ++cadenceOver20;
+                if (cadenceSamples >= 120)
+                {
+                    stdout.writeln("producer cadence avgMs=",
+                        cadenceSumMs / cadenceSamples, " maxMs=",
+                        cadenceMaxMs, " over16=", cadenceOver16,
+                        " over20=", cadenceOver20);
+                    stdout.flush();
+                    cadenceSumMs = 0;
+                    cadenceMaxMs = 0;
+                    cadenceSamples = 0;
+                    cadenceOver16 = 0;
+                    cadenceOver20 = 0;
+                }
+            }
+            if (!hudClockStarted)
+            {
+                hudLastUpdate = frameStart;
+                hudClockStarted = true;
+            }
+            ++hudFrameCount;
+            const hudElapsed =
+                (frameStart - hudLastUpdate).total!"usecs" / 1000000.0;
+            if (hudElapsed >= 0.5)
+            {
+                hudFps = hudFrameCount / hudElapsed;
+                hudFrameCount = 0;
+                hudLastUpdate = frameStart;
+                hudDirty = true;
             }
             previousFrame = frameStart;
             auto now = MonoTime.currTime;
@@ -2680,6 +2927,8 @@ private final class App
             pushConstants(commands, terrainPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
                 0, 64, &matrix);
             drawTerrain(commands);
+            updateActorMesh();
+            drawWorldProps(commands, Width, Height, matrix);
             drawHud(commands, Width, Height);
             vk.vkCmdEndRenderPass(commands);
 
@@ -2831,6 +3080,8 @@ private final class App
         pushConstants(commands, terrainPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
             0, 64, &matrix);
         drawTerrain(commands);
+        updateActorMesh();
+        drawWorldProps(commands, target.width, target.height, matrix);
         if (hudVisible && hudIndexCount != 0)
         {
             VkViewport hudViewport = VkViewport(0, 0, target.width,
@@ -3133,8 +3384,8 @@ void main(string[] args)
         app.mouseWindow = gChildWindow;
     timeBeginPeriod(1);
     scope(exit) timeEndPeriod(1);
-    SetPriorityClass(GetCurrentProcess(), 0x100);
-    SetThreadPriority(GetCurrentThread(), 15);
+    SetPriorityClass(GetCurrentProcess(), 0x80);
+    SetThreadPriority(GetCurrentThread(), 2);
     app.testMotion = testMotion;
     app.extremeMotion = extremeMotion;
     app.hudTrace = hudTrace;

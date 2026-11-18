@@ -132,18 +132,21 @@ class SurfaceWidget : Widget
     private uint _pixelHeight;
     private bool _cursorHidden;
     private MonoTime _lastPaint;
-    private double _paintSumMs;
-    private double _paintMaxMs;
+    private double _paintSumMs = 0;
+    private double _paintMaxMs = 0;
     private int _paintSamples;
-    private double _insideSumMs;
-    private double _insideMaxMs;
-    private double _fillSumMs;
-    private double _fillMaxMs;
-    private double _imageSumMs;
-    private double _imageMaxMs;
-    private double _outsideSumMs;
-    private double _outsideMaxMs;
-    private double _lastInsideMs;
+    private double _insideSumMs = 0;
+    private double _insideMaxMs = 0;
+    private double _fillSumMs = 0;
+    private double _fillMaxMs = 0;
+    private double _imageSumMs = 0;
+    private double _imageMaxMs = 0;
+    private double _outsideSumMs = 0;
+    private double _outsideMaxMs = 0;
+    private double _lastInsideMs = 0;
+    private double _steadyMaxGapMs = 0;
+    private int _steadyWarmupSamples;
+    private int _steadyGapSamples;
     private int _paintOver16;
     private int _paintOver20;
     private double _paintMaxIntervalMs = 0.0;
@@ -653,6 +656,14 @@ class SurfaceWidget : Widget
                 stdout.writeln("host outlier ms=", deltaMs);
                 stdout.flush();
             }
+            if (_steadyWarmupSamples < 60)
+                ++_steadyWarmupSamples;
+            else
+            {
+                ++_steadyGapSamples;
+                if (deltaMs > _steadyMaxGapMs)
+                    _steadyMaxGapMs = deltaMs;
+            }
             if (deltaMs > 20.0) ++_paintOver20;
             if (deltaMs > _paintMaxIntervalMs)
                 _paintMaxIntervalMs = deltaMs;
@@ -698,6 +709,8 @@ class SurfaceWidget : Widget
                     " fillAvg=", _fillSumMs / _paintSamples, " fillMax=",
                     _fillMaxMs, " imageAvg=", _imageSumMs / _paintSamples,
                     " imageMax=", _imageMaxMs);
+                stdout.writeln("host steady max paint gap ms=",
+                    _steadyMaxGapMs, " samples=", _steadyGapSamples);
                 stdout.flush();
             }
             _paintSumMs = 0;
@@ -714,6 +727,8 @@ class SurfaceWidget : Widget
             _paintOver20 = 0;
             _paintMaxIntervalMs = 0;
             _paintSamples = 0;
+            _steadyMaxGapMs = 0;
+            _steadyGapSamples = 0;
         }
     }
 }

@@ -5,7 +5,7 @@ import core.time : MonoTime, msecs;
 
 struct FrameClock
 {
-    double targetSeconds = 1.0 / 64.0;
+    double targetSeconds = 1.0 / 60.2;
 
     void waitUntil(MonoTime frameStart) const
     {
