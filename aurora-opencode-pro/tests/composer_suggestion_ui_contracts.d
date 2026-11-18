@@ -53,6 +53,9 @@ int main()
     root.newChatForTesting();
     root.tickTree(0.02);
     root.focusComposerForTesting();
+    // With nothing anywhere to read the tiny trigger is not offered at all.
+    assert(root.composerSuggestionButtonBoundsForTesting().width == 0,
+        "the tiny suggestion trigger appeared with nothing to read");
     driver.pressKey(Key.tab);
     assert(!root.composerSuggestionPendingForTesting(),
         "Tab requested a guess with nothing anywhere to read");
@@ -64,6 +67,9 @@ int main()
     root.tickTree(0.02);
     assert(!root.composerSuggestionPendingForTesting(),
         "seeding a conversation must not queue a suggestion by itself");
+    assert(driver.paint(), "the composer could not paint before asking");
+    assert(root.composerSuggestionButtonBoundsForTesting().width > 0,
+        "the tiny suggestion trigger did not appear beside Send");
     root.focusComposerForTesting();
     driver.pressKey(Key.tab);
     assert(root.composerSuggestionPendingForTesting(),
@@ -208,9 +214,32 @@ int main()
     assert(root.composerSuggestionBusyForTesting(),
         "the new chat's generation pulse did not start");
 
+    // The very small trigger beside Send asks for the same guess with the
+    // mouse. It is only a 16 px target, so it never competes with Send.
+    root.newChatForTesting();
+    root.tickTree(0.02);
+    assert(driver.paint(), "the composer could not paint before the click");
+    const trigger = root.composerSuggestionButtonBoundsForTesting();
+    assert(trigger.width > 0 && trigger.height > 0,
+        "the tiny suggestion trigger is missing");
+    assert(trigger.width <= 20 && trigger.height <= 20,
+        "the suggestion trigger is not very small: " ~ trigger.width.to!string ~
+        "x" ~ trigger.height.to!string);
+    assert(root.composerSuggestionButtonEnabledForTesting(),
+        "the tiny suggestion trigger is not clickable");
+    driver.click(Point(trigger.x + trigger.width / 2,
+        trigger.y + trigger.height / 2));
+    assert(root.composerSuggestionPendingForTesting(),
+        "clicking the tiny suggestion trigger did not request a guess");
+    assert(root.composerSuggestionBusyForTesting(),
+        "the click did not start the generation pulse");
+    assert(root.inputTextForTesting().length == 0,
+        "the click typed into the composer");
+
     writeln("PASS Tab requests a composer guess when none is offered, " ~
         "falls back to recent conversations in a new chat, shows the pulse " ~
-        "while it runs, and still accepts a guess");
+        "while it runs, still accepts a guess, and a very small trigger " ~
+        "button asks with the mouse");
     window.close();
     return 0;
 }

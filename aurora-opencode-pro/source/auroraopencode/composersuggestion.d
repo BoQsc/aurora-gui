@@ -29,6 +29,18 @@ public bool composerSuggestionCanRequest(bool enabled, bool generating,
     return enabled && !busy && hasContext;
 }
 
+/// Whether the tiny "suggest" button beside Send may be clicked right now: the
+/// feature is on, the box is empty so a guess has somewhere to appear, no turn
+/// is running, and no guess is already being generated. `hasContext` is the
+/// cheap "some conversation can be read" test; the exact excerpt is built only
+/// when the button is actually clicked.
+public bool composerSuggestionTriggerReady(bool enabled, bool generating,
+    bool busy, bool hasContext, bool composerEmpty)
+{
+    if (!composerEmpty || generating) return false;
+    return composerSuggestionCanRequest(enabled, generating, busy, hasContext);
+}
+
 /// Trim list bullets, blockquote markers and wrapping quotes from one line.
 private string undecorate(string value)
 {
@@ -131,4 +143,13 @@ unittest
     assert(!composerSuggestionCanRequest(true, false, true, true));
     // A running request always keeps the key so Tab is not typed as whitespace.
     assert(composerSuggestionCanRequest(true, true, true, false));
+
+    // The tiny click target asks only in an empty composer, and never while a
+    // guess is already in flight (the box shows the pulse instead).
+    assert(composerSuggestionTriggerReady(true, false, false, true, true));
+    assert(!composerSuggestionTriggerReady(false, false, false, true, true));
+    assert(!composerSuggestionTriggerReady(true, false, false, false, true));
+    assert(!composerSuggestionTriggerReady(true, false, true, true, true));
+    assert(!composerSuggestionTriggerReady(true, true, false, true, true));
+    assert(!composerSuggestionTriggerReady(true, false, false, true, false));
 }

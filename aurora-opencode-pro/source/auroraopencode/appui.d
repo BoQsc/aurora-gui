@@ -147,7 +147,8 @@ import auroraopencode.buttonsuggest : ButtonSuggestion,
     suggestionsForPaths,
     suggestButtonsFromRecentConversations, suggestionInstruction;
 import auroraopencode.composersuggestion : cleanComposerSuggestion,
-    composerSuggestionCanRequest, composerSuggestionInstruction;
+    composerSuggestionCanRequest, composerSuggestionInstruction,
+    composerSuggestionTriggerReady;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision, invalidateToolWorkspace;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
 import auroraopencode.preferencewriter : PreferenceWriter;
@@ -8806,6 +8807,8 @@ private immutable string checkpointButtonTooltipText =
 private immutable string sendButtonTooltipText = "Send (Enter)";
 private immutable string stopButtonTooltipText = "Stop";
 private immutable string continueButtonTooltipText = "Continue the unfinished plan (Enter)";
+private immutable string suggestionButtonTooltipText =
+    "Suggest a message (Tab)";
 
 /// Project name that command-line (cmd/console) sessions file their chats
 /// under. The rail gives this project its own row pinned directly above the New
@@ -9305,6 +9308,24 @@ private final class ChatInput : TextArea
         return cast(int) (_busyElapsed * 4) % cast(int) busyFrames.length;
     }
 
+    /// Tab and the tiny footer button share this: an offered guess is inserted,
+    /// otherwise an empty box asks for one. Returns true when the action was
+    /// consumed, so Tab is never typed into the composer as whitespace.
+    bool triggerSuggestion()
+    {
+        if (suggestionReady())
+        {
+            const accepted = _suggestion;
+            setSuggestion("");
+            setText(accepted); // setText leaves the caret after the text
+            return true;
+        }
+        // No guess yet: ask for one instead of typing a tab character. A
+        // running generation consumes the action too.
+        return _suggestion.length == 0 && composerEmpty() &&
+            onSuggestionRequested !is null && onSuggestionRequested();
+    }
+
     override void setPlaceholder(string value)
     {
         _wantedPlaceholder = value;
@@ -9316,18 +9337,7 @@ private final class ChatInput : TextArea
         if (event.key == Key.tab && !event.shift() && !event.control() &&
             !event.meta())
         {
-            if (suggestionReady())
-            {
-                const accepted = _suggestion;
-                setSuggestion("");
-                setText(accepted); // setText leaves the caret after the text
-                return true;
-            }
-            // No guess yet: Tab asks for one instead of typing a tab character
-            // into an empty composer. A running generation consumes the key too.
-            if (_suggestion.length == 0 && composerEmpty() &&
-                onSuggestionRequested !is null && onSuggestionRequested())
-                return true;
+            if (triggerSuggestion()) return true;
         }
         if (event.key == Key.enter && event.alt() && !event.shift())
         {
@@ -10565,28 +10575,83 @@ private final class CenteredColumn : Widget
 // Chat composer: bordered prompt panel with a bottom-right send button
 // ---------------------------------------------------------------------------
 
+/// A very small sparkle beside Send that asks for the same next-message guess
+/// Tab does. At 16 px it carries no label, so it stays out of the composer's
+/// way; clicking it accepts a guess that is already offered, otherwise it
+/// starts one.
+private final class ComposerSuggestionButton : Button
+{
+    static immutable int preferredSize = 16;
+
+    this()
+    {
+        super("");
+        // Tab already owns the keyboard affordance; this is a pointer target,
+        // so it never takes focus away from the text box.
+        setFocusable(false);
+        setFlat(true);
+        layoutHints().preferredWidth = preferredSize;
+        layoutHints().minWidth = preferredSize;
+        layoutHints().preferredHeight = preferredSize;
+        layoutHints().minHeight = preferredSize;
+        layoutHints().fillCrossAxis = false;
+    }
+
+    override Size onMeasure(Size available)
+    {
+        layoutHints().preferredWidth = preferredSize;
+        layoutHints().minWidth = preferredSize;
+        layoutHints().preferredHeight = preferredSize;
+        layoutHints().minHeight = preferredSize;
+        return Size(preferredSize, preferredSize);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        if (pressed() || hovered())
+            canvas.fillRoundedRect(Rect(0, 0, bounds().width, bounds().height),
+                4, pressed() ? opencodePressed : opencodeField);
+        const mark = !enabled() ? opencodeMuted.withAlpha(90) :
+            hovered() ? opencodeAccent : opencodeMuted;
+        const cx = bounds().width / 2;
+        const cy = bounds().height / 2;
+        // A four-point sparkle drawn from lines rather than set in a font: no
+        // code page can turn it into a missing-glyph box at this size.
+        canvas.drawLine(Point(cx, cy - 6), Point(cx, cy + 6), mark, 1);
+        canvas.drawLine(Point(cx - 6, cy), Point(cx + 6, cy), mark, 1);
+        canvas.drawLine(Point(cx - 3, cy - 3), Point(cx + 3, cy + 3), mark, 1);
+        canvas.drawLine(Point(cx + 3, cy - 3), Point(cx - 3, cy + 3), mark, 1);
+    }
+}
+
 private final class ChatComposer : Widget
 {
     private static immutable int pad = 8;
     private static immutable int gap = 6;
     private static immutable int buttonWidth = 40;
     private static immutable int buttonHeight = 30;
+    // Space between the tiny suggestion trigger and the footer controls.
+    private static immutable int suggestGap = 4;
 
     private Widget _field;
     private Widget _send;
     private Widget _controls;
+    private Widget _suggest;
     // experimental: attachments - optional chip row shown above the prompt.
     private Widget _strip;
 
-    this(Widget field, Widget send, Widget controls = null, Widget strip = null)
+    this(Widget field, Widget send, Widget controls = null, Widget strip = null,
+        Widget suggest = null)
     {
         _field = field;
         _send = send;
         _controls = controls;
+        _suggest = suggest;
         _strip = strip;
         add(field);
         add(send);
         if (controls !is null) add(controls);
+        if (suggest !is null) add(suggest);
         if (strip !is null) add(strip);
     }
 
@@ -10621,11 +10686,23 @@ private final class ChatComposer : Widget
         const bottomY = maxInt(pad, height - pad - buttonHeight);
         _send.setBounds(Rect(maxInt(pad, width - pad - buttonWidth), bottomY,
             buttonWidth, buttonHeight));
+        // The tiny suggestion trigger sits between the footer controls and the
+        // send button. Its slot stays reserved while hidden so showing it never
+        // moves the controls.
+        if (_suggest !is null)
+            _suggest.setBounds(Rect(
+                maxInt(pad, width - pad - buttonWidth - gap -
+                    ComposerSuggestionButton.preferredSize),
+                bottomY + (buttonHeight - ComposerSuggestionButton.preferredSize) / 2,
+                ComposerSuggestionButton.preferredSize,
+                ComposerSuggestionButton.preferredSize));
         // Model/context/thinking/tools controls live under the text area, left
         // of the send button (upstream opencode's composer footer).
         if (_controls !is null)
             _controls.setBounds(Rect(pad, bottomY,
-                maxInt(0, width - pad * 2 - buttonWidth - gap), buttonHeight));
+                maxInt(0, width - pad * 2 - buttonWidth - gap -
+                    ComposerSuggestionButton.preferredSize - suggestGap),
+                buttonHeight));
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -13570,6 +13647,9 @@ public final class OpenCodeRoot : VBox
     private int _pendingRevealMessage = -1;
     private ChatInput _input;
     private ChatSendButton _sendButton;
+    // The very small sparkle beside Send that asks for the same composer guess
+    // Tab does.
+    private ComposerSuggestionButton _suggestionButton;
     // Conversation whose queued message is waiting for the stopped request to
     // release it, so the new turn never overlaps the cancelled one (-1 when
     // none). Driven by the pending prompt's own "Send now" pill.
@@ -17847,6 +17927,20 @@ private string _suggestExcludeId;
         // button, which sits on the window's bottom edge.
         addButtonTooltip(_sendButton, &sendButtonTooltip, true);
 
+        // A very small sparkle beside Send asks for the same next-message guess
+        // Tab does, so the feature is discoverable with the mouse. It stays
+        // hidden until an empty composer has something to read, and clicking a
+        // guess that is already offered inserts it.
+        _suggestionButton = new ComposerSuggestionButton();
+        _suggestionButton.setId("oc-suggest");
+        _suggestionButton.setVisible(false);
+        _suggestionButton.onClick = delegate()
+        {
+            if (_input !is null) _input.triggerSuggestion();
+            if (_input !is null) _input.requestFocus();
+        };
+        addButtonTooltip(_suggestionButton, suggestionButtonTooltipText, true);
+
         // experimental: attachments - chip row sits inside the composer panel,
         // above the prompt, and only reserves height while it has chips.
         _attachmentStrip = new AttachmentStrip();
@@ -17855,7 +17949,7 @@ private string _suggestExcludeId;
             removeAttachment(index);
         };
         auto composer = new ChatComposer(_input, _sendButton, composerControls,
-            _attachmentStrip);
+            _attachmentStrip, _suggestionButton);
         composer.setId("oc-composer");
         _composer = composer;
         auto composerCenter = new CenteredColumn(composer,
@@ -26067,6 +26161,17 @@ private void pollButtonSuggestionRequest()
         if (excerpt.length > 0) return excerpt;
         return conversationDigest(_sessions, _sessions[sessionIndex].id,
             composerSuggestionDigestChars);
+    }
+
+    /// Cheap "anything to read" test for the tiny trigger's enabled state: any
+    /// conversation with a message could feed a guess. The exact excerpt is
+    /// built only when the button or Tab actually asks, because this runs every
+    /// frame and must not walk message text.
+    private bool hasComposerSuggestionContext() const
+    {
+        foreach (ref session; _sessions)
+            if (session.messages.length > 0) return true;
+        return false;
     }
 
     /// Queue one suggestion for this conversation's newest settled reply. The
@@ -34728,11 +34833,29 @@ private void pollButtonSuggestionRequest()
         if (_input !is null)
         {
             bool generating;
+            bool idle = true;
             if (_settings.composerSuggestion && !_turnInFlight && _current >= 0)
                 if (auto runtime = runtimeForSession(_current))
+                {
                     generating = runtime.suggestionPending ||
                         runtime.suggestionClient !is null;
+                    idle = runtime.phase != RequestPhase.waiting &&
+                        !runtime.effectPending() && !runtime.client.busy();
+                }
             _input.setSuggestionBusy(generating);
+            // The tiny trigger follows the same rules: it exists only for an
+            // empty composer with something to read, and is inert while a turn
+            // or another guess owns the composer.
+            if (_suggestionButton !is null)
+            {
+                const empty = !hasSendableInput();
+                const hasContext = hasComposerSuggestionContext();
+                _suggestionButton.setVisible(_settings.composerSuggestion &&
+                    empty && hasContext);
+                _suggestionButton.setEnabled(
+                    composerSuggestionTriggerReady(_settings.composerSuggestion,
+                        generating, !idle || _turnInFlight, hasContext, empty));
+            }
         }
 
         updateSendButton();
@@ -36250,6 +36373,24 @@ private void pollButtonSuggestionRequest()
     public string composerSuggestionForTesting() const
     {
         return _input is null ? "" : _input.suggestion();
+    }
+
+    /// Test-only: global bounds of the tiny "suggest" trigger (Rect.init while
+    /// it is hidden or the feature is off).
+    public Rect composerSuggestionButtonBoundsForTesting() const
+    {
+        if (_suggestionButton is null || !_suggestionButton.visible())
+            return Rect.init;
+        const origin = _suggestionButton.localToGlobal(Point(0, 0));
+        return Rect(origin.x, origin.y, _suggestionButton.bounds().width,
+            _suggestionButton.bounds().height);
+    }
+
+    /// Test-only: whether the tiny "suggest" trigger currently accepts a click.
+    public bool composerSuggestionButtonEnabledForTesting() const
+    {
+        return _suggestionButton !is null && _suggestionButton.visible() &&
+            _suggestionButton.enabled();
     }
 
     /// Test-only: whether the composer's tiny generation indicator is showing.
