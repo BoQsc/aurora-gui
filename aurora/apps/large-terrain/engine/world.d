@@ -2,19 +2,37 @@ module engine.world;
 
 import std.math : cos, sin;
 
+enum TerrainMaterial : ubyte
+{
+    grass,
+    dirt,
+    rock,
+    sand,
+}
+
+struct TerrainEdit
+{
+    double x;
+    double z;
+    double radius;
+    double delta;
+    TerrainMaterial material;
+}
+
 struct WorldConfig
 {
     string title = "Large Marching Cubes Terrain";
-    int chunksX = 8;
-    int chunksZ = 8;
-    int baseCells = 64;
-    int verticalCells = 96;
+    int chunksX = 16;
+    int chunksZ = 16;
+    int baseCells = 48;
+    int verticalCells = 128;
     double extentX = 2048;
     double extentY = 512;
     double extentZ = 2048;
     int lodCount = 2;
     double lodNearDistance = 600;
     double farPlane = 5000;
+    TerrainEdit[] edits;
 
     double minX() const { return -extentX / 2; }
     double minZ() const { return -extentZ / 2; }
@@ -23,10 +41,57 @@ struct WorldConfig
     double minY() const { return -extentY / 2; }
     double maxY() const { return extentY / 2; }
 
-    double terrainHeight(double x, double z) const
+    double baseHeight(double x, double z) const
     {
         return 18.0 * sin(x * 0.007) * cos(z * 0.006) +
             6.0 * sin(x * 0.019 + z * 0.013) +
             3.0 * cos(z * 0.031) - 2.0;
+    }
+
+    double terrainHeight(double x, double z) const
+    {
+        double height = baseHeight(x, z);
+        foreach (edit; edits)
+        {
+            const dx = x - edit.x;
+            const dz = z - edit.z;
+            const distance = dx * dx + dz * dz;
+            if (distance >= edit.radius * edit.radius) continue;
+            const falloff = 1.0 - distance /
+                (edit.radius * edit.radius);
+            height += edit.delta * falloff * falloff;
+        }
+        return height;
+    }
+
+    TerrainMaterial materialAt(double x, double z, double height) const
+    {
+        foreach_reverse (edit; edits)
+        {
+            const dx = x - edit.x;
+            const dz = z - edit.z;
+            if (dx * dx + dz * dz < edit.radius * edit.radius)
+                return edit.material;
+        }
+        if (height > 14) return TerrainMaterial.rock;
+        if (height < -8) return TerrainMaterial.sand;
+        return TerrainMaterial.grass;
+    }
+
+    void addEdit(double x, double z, double radius, double delta,
+        TerrainMaterial material)
+    {
+        edits ~= TerrainEdit(x, z, radius, delta, material);
+    }
+}
+
+string materialName(TerrainMaterial material)
+{
+    final switch (material)
+    {
+        case TerrainMaterial.grass: return "GRASS";
+        case TerrainMaterial.dirt: return "DIRT";
+        case TerrainMaterial.rock: return "ROCK";
+        case TerrainMaterial.sand: return "SAND";
     }
 }

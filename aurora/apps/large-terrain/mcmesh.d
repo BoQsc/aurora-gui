@@ -1,8 +1,9 @@
 module mcmesh;
 
+import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import engine.lighting : LightingModel;
-import engine.world : WorldConfig;
+import engine.world : TerrainMaterial, WorldConfig;
 import std.math : cos, sin, sqrt;
 
 struct MeshVertex
@@ -13,6 +14,19 @@ struct MeshVertex
     float r;
     float g;
     float b;
+    float material;
+
+    this(float x, float y, float z, float r, float g, float b,
+        float material = 0)
+    {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+        this.r = r;
+        this.g = g;
+        this.b = b;
+        this.material = material;
+    }
 }
 
 struct MeshData
@@ -26,6 +40,52 @@ struct TerrainChunk
     MeshData[2] lods;
     double centerX;
     double centerZ;
+}
+
+private float[3] materialColor(TerrainMaterial material)
+{
+    final switch (material)
+    {
+        case TerrainMaterial.grass: return [0.22f, 0.46f, 0.16f];
+        case TerrainMaterial.dirt: return [0.38f, 0.24f, 0.13f];
+        case TerrainMaterial.rock: return [0.36f, 0.37f, 0.39f];
+        case TerrainMaterial.sand: return [0.68f, 0.58f, 0.34f];
+    }
+}
+
+private float[3] shadeVertex(WorldConfig config, LightingModel lights,
+    double x, double y, double z)
+{
+    const double sample = 1.0;
+    const double left = config.terrainHeight(x - sample, z);
+    const double right = config.terrainHeight(x + sample, z);
+    const double back = config.terrainHeight(x, z - sample);
+    const double front = config.terrainHeight(x, z + sample);
+    const double nx = -(right - left) * 0.5;
+    const double ny = 1.0;
+    const double nz = -(front - back) * 0.5;
+    const double length = sqrt(nx * nx + ny * ny + nz * nz);
+    const double up = ny / length;
+    const double slope = 1.0 - up;
+    const double sunDot = (nx * lights.sunDirection[0] +
+        ny * lights.sunDirection[1] + nz * lights.sunDirection[2]) / length;
+    const double ndotl = sunDot < 0 ? -sunDot : sunDot;
+    const double diffuse = ndotl * lights.sunIntensity;
+    const double hemisphere = 0.5 + 0.5 * up;
+    const double globalR = lights.groundColor[0] +
+        (lights.skyColor[0] - lights.groundColor[0]) * hemisphere;
+    const double globalG = lights.groundColor[1] +
+        (lights.skyColor[1] - lights.groundColor[1]) * hemisphere;
+    const double globalB = lights.groundColor[2] +
+        (lights.skyColor[2] - lights.groundColor[2]) * hemisphere;
+    return [
+        cast(float) (globalR * lights.ambient +
+            diffuse * lights.sunColor[0]),
+        cast(float) (globalG * lights.ambient +
+            diffuse * lights.sunColor[1]),
+        cast(float) (globalB * lights.ambient +
+            diffuse * lights.sunColor[2]),
+    ];
 }
 
 final class TerrainChunkStream
@@ -62,6 +122,147 @@ final class TerrainChunkStream
         if (worker !is null) worker.join();
         if (failure !is null) throw failure;
         return built;
+    }
+}
+
+private final class ChunkBuildJob
+{
+    TerrainChunk[] chunks;
+    WorldConfig config;
+    LightingModel lights;
+    int first;
+    int stride;
+
+    this(TerrainChunk[] chunks, WorldConfig config, LightingModel lights,
+        int first, int stride)
+    {
+        this.chunks = chunks;
+        this.config = config;
+        this.lights = lights;
+        this.first = first;
+        this.stride = stride;
+    }
+
+
+
+    void run()
+    {
+        foreach (index; first .. chunks.length)
+            if ((index % stride) == first)
+                chunks[index] = buildTerrainChunk(config, lights,
+                    cast(int) index);
+    }
+}
+
+final class TerrainChunkRebuild
+{
+    private WorldConfig config;
+    private LightingModel lights;
+    int[] indices;
+    TerrainChunk[] chunks;
+    private Thread worker;
+    private Mutex mutex;
+    private bool done;
+    private Throwable failure;
+
+    this(WorldConfig config, LightingModel lights, int[] indices)
+    {
+        this.config = config;
+        this.config.edits = config.edits.dup;
+        this.lights = lights;
+        this.indices = indices;
+        mutex = new Mutex();
+    }
+
+    void start()
+    {
+        if (worker !is null) return;
+        worker = new Thread(&run);
+        worker.start();
+    }
+
+    bool finished()
+    {
+        synchronized (mutex)
+            return done;
+    }
+
+    void run()
+    {
+        try
+        {
+            chunks.length = indices.length;
+            enum int maxWorkers = 8;
+            const workerCount = indices.length < maxWorkers
+                ? cast(int) indices.length : maxWorkers;
+            if (workerCount > 1)
+            {
+                RebuildWorker[] jobs;
+                Thread[] workers;
+                foreach (job; 0 .. workerCount)
+                {
+                    jobs ~= new RebuildWorker(chunks, config, lights, indices,
+                        job, workerCount);
+                    workers ~= new Thread(&jobs[$ - 1].run);
+                    workers[$ - 1].start();
+                }
+                foreach (worker; workers)
+                    worker.join();
+                foreach (job; jobs)
+                    if (job.failure !is null)
+                        throw job.failure;
+            }
+            else
+            {
+                foreach (slot, index; indices)
+                    chunks[slot] = buildTerrainChunk(config, lights, index);
+            }
+        }
+        catch (Throwable error)
+            failure = error;
+        synchronized (mutex)
+            done = true;
+    }
+
+    void take()
+    {
+        if (worker !is null) worker.join();
+        if (failure !is null) throw failure;
+    }
+}
+
+private final class RebuildWorker
+{
+    private TerrainChunk[] chunks;
+    private WorldConfig config;
+    private LightingModel lights;
+    private int[] indices;
+    private int first;
+    private int stride;
+    Throwable failure;
+
+    this(TerrainChunk[] chunks, WorldConfig config, LightingModel lights,
+        int[] indices, int first, int stride)
+    {
+        this.chunks = chunks;
+        this.config = config;
+        this.lights = lights;
+        this.indices = indices;
+        this.first = first;
+        this.stride = stride;
+    }
+
+    void run()
+    {
+        try
+        {
+            foreach (slot; first .. indices.length)
+                if ((slot % stride) == first)
+                    chunks[slot] = buildTerrainChunk(config, lights,
+                        indices[slot]);
+        }
+        catch (Throwable error)
+            failure = error;
     }
 }
 
@@ -318,35 +519,31 @@ private MeshData buildChunkMesh(WorldConfig config, LightingModel lights,
                     const ny = az * bx - ax * bz;
                     const nz = ax * by - ay * bx;
                     const length = sqrt(nx * nx + ny * ny + nz * nz);
-                    const ndotl = length > 1e-9
+                    const sunDot = length > 1e-9
                         ? (nx * lights.sunDirection[0] +
                             ny * lights.sunDirection[1] +
                             nz * lights.sunDirection[2]) / length : 0;
-                    const diffuse = ndotl > 0
-                        ? ndotl * lights.sunIntensity : 0;
-                    const averageY = (triangle[0][1] + triangle[1][1] +
-                        triangle[2][1]) / 3;
-                    const slope = length > 1e-9 ? 1.0 - ny / length : 0;
-                    const heightFactor = (averageY + 32.0) / 96.0;
-                    const baseR = 0.16 + 0.20 * heightFactor +
-                        0.10 * (slope < 0.65 ? slope : 0.65);
-                    const baseG = 0.34 + 0.30 * heightFactor;
-                    const baseB = 0.13 + 0.08 * heightFactor;
-                    const r = baseR * (lights.ambient +
-                        diffuse * lights.sunColor[0]);
-                    const g = baseG * (lights.ambient +
-                        diffuse * lights.sunColor[1]);
-                    const b = baseB * (lights.ambient +
-                        diffuse * lights.sunColor[2]);
+                    const ndotl = sunDot < 0 ? -sunDot : sunDot;
+                    const diffuse = ndotl * lights.sunIntensity;
                     const base = cast(uint) data.vertices.length;
                     foreach (slot; 0 .. 3)
+                    {
+                        const auto color = shadeVertex(config, lights,
+                            triangle[slot][0], triangle[slot][1],
+                            triangle[slot][2]);
+                        const auto material = config.materialAt(
+                            triangle[slot][0], triangle[slot][2],
+                            triangle[slot][1]);
+                        const int variant = (cast(int)
+                            (triangle[slot][0] * 0.071 +
+                             triangle[slot][2] * 0.053)) & 3;
                         data.vertices ~= MeshVertex(
                             cast(float) triangle[slot][0],
                             cast(float) triangle[slot][1],
                             cast(float) triangle[slot][2],
-                            cast(float) r,
-                            cast(float) g,
-                            cast(float) b);
+                            color[0], color[1], color[2],
+                            cast(float) (cast(int) material * 4 + variant));
+                    }
                     data.indices ~= base;
                     data.indices ~= base + 1;
                     data.indices ~= base + 2;
@@ -359,20 +556,36 @@ TerrainChunk[] buildTerrainChunks(WorldConfig config, LightingModel lights)
 {
     ensureTable();
     auto chunks = new TerrainChunk[config.chunksX * config.chunksZ];
-    foreach (cz; 0 .. config.chunksZ)
-        foreach (cx; 0 .. config.chunksX)
-        {
-            const index = cz * config.chunksX + cx;
-            const x0 = config.minX + cx * config.chunkSizeX;
-            const z0 = config.minZ + cz * config.chunkSizeZ;
-            chunks[index].centerX = x0 + config.chunkSizeX / 2;
-            chunks[index].centerZ = z0 + config.chunkSizeZ / 2;
-            chunks[index].lods[0] = buildChunkMesh(config, lights, x0, z0,
-                config.chunkSizeX, config.baseCells);
-            chunks[index].lods[1] = buildChunkMesh(config, lights, x0, z0,
-                config.chunkSizeX, config.baseCells / 2);
-        }
+    enum int workerCount = 8;
+    Thread[] workers;
+    ChunkBuildJob[] jobs;
+    foreach (job; 0 .. workerCount)
+    {
+        jobs ~= new ChunkBuildJob(chunks, config, lights, job, workerCount);
+        workers ~= new Thread(&jobs[$ - 1].run);
+        workers[$ - 1].start();
+    }
+    foreach (worker; workers)
+        worker.join();
     return chunks;
+}
+
+TerrainChunk buildTerrainChunk(WorldConfig config, LightingModel lights,
+    int index)
+{
+    ensureTable();
+    TerrainChunk chunk;
+    const cx = index % config.chunksX;
+    const cz = index / config.chunksX;
+    const x0 = config.minX + cx * config.chunkSizeX;
+    const z0 = config.minZ + cz * config.chunkSizeZ;
+    chunk.centerX = x0 + config.chunkSizeX / 2;
+    chunk.centerZ = z0 + config.chunkSizeZ / 2;
+    chunk.lods[0] = buildChunkMesh(config, lights, x0, z0,
+        config.chunkSizeX, config.baseCells);
+    chunk.lods[1] = buildChunkMesh(config, lights, x0, z0,
+        config.chunkSizeX, config.baseCells / 2);
+    return chunk;
 }
 
 MeshData buildTorusMesh()

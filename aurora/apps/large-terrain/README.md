@@ -22,6 +22,13 @@ changing the basic app or the generic host.
 The basic app remains the fixed-grid reference; this app owns chunking, LOD and
 the asynchronous mesh handoff.
 
+## Controls
+
+- `F` at the aimed terrain point digs a shallow radius and lowers the surface.
+- `G` at the aimed terrain point constructs a raised radius.
+- `1`-`4` selects grass, dirt, rock or sand for the next edit.
+- Edited chunks rebuild only the affected LOD buffers and are re-uploaded.
+
 ## Engine runtime
 
 The app is a renderer/host shell over a small 0BSD terrain game runtime:

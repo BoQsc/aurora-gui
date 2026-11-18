@@ -19,10 +19,14 @@ import aurora.font : GlyphAdvance, GlyphHeight, GlyphWidth, LineAdvance,
     glyphBits, glyphPixel;
 import engine.runtime : TerrainRuntime, defaultRuntime;
 import engine.player : PlayerInput, PlayerState, updatePlayer;
-import mcmesh : MeshData, MeshVertex, TerrainChunk, TerrainChunkStream;
+import engine.world : TerrainMaterial, materialName;
+import mcmesh : MeshData, MeshVertex, TerrainChunk, TerrainChunkRebuild,
+    TerrainChunkStream, buildTerrainChunk;
 
 import core.stdc.string : memcpy;
+import core.stdc.stdio : snprintf;
 import core.stdc.stdint : intptr_t;
+import core.memory : GC;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, usecs;
 import core.sync.mutex : Mutex;
@@ -38,7 +42,7 @@ import core.sys.windows.windows : CreateWindowExA, DefWindowProcA, DispatchMessa
 import std.conv : to;
 import std.file : exists, read, write;
 import std.format : format;
-import std.math : cos, sin, sqrt, tan;
+import std.math : cos, floor, sin, sqrt, tan;
 import std.mmfile : MmFile;
 import std.path : buildPath;
 import std.stdio : File, stderr, stdout;
@@ -244,6 +248,43 @@ struct PushConstants
     float[16] mvp;
 }
 
+struct VkDescriptorBufferInfo
+{
+    VkBuffer buffer;
+    ulong offset;
+    ulong range;
+}
+
+struct VkBufferMemoryBarrier
+{
+    int sType;
+    const(void)* pNext;
+    uint srcAccessMask;
+    uint dstAccessMask;
+    uint srcQueueFamilyIndex;
+    uint dstQueueFamilyIndex;
+    VkBuffer buffer;
+    ulong offset;
+    ulong size;
+}
+
+struct VkComputePipelineCreateInfo
+{
+    int sType;
+    const(void)* pNext;
+    uint flags;
+    VkPipelineShaderStageCreateInfo stage;
+    VkPipelineLayout layout;
+    VkPipeline basePipelineHandle;
+    int basePipelineIndex;
+}
+
+alias CmdDispatch = extern(System) void function(VkCommandBuffer, uint, uint,
+    uint);
+alias CreateComputePipelines = extern(System) VkResult function(VkDevice,
+    VkPipelineCache, uint, const(VkComputePipelineCreateInfo)*, const(void)*,
+    VkPipeline*);
+
 struct StencilOp
 {
     int failOp;
@@ -313,6 +354,24 @@ private final class App
     VkRenderPass renderPass;
     VkPipeline pipeline;
     VkPipelineLayout pipelineLayout;
+    VkPipeline terrainPipeline;
+    VkPipelineLayout terrainPipelineLayout;
+    VkDescriptorSetLayout terrainDescriptorLayout;
+    VkDescriptorPool terrainDescriptorPool;
+    VkDescriptorSet terrainDescriptorSet;
+    VkImage terrainImage;
+    VkImageView terrainImageView;
+    VkDeviceMemory terrainImageMemory;
+    VkSampler terrainSampler;
+    VkImage terrainNormalImage;
+    VkImageView terrainNormalView;
+    VkDeviceMemory terrainNormalMemory;
+    VkImage terrainOrmImage;
+    VkImageView terrainOrmView;
+    VkDeviceMemory terrainOrmMemory;
+    VkBuffer terrainDetailBuffer;
+    VkDeviceMemory terrainDetailMemory;
+    VkPipeline terrainDetailPipeline;
     VkFramebuffer framebuffer;
     VkImage colorImage;
     VkImageView colorView;
@@ -326,10 +385,22 @@ private final class App
     VkDeviceMemory indexMemory;
     uint indexCount;
     ChunkGpu[][] chunkLods;
+    TerrainChunk[] chunkData;
     TerrainChunkStream chunkStream;
+    TerrainChunkRebuild rebuildJob;
     TerrainRuntime runtime;
+    SurfacePresenter presenter;
+    int materialIndex;
+    bool digHeld;
+    bool buildHeld;
+    bool[] pendingDirty;
+    int[] pendingDirtyList;
+    double health = 100;
+    double stamina = 100;
+    string[] notifications;
     VkBuffer readBuffer;
     VkDeviceMemory readMemory;
+
     VkPipeline hudPipeline;
     VkBuffer skyVertexBuffer;
     VkDeviceMemory skyVertexMemory;
@@ -345,6 +416,9 @@ private final class App
     bool hudTrace;
     bool hudToggleDown;
     bool hudDirty = true;
+    MeshVertex[] hudVertexCache;
+    uint[] hudIndexCache;
+    double hudRefreshAccumulator;
     bool hudClockStarted;
     uint hudWidth;
     uint hudHeight;
@@ -354,6 +428,8 @@ private final class App
     CmdPushConstants pushConstants;
     CmdCopyImageToBuffer copyImageToBuffer;
     CmdCopyImage copyImage;
+    CmdDispatch cmdDispatch;
+    CreateComputePipelines createComputePipelines;
     int colorFormat = ColorFormat;
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;
@@ -378,8 +454,10 @@ private final class App
     bool testMotion;
     bool extremeMotion;
 
-    this()
+    this(string surfacePath = null)
     {
+        if (surfacePath.length != 0)
+            presenter = new SurfacePresenter(surfacePath);
         runtime = defaultRuntime();
         chunkStream = new TerrainChunkStream(runtime.world, runtime.lights);
         chunkStream.start();
@@ -484,8 +562,17 @@ private final class App
             device, toStringz("vkCmdCopyImageToBuffer"));
         copyImage = cast(CmdCopyImage) vk.vkGetDeviceProcAddr(device,
             toStringz("vkCmdCopyImage"));
+        cmdDispatch = cast(CmdDispatch) vk.vkGetDeviceProcAddr(device,
+            toStringz("vkCmdDispatch"));
+        createComputePipelines = cast(CreateComputePipelines)
+            vk.vkGetDeviceProcAddr(device,
+                toStringz("vkCreateComputePipelines"));
         if (pushConstants is null || copyImageToBuffer is null)
             throw new Exception("required Vulkan device entry points unavailable");
+        if (cmdDispatch is null)
+            throw new Exception("vkCmdDispatch unavailable");
+        if (createComputePipelines is null)
+            throw new Exception("vkCreateComputePipelines unavailable");
         if (gChildWindow !is null && copyImage is null)
             throw new Exception("vkCmdCopyImage unavailable");
 
@@ -518,6 +605,8 @@ private final class App
         player.jumpHeld = false;
         if (gChildWindow !is null) { stdout.writeln("vulkan3d: buffers"); stdout.flush(); }
         createCommands();
+        createTexturedTerrain();
+        GC.minimize();
         if (gChildWindow !is null) { stdout.writeln("vulkan3d: commands"); stdout.flush(); }
     }
 
@@ -809,7 +898,7 @@ private final class App
 
         VkVertexInputBindingDescription binding;
         binding.binding = 0;
-        binding.stride = 24;
+        binding.stride = MeshVertex.sizeof;
         binding.inputRate = 0;
         VkVertexInputAttributeDescription[2] attributes;
         attributes[0].location = 0;
@@ -908,7 +997,7 @@ private final class App
 
         VkVertexInputBindingDescription binding;
         binding.binding = 0;
-        binding.stride = 24;
+        binding.stride = MeshVertex.sizeof;
         binding.inputRate = 0;
         VkVertexInputAttributeDescription[2] attributes;
         attributes[0].location = 0;
@@ -982,6 +1071,428 @@ private final class App
         info.basePipelineIndex = -1;
         check(vk.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info,
             null, &hudPipeline), "creating the HUD pipeline");
+    }
+
+    private void createTexturedTerrain()
+    {
+        const(int) textureWidth = 1024;
+        const(int) textureHeight = 1024;
+        const(int) textureLayers = 16;
+        const(int) textureFormat = 43; // VK_FORMAT_R8G8B8A8_SRGB
+        const(string) textureName = "terrain_albedo_1024x16.rgba";
+        const(string) texturePath = gShaderDir.length != 0
+            ? buildPath(gShaderDir, textureName)
+            : buildPath("shaders3d", textureName);
+        auto textureBytes = cast(ubyte[]) read(texturePath);
+        if (textureBytes.length != textureWidth * textureHeight * 4 *
+            textureLayers)
+            throw new Exception("terrain texture array has the wrong size");
+
+        VkImageCreateInfo imageInfo;
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = 0; // VK_IMAGE_TYPE_2D
+        imageInfo.format = textureFormat;
+        imageInfo.extent = VkExtent3D(textureWidth, textureHeight, 1);
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = textureLayers;
+        imageInfo.samples = 1;
+        imageInfo.tiling = 0; // VK_IMAGE_TILING_OPTIMAL
+        imageInfo.usage = 0x4 | 0x2; // SAMPLED | TRANSFER_DST
+        imageInfo.sharingMode = 0;
+        imageInfo.initialLayout = 0;
+        check(vk.vkCreateImage(device, &imageInfo, null, &terrainImage),
+            "creating terrain texture array");
+        VkMemoryRequirements imageRequirements;
+        vk.vkGetImageMemoryRequirements(device, terrainImage,
+            &imageRequirements);
+        VkMemoryAllocateInfo imageAllocation;
+        imageAllocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        imageAllocation.allocationSize = imageRequirements.size;
+        imageAllocation.memoryTypeIndex = memoryType(
+            imageRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        check(vk.vkAllocateMemory(device, &imageAllocation, null,
+            &terrainImageMemory), "allocating terrain texture memory");
+        check(vk.vkBindImageMemory(device, terrainImage, terrainImageMemory, 0),
+            "binding terrain texture memory");
+
+        VkImageViewCreateInfo viewInfo;
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = terrainImage;
+        viewInfo.viewType = 1; // VK_IMAGE_VIEW_TYPE_2D_ARRAY
+        viewInfo.format = textureFormat;
+        viewInfo.components = VkComponentMapping(0, 0, 0, 0);
+        viewInfo.subresourceRange = VkImageSubresourceRange(
+            VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, textureLayers);
+        check(vk.vkCreateImageView(device, &viewInfo, null, &terrainImageView),
+            "creating terrain texture view");
+
+        VkSamplerCreateInfo samplerInfo;
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = 1;
+        samplerInfo.minFilter = 1;
+        samplerInfo.mipmapMode = 1;
+        samplerInfo.addressModeU = 0;
+        samplerInfo.addressModeV = 0;
+        samplerInfo.addressModeW = 0;
+        samplerInfo.maxAnisotropy = 1;
+        samplerInfo.maxLod = 0;
+        check(vk.vkCreateSampler(device, &samplerInfo, null, &terrainSampler),
+            "creating terrain sampler");
+
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingMemory;
+        createBuffer(stagingBuffer, stagingMemory,
+            cast(VkDeviceSize) textureBytes.length, 0x1); // TRANSFER_SRC
+        upload(stagingMemory, textureBytes);
+
+        VkCommandBufferBeginInfo begin;
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check(vk.vkBeginCommandBuffer(commands, &begin),
+            "beginning terrain texture upload");
+        VkImageMemoryBarrier barrier;
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = 0;
+        barrier.newLayout = 7; // TRANSFER_DST_OPTIMAL
+        barrier.srcQueueFamilyIndex = 0xffffffff;
+        barrier.dstQueueFamilyIndex = 0xffffffff;
+        barrier.image = terrainImage;
+        barrier.subresourceRange = VkImageSubresourceRange(
+            VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, textureLayers);
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = 0x1000; // TRANSFER_WRITE
+        vk.vkCmdPipelineBarrier(commands, 0x1, 0x1000, 0, 0, null, 0, null,
+            1, &barrier);
+        VkBufferImageCopy copy;
+        copy.bufferOffset = 0;
+        copy.bufferRowLength = 0;
+        copy.bufferImageHeight = 0;
+        copy.imageSubresource = VkImageSubresourceLayers(
+            VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, textureLayers);
+        copy.imageOffset = VkOffset3D(0, 0, 0);
+        copy.imageExtent = VkExtent3D(textureWidth, textureHeight, 1);
+        vk.vkCmdCopyBufferToImage(commands, stagingBuffer, terrainImage, 7,
+            1, &copy);
+        barrier.oldLayout = 7;
+        barrier.newLayout = 5; // SHADER_READ_ONLY_OPTIMAL
+        barrier.srcAccessMask = 0x1000;
+        barrier.dstAccessMask = 0x20; // SHADER_READ
+        vk.vkCmdPipelineBarrier(commands, 0x1000, 0x10, 0, 0, null, 0, null,
+            1, &barrier);
+        check(vk.vkEndCommandBuffer(commands),
+            "ending terrain texture upload");
+        VkSubmitInfo submit;
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &commands;
+        check(vk.vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE),
+            "submitting terrain texture upload");
+        vk.vkQueueWaitIdle(queue);
+        vk.vkDestroyBuffer(device, stagingBuffer, null);
+        vk.vkFreeMemory(device, stagingMemory, null);
+
+        createAuxTextureArray("terrain_normal_512x16.rgba", 512, 512, 16,
+            37, terrainNormalImage, terrainNormalMemory, terrainNormalView);
+        createAuxTextureArray("terrain_orm_512x16.rgba", 512, 512, 16,
+            37, terrainOrmImage, terrainOrmMemory, terrainOrmView);
+
+        createBuffer(terrainDetailBuffer, terrainDetailMemory, 4, 0x20);
+        VkDescriptorSetLayoutBinding[4] descriptorBindings;
+        foreach (index; 0 .. 3)
+        {
+            descriptorBindings[index].binding = index;
+            descriptorBindings[index].descriptorType = 1; // COMBINED_IMAGE_SAMPLER
+            descriptorBindings[index].descriptorCount = 1;
+            descriptorBindings[index].stageFlags = 0x10; // FRAGMENT
+        }
+        descriptorBindings[3].binding = 3;
+        descriptorBindings[3].descriptorType = 7; // STORAGE_BUFFER
+        descriptorBindings[3].descriptorCount = 1;
+        descriptorBindings[3].stageFlags = 0x30; // COMPUTE | FRAGMENT
+        VkDescriptorSetLayoutCreateInfo descriptorLayout;
+        descriptorLayout.sType =
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        descriptorLayout.bindingCount = 4;
+        descriptorLayout.pBindings = descriptorBindings.ptr;
+        check(vk.vkCreateDescriptorSetLayout(device, &descriptorLayout, null,
+            &terrainDescriptorLayout), "creating terrain descriptor layout");
+        VkDescriptorPoolSize poolSize;
+        poolSize.type = 1;
+        poolSize.descriptorCount = 4;
+        VkDescriptorPoolCreateInfo poolInfo;
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.maxSets = 1;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        check(vk.vkCreateDescriptorPool(device, &poolInfo, null,
+            &terrainDescriptorPool), "creating terrain descriptor pool");
+        VkDescriptorSetAllocateInfo allocate;
+        allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocate.descriptorPool = terrainDescriptorPool;
+        allocate.descriptorSetCount = 1;
+        allocate.pSetLayouts = &terrainDescriptorLayout;
+        check(vk.vkAllocateDescriptorSets(device, &allocate,
+            &terrainDescriptorSet), "allocating terrain descriptor set");
+        VkDescriptorImageInfo[3] descriptorImageInfos;
+        descriptorImageInfos[0].sampler = terrainSampler;
+        descriptorImageInfos[0].imageView = terrainImageView;
+        descriptorImageInfos[1].sampler = terrainSampler;
+        descriptorImageInfos[1].imageView = terrainNormalView;
+        descriptorImageInfos[2].sampler = terrainSampler;
+        descriptorImageInfos[2].imageView = terrainOrmView;
+        foreach (index; 0 .. 3)
+            descriptorImageInfos[index].imageLayout = 5;
+        VkDescriptorBufferInfo detailBufferInfo;
+        detailBufferInfo.buffer = terrainDetailBuffer;
+        detailBufferInfo.offset = 0;
+        detailBufferInfo.range = 4;
+        VkWriteDescriptorSet[4] writes;
+        foreach (index; 0 .. 3)
+        {
+            writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[index].dstSet = terrainDescriptorSet;
+            writes[index].dstBinding = index;
+            writes[index].descriptorCount = 1;
+            writes[index].descriptorType = 1;
+            writes[index].pImageInfo = &descriptorImageInfos[index];
+        }
+        writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[3].dstSet = terrainDescriptorSet;
+        writes[3].dstBinding = 3;
+        writes[3].descriptorCount = 1;
+        writes[3].descriptorType = 7;
+        writes[3].pBufferInfo = &detailBufferInfo;
+        vk.vkUpdateDescriptorSets(device, 4, writes.ptr, 0, null);
+
+        auto vertex = shader("", "terrain.vert.spv");
+        auto fragment = shader("", "terrain.frag.spv");
+        VkPipelineShaderStageCreateInfo[2] stages;
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module_ = vertex;
+        stages[0].pName = toStringz("main");
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module_ = fragment;
+        stages[1].pName = toStringz("main");
+        VkVertexInputBindingDescription binding;
+        binding.binding = 0;
+        binding.stride = MeshVertex.sizeof;
+        binding.inputRate = 0;
+        VkVertexInputAttributeDescription[3] attributes;
+        attributes[0] = VkVertexInputAttributeDescription(0, 0, 106, 0);
+        attributes[1] = VkVertexInputAttributeDescription(1, 0, 106, 12);
+        attributes[2] = VkVertexInputAttributeDescription(2, 0, 100, 24);
+        VkPipelineVertexInputStateCreateInfo vertexInput;
+        vertexInput.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInput.vertexBindingDescriptionCount = 1;
+        vertexInput.pVertexBindingDescriptions = &binding;
+        vertexInput.vertexAttributeDescriptionCount = 3;
+        vertexInput.pVertexAttributeDescriptions = attributes.ptr;
+        VkPipelineInputAssemblyStateCreateInfo assembly;
+        assembly.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        assembly.topology = 3;
+        VkViewport viewport = VkViewport(0, 0, Width, Height, 0, 1);
+        VkRect2D scissor = VkRect2D(VkOffset2D(0, 0),
+            VkExtent2D(Width, Height));
+        VkPipelineViewportStateCreateInfo viewportState;
+        viewportState.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.pViewports = &viewport;
+        viewportState.scissorCount = 1;
+        viewportState.pScissors = &scissor;
+        VkPipelineRasterizationStateCreateInfo raster;
+        raster.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        raster.polygonMode = 0;
+        raster.cullMode = 0;
+        raster.frontFace = 1;
+        raster.lineWidth = 1;
+        VkPipelineMultisampleStateCreateInfo multisample;
+        multisample.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisample.rasterizationSamples = 1;
+        VkPipelineColorBlendAttachmentState blendAttachment;
+        blendAttachment.colorWriteMask = 0xf;
+        VkPipelineColorBlendStateCreateInfo blend;
+        blend.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        blend.attachmentCount = 1;
+        blend.pAttachments = &blendAttachment;
+        DepthState depth;
+        depth.sType = 46;
+        depth.depthTestEnable = 1;
+        depth.depthWriteEnable = 1;
+        depth.depthCompareOp = 1;
+        PushRange push;
+        push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        push.size = 64;
+        VkPipelineLayoutCreateInfo layoutInfo;
+        layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts = &terrainDescriptorLayout;
+        layoutInfo.pushConstantRangeCount = 1;
+        layoutInfo.pPushConstantRanges = &push;
+        check(vk.vkCreatePipelineLayout(device, &layoutInfo, null,
+            &terrainPipelineLayout), "creating terrain pipeline layout");
+        VkGraphicsPipelineCreateInfo info;
+        info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        info.stageCount = 2;
+        info.pStages = stages.ptr;
+        info.pVertexInputState = &vertexInput;
+        info.pInputAssemblyState = &assembly;
+        info.pViewportState = &viewportState;
+        info.pRasterizationState = &raster;
+        info.pMultisampleState = &multisample;
+        info.pDepthStencilState = &depth;
+        info.pColorBlendState = &blend;
+        info.layout = terrainPipelineLayout;
+        info.renderPass = renderPass;
+        info.subpass = 0;
+        info.basePipelineIndex = -1;
+        check(vk.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info,
+            null, &terrainPipeline), "creating textured terrain pipeline");
+
+        auto detailModule = shader("", "terrain_detail.comp.spv");
+        VkPipelineShaderStageCreateInfo detailStage;
+        detailStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        detailStage.stage = 0x20; // COMPUTE
+        detailStage.module_ = detailModule;
+        detailStage.pName = toStringz("main");
+        VkComputePipelineCreateInfo computeInfo;
+        computeInfo.sType = 29; // COMPUTE_PIPELINE_CREATE_INFO
+        computeInfo.stage = detailStage;
+        computeInfo.layout = terrainPipelineLayout;
+        computeInfo.basePipelineIndex = -1;
+        check(createComputePipelines(device, VK_NULL_HANDLE, 1,
+            &computeInfo, null, &terrainDetailPipeline),
+            "creating terrain compute pipeline");
+
+        VkCommandBufferBeginInfo computeBegin;
+        computeBegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        computeBegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check(vk.vkBeginCommandBuffer(commands, &computeBegin),
+            "beginning terrain compute pass");
+        vk.vkCmdBindPipeline(commands, 1, terrainDetailPipeline);
+        vk.vkCmdBindDescriptorSets(commands, 1, terrainPipelineLayout, 0, 1,
+            &terrainDescriptorSet, 0, null);
+        cmdDispatch(commands, 1, 1, 1);
+        VkBufferMemoryBarrier bufferBarrier;
+        bufferBarrier.sType = 44; // BUFFER_MEMORY_BARRIER
+        bufferBarrier.srcAccessMask = 0x40; // SHADER_WRITE
+        bufferBarrier.dstAccessMask = 0x20; // SHADER_READ
+        bufferBarrier.srcQueueFamilyIndex = 0xffffffff;
+        bufferBarrier.dstQueueFamilyIndex = 0xffffffff;
+        bufferBarrier.buffer = terrainDetailBuffer;
+        bufferBarrier.offset = 0;
+        bufferBarrier.size = 4;
+        vk.vkCmdPipelineBarrier(commands, 0x20, 0x10, 0, 0, null, 1,
+            &bufferBarrier, 0, null);
+        check(vk.vkEndCommandBuffer(commands),
+            "ending terrain compute pass");
+        VkSubmitInfo computeSubmit;
+        computeSubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        computeSubmit.commandBufferCount = 1;
+        computeSubmit.pCommandBuffers = &commands;
+        check(vk.vkQueueSubmit(queue, 1, &computeSubmit, VK_NULL_HANDLE),
+            "submitting terrain compute pass");
+        vk.vkQueueWaitIdle(queue);
+    }
+
+    private void createAuxTextureArray(string name, int width, int height,
+        int layers, int format, ref VkImage image, ref VkDeviceMemory memory,
+        ref VkImageView view)
+    {
+        auto bytes = cast(ubyte[]) read(buildPath(gShaderDir, name));
+        if (bytes.length != width * height * 4 * layers)
+            throw new Exception("auxiliary texture array has the wrong size");
+        VkImageCreateInfo info;
+        info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        info.imageType = 0;
+        info.format = format;
+        info.extent = VkExtent3D(width, height, 1);
+        info.mipLevels = 1;
+        info.arrayLayers = layers;
+        info.samples = 1;
+        info.tiling = 0;
+        info.usage = 0x4 | 0x2;
+        info.sharingMode = 0;
+        info.initialLayout = 0;
+        check(vk.vkCreateImage(device, &info, null, &image),
+            "creating auxiliary texture array");
+        VkMemoryRequirements requirements;
+        vk.vkGetImageMemoryRequirements(device, image, &requirements);
+        VkMemoryAllocateInfo allocation;
+        allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex = memoryType(requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        check(vk.vkAllocateMemory(device, &allocation, null, &memory),
+            "allocating auxiliary texture memory");
+        check(vk.vkBindImageMemory(device, image, memory, 0),
+            "binding auxiliary texture memory");
+        VkImageViewCreateInfo viewInfo;
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = image;
+        viewInfo.viewType = 1;
+        viewInfo.format = format;
+        viewInfo.components = VkComponentMapping(0, 0, 0, 0);
+        viewInfo.subresourceRange = VkImageSubresourceRange(
+            VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers);
+        check(vk.vkCreateImageView(device, &viewInfo, null, &view),
+            "creating auxiliary texture view");
+        VkBuffer staging;
+        VkDeviceMemory stagingMemory;
+        createBuffer(staging, stagingMemory,
+            cast(VkDeviceSize) bytes.length, 0x1);
+        upload(stagingMemory, bytes);
+        VkCommandBufferBeginInfo begin;
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check(vk.vkBeginCommandBuffer(commands, &begin),
+            "beginning auxiliary texture upload");
+        VkImageMemoryBarrier barrier;
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = 0;
+        barrier.newLayout = 7;
+        barrier.srcQueueFamilyIndex = 0xffffffff;
+        barrier.dstQueueFamilyIndex = 0xffffffff;
+        barrier.image = image;
+        barrier.subresourceRange = VkImageSubresourceRange(
+            VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers);
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = 0x1000;
+        vk.vkCmdPipelineBarrier(commands, 0x1, 0x1000, 0, 0, null, 0, null,
+            1, &barrier);
+        VkBufferImageCopy copy;
+        copy.bufferOffset = 0;
+        copy.bufferRowLength = 0;
+        copy.bufferImageHeight = 0;
+        copy.imageSubresource = VkImageSubresourceLayers(
+            VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, layers);
+        copy.imageOffset = VkOffset3D(0, 0, 0);
+        copy.imageExtent = VkExtent3D(width, height, 1);
+        vk.vkCmdCopyBufferToImage(commands, staging, image, 7, 1, &copy);
+        barrier.oldLayout = 7;
+        barrier.newLayout = 5;
+        barrier.srcAccessMask = 0x1000;
+        barrier.dstAccessMask = 0x20;
+        vk.vkCmdPipelineBarrier(commands, 0x1000, 0x10, 0, 0, null, 0, null,
+            1, &barrier);
+        check(vk.vkEndCommandBuffer(commands),
+            "ending auxiliary texture upload");
+        VkSubmitInfo submit;
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &commands;
+        check(vk.vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE),
+            "submitting auxiliary texture upload");
+        vk.vkQueueWaitIdle(queue);
+        vk.vkDestroyBuffer(device, staging, null);
+        vk.vkFreeMemory(device, stagingMemory, null);
     }
 
     private void createHudBuffers()
@@ -1152,6 +1663,37 @@ private final class App
         indices ~= [base, base + 1, base + 2, base, base + 2, base + 3];
     }
 
+    private void hudText(ref MeshVertex[] vertices, ref uint[] indices,
+        float x, float y, string text, float r, float g, float b)
+    {
+        foreach (ch; text)
+        {
+            if (ch != ' ')
+            {
+                const glyph = glyphBits(ch);
+                foreach (gy; 0 .. GlyphHeight)
+                    foreach (gx; 0 .. GlyphWidth)
+                        if (glyphPixel(glyph, gx, gy))
+                            hudQuad(vertices, indices,
+                                x + gx * HudScale, y + gy * HudScale,
+                                x + (gx + 1) * HudScale,
+                                y + (gy + 1) * HudScale, r, g, b);
+            }
+            x += GlyphAdvance * HudScale;
+        }
+    }
+
+    private string cardinal(double yaw)
+    {
+        double degrees = yaw * 180.0 / 3.14159265358979323846;
+        degrees = degrees % 360.0;
+        if (degrees < 0) degrees += 360.0;
+        static immutable string[] labels = [
+            "N", "NE", "E", "SE", "S", "SW", "W", "NW",
+        ];
+        return labels[cast(int) ((degrees + 22.5) / 45.0) % 8];
+    }
+
     private void updateHudToggle()
     {
         const bool down = keyDown(0x70); // F1
@@ -1167,20 +1709,44 @@ private final class App
 
     private void updateHud(uint width, uint height)
     {
-        MeshVertex[] vertices;
-        uint[] indices;
+        if (hudVertexCache.capacity < MaxHudVertices)
+            hudVertexCache.reserve(MaxHudVertices);
+        if (hudIndexCache.capacity < MaxHudIndices)
+            hudIndexCache.reserve(MaxHudIndices);
+        hudVertexCache.length = 0;
+        hudIndexCache.length = 0;
+        MeshVertex[] vertices = hudVertexCache;
+        uint[] indices = hudIndexCache;
         if (!hudVisible || width == 0 || height == 0)
         {
             hudIndexCount = 0;
             return;
         }
-        string[] lines = [
+
+        char[64] fpsBuffer;
+        char[64] positionBuffer;
+        char[64] yawBuffer;
+        char[64] materialBuffer;
+        const fpsLength = snprintf(fpsBuffer.ptr, fpsBuffer.length,
+            "FPS %.0f", hudFps);
+        const positionLength = snprintf(positionBuffer.ptr,
+            positionBuffer.length, "X %.1f  Z %.1f", camX, camZ);
+        const yawLength = snprintf(yawBuffer.ptr, yawBuffer.length,
+            "Y %.1f  YAW %.2f", camY, camYaw);
+        const materialNameText = materialName(
+            cast(TerrainMaterial) materialIndex);
+        const materialLength = snprintf(materialBuffer.ptr,
+            materialBuffer.length, "MATERIAL %.*s",
+            cast(int) materialNameText.length, materialNameText.ptr);
+        string[9] lines = [
             "TERRAIN INFO",
-            format("FPS %.0f", hudFps),
-            format("X %.1f  Z %.1f", camX, camZ),
-            format("Y %.1f  YAW %.2f", camY, camYaw),
-            "WASD MOVE  SHIFT SPRINT",
-            "CLICK LOOK  ESC RELEASE",
+            cast(string) fpsBuffer[0 .. fpsLength],
+            cast(string) positionBuffer[0 .. positionLength],
+            cast(string) yawBuffer[0 .. yawLength],
+            cast(string) materialBuffer[0 .. materialLength],
+            "WASD MOVE  SHIFT SPRINT  SPACE JUMP",
+            "LMB CAPTURE/CONSTRUCT  RMB DIG",
+            "1-4 MATERIAL  ESC RELEASE",
             "F1 HIDE INFO"
         ];
         size_t maxLine;
@@ -1218,23 +1784,123 @@ private final class App
             const float r = title ? 0.35f : hint ? 0.62f : 0.86f;
             const float g = title ? 0.85f : hint ? 0.78f : 0.94f;
             const float b = title ? 1.0f : hint ? 0.88f : 1.0f;
-            foreach (ch; line)
-            {
-                if (ch != ' ')
-                {
-                    const glyph = glyphBits(ch);
-                    foreach (gy; 0 .. GlyphHeight)
-                        foreach (gx; 0 .. GlyphWidth)
-                            if (glyphPixel(glyph, gx, gy))
-                                hudQuad(vertices, indices,
-                                    x + gx * HudScale, y + gy * HudScale,
-                                    x + (gx + 1) * HudScale,
-                                    y + (gy + 1) * HudScale, r, g, b);
-                }
-                x += GlyphAdvance * HudScale;
-            }
+            hudText(vertices, indices, x, y, line, r, g, b);
             y += lineStep;
         }
+
+        const float compassWidth = 470;
+        const float compassHeight = 38;
+        const float compassX = (cast(float) width - compassWidth) / 2;
+        const float compassY = 8;
+        hudQuad(vertices, indices, compassX, compassY,
+            compassX + compassWidth, compassY + compassHeight,
+            0.015f, 0.035f, 0.060f);
+        hudQuad(vertices, indices, compassX, compassY,
+            compassX + compassWidth, compassY + 2,
+            0.20f, 0.55f, 0.75f);
+        foreach (tick; 0 .. 9)
+        {
+            const float tickX = compassX + compassWidth / 2 +
+                (tick - 4) * 52;
+            hudQuad(vertices, indices, tickX, compassY + 25,
+                tickX + 2, compassY + 33, 0.35f, 0.72f, 0.88f);
+        }
+        double degrees = camYaw * 180.0 /
+            3.14159265358979323846;
+        degrees = degrees % 360.0;
+        if (degrees < 0) degrees += 360.0;
+        char[32] compassBuffer;
+        const compassDirection = cardinal(camYaw);
+        const compassLength = snprintf(compassBuffer.ptr,
+            compassBuffer.length, "%03d  %.*s",
+            cast(int) degrees, cast(int) compassDirection.length,
+            compassDirection.ptr);
+        const string compass =
+            cast(string) compassBuffer[0 .. compassLength];
+        hudText(vertices, indices, compassX + compassWidth / 2 -
+            cast(float) compass.length * GlyphAdvance * HudScale / 2,
+            compassY + 7, compass, 0.75f, 0.93f, 1.0f);
+
+        const float slotWidth = 118;
+        const float slotHeight = 76;
+        const float slotGap = 8;
+        const float beltWidth = slotWidth * 4 + slotGap * 3;
+        const float beltX = (cast(float) width - beltWidth) / 2;
+        const float beltY = cast(float) height - slotHeight - 16;
+        hudQuad(vertices, indices, beltX - 8, beltY - 8,
+            beltX + beltWidth + 8, beltY + slotHeight + 8,
+            0.012f, 0.025f, 0.045f);
+        foreach (slot; 0 .. 4)
+        {
+            const float x0 = beltX + slot * (slotWidth + slotGap);
+            const bool selected = slot == materialIndex;
+            hudQuad(vertices, indices, x0, beltY, x0 + slotWidth,
+                beltY + slotHeight, selected
+                    ? 0.10f : 0.025f, selected ? 0.28f : 0.055f,
+                selected ? 0.36f : 0.09f);
+            hudQuad(vertices, indices, x0, beltY, x0 + slotWidth,
+                beltY + 2, selected ? 0.45f : 0.22f,
+                selected ? 0.85f : 0.38f, selected ? 1.0f : 0.48f);
+            char[8] slotBuffer;
+            const slotLength = snprintf(slotBuffer.ptr, slotBuffer.length,
+                "%d", slot + 1);
+            hudText(vertices, indices, x0 + 8, beltY + 12,
+                cast(string) slotBuffer[0 .. slotLength],
+                0.55f, 0.80f, 0.90f);
+            hudText(vertices, indices, x0 + 8, beltY + 38,
+                materialName(cast(TerrainMaterial) slot),
+                0.82f, 0.92f, 0.95f);
+        }
+
+        const float barX = 16;
+        const float barY = cast(float) height - 174;
+        const float barWidth = 248;
+        hudText(vertices, indices, barX, barY - 22, "HEALTH",
+            0.86f, 0.40f, 0.38f);
+        hudQuad(vertices, indices, barX, barY, barX + barWidth,
+            barY + 16, 0.08f, 0.05f, 0.06f);
+        hudQuad(vertices, indices, barX, barY,
+            barX + barWidth * cast(float) (health / 100.0),
+            barY + 16, 0.78f, 0.18f, 0.20f);
+        hudQuad(vertices, indices, barX, barY, barX + 2,
+            barY + 16, 0.92f, 0.40f, 0.38f);
+        hudText(vertices, indices, barX, barY + 22, "STAMINA",
+            0.52f, 0.82f, 0.42f);
+        const float staminaY = barY + 44;
+        hudQuad(vertices, indices, barX, staminaY, barX + barWidth,
+            staminaY + 16, 0.05f, 0.07f, 0.05f);
+        hudQuad(vertices, indices, barX, staminaY,
+            barX + barWidth * cast(float) (stamina / 100.0),
+            staminaY + 16, 0.30f, 0.72f, 0.30f);
+        hudQuad(vertices, indices, barX, staminaY, barX + 2,
+            staminaY + 16, 0.55f, 0.88f, 0.45f);
+
+        const float notifyWidth = 350;
+        const float notifyHeight = 116;
+        const float notifyX = cast(float) width - notifyWidth - 16;
+        const float notifyY = cast(float) height - notifyHeight - 112;
+        hudQuad(vertices, indices, notifyX, notifyY,
+            notifyX + notifyWidth, notifyY + notifyHeight,
+            0.012f, 0.025f, 0.045f);
+        hudQuad(vertices, indices, notifyX, notifyY,
+            notifyX + notifyWidth, notifyY + 2,
+            0.35f, 0.55f, 0.65f);
+        hudText(vertices, indices, notifyX + 10, notifyY + 10,
+            "EVENTS", 0.55f, 0.82f, 0.92f);
+        if (notifications.length == 0)
+            hudText(vertices, indices, notifyX + 10, notifyY + 38,
+                "SYSTEM READY", 0.42f, 0.58f, 0.64f);
+        else
+        {
+            const int first = notifications.length > 4
+                ? cast(int) notifications.length - 4 : 0;
+            foreach (index; first .. cast(int) notifications.length)
+                hudText(vertices, indices, notifyX + 10,
+                    notifyY + 38 + (index - first) * 18,
+                    notifications[index], 0.72f, 0.86f, 0.88f);
+        }
+        hudVertexCache = vertices;
+        hudIndexCache = indices;
         uploadHud(vertices, indices);
     }
 
@@ -1297,6 +1963,7 @@ private final class App
             "binding readback memory");
     }
 
+
     private void upload(VkDeviceMemory memory, const(void)[] data)
     {
         void* mapped;
@@ -1308,6 +1975,7 @@ private final class App
 
     private void createBuffers(TerrainChunk[] terrainChunks)
     {
+        chunkData = terrainChunks;
         chunkLods.length = terrainChunks.length;
         uint vertexTotal;
         uint indexTotal;
@@ -1343,13 +2011,210 @@ private final class App
         createReadbackBuffer();
     }
 
+    private void uploadChunkGpu(int index, TerrainChunk chunk,
+        bool waitForDevice = true)
+    {
+        chunkData[index] = chunk;
+        if (waitForDevice)
+            vk.vkDeviceWaitIdle(device);
+        foreach (lod; 0 .. 2)
+        {
+            auto previous = chunkLods[index][lod];
+            if (previous.vertexBuffer != VkBuffer.init)
+                vk.vkDestroyBuffer(device, previous.vertexBuffer, null);
+            if (previous.vertexMemory != VkDeviceMemory.init)
+                vk.vkFreeMemory(device, previous.vertexMemory, null);
+            if (previous.indexBuffer != VkBuffer.init)
+                vk.vkDestroyBuffer(device, previous.indexBuffer, null);
+            if (previous.indexMemory != VkDeviceMemory.init)
+                vk.vkFreeMemory(device, previous.indexMemory, null);
+
+            auto mesh = chunk.lods[lod];
+            auto gpu = ChunkGpu();
+            gpu.centerX = chunk.centerX;
+            gpu.centerZ = chunk.centerZ;
+            gpu.indexCount = cast(uint) mesh.indices.length;
+            if (gpu.indexCount != 0)
+            {
+                createBuffer(gpu.vertexBuffer, gpu.vertexMemory,
+                    cast(VkDeviceSize) mesh.vertices.length * MeshVertex.sizeof,
+                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+                upload(gpu.vertexMemory, mesh.vertices);
+                createBuffer(gpu.indexBuffer, gpu.indexMemory,
+                    cast(VkDeviceSize) mesh.indices.length * uint.sizeof,
+                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+                upload(gpu.indexMemory, mesh.indices);
+            }
+            chunkLods[index][lod] = gpu;
+        }
+    }
+
+    private void rebuildTerrainAround(double x, double z, double radius)
+    {
+        const config = runtime.world;
+        int cx0 = cast(int) floor((x - radius - config.minX) /
+            config.chunkSizeX);
+        int cx1 = cast(int) floor((x + radius - config.minX) /
+            config.chunkSizeX);
+        int cz0 = cast(int) floor((z - radius - config.minZ) /
+            config.chunkSizeZ);
+        int cz1 = cast(int) floor((z + radius - config.minZ) /
+            config.chunkSizeZ);
+        if (cx0 < 0) cx0 = 0;
+        if (cz0 < 0) cz0 = 0;
+        if (cx1 >= config.chunksX) cx1 = config.chunksX - 1;
+        if (cz1 >= config.chunksZ) cz1 = config.chunksZ - 1;
+        int[] indices;
+        foreach (cz; cz0 .. cz1 + 1)
+            foreach (cx; cx0 .. cx1 + 1)
+                indices ~= cz * config.chunksX + cx;
+        if (indices.length == 0)
+            return;
+        if (rebuildJob !is null)
+        {
+            if (!rebuildJob.finished)
+            {
+                queueDirty(indices);
+                return;
+            }
+            pollTerrainRebuild();
+            if (rebuildJob !is null)
+            {
+                queueDirty(indices);
+                return;
+            }
+        }
+        startRebuild(indices);
+    }
+
+    private void startRebuild(int[] indices)
+    {
+        if (indices.length == 0) return;
+        enum int editBatchChunks = 4;
+        if (indices.length > editBatchChunks)
+        {
+            queueDirty(indices[editBatchChunks .. $]);
+            indices = indices[0 .. editBatchChunks];
+        }
+        rebuildJob = new TerrainChunkRebuild(runtime.world, runtime.lights,
+            indices);
+        rebuildJob.start();
+    }
+
+    private void queueDirty(const int[] indices)
+    {
+        const total = runtime.world.chunksX * runtime.world.chunksZ;
+        if (pendingDirty.length < total)
+            pendingDirty.length = total;
+        foreach (index; indices)
+        {
+            if (index < 0 || index >= total || pendingDirty[index])
+                continue;
+            pendingDirty[index] = true;
+            pendingDirtyList ~= index;
+        }
+    }
+
+    private void pollTerrainRebuild()
+    {
+        if (rebuildJob is null || !rebuildJob.finished)
+            return;
+        auto job = rebuildJob;
+        rebuildJob = null;
+        job.take();
+        if (job.chunks.length != 0)
+            vk.vkDeviceWaitIdle(device);
+        foreach (slot, index; job.indices)
+            uploadChunkGpu(index, job.chunks[slot], false);
+        hudDirty = true;
+        if (pendingDirtyList.length != 0)
+        {
+            auto next = pendingDirtyList;
+            pendingDirtyList = [ ];
+            foreach (index; next)
+                pendingDirty[index] = false;
+            startRebuild(next);
+        }
+    }
+
+    private void updateTerrainTools()
+    {
+        int requestedMaterial = materialIndex;
+        if (keyDown(0x31)) requestedMaterial = 0;
+        else if (keyDown(0x32)) requestedMaterial = 1;
+        else if (keyDown(0x33)) requestedMaterial = 2;
+        else if (keyDown(0x34)) requestedMaterial = 3;
+        if (requestedMaterial != materialIndex)
+        {
+            materialIndex = requestedMaterial;
+            notifications ~= format("MATERIAL  %s",
+                materialName(cast(TerrainMaterial) materialIndex));
+            if (notifications.length > 4)
+                notifications = notifications[$ - 4 .. $];
+            hudDirty = true;
+        }
+        if (!mouseCaptured)
+        {
+            digHeld = false;
+            buildHeld = false;
+            return;
+        }
+        const bool dig = keyDown(0x02);
+        const bool build = keyDown(0x01);
+        if (!dig && !build)
+        {
+            digHeld = false;
+            buildHeld = false;
+            return;
+        }
+        if ((dig && digHeld) || (build && buildHeld)) return;
+
+        const double cp = cos(camPitch);
+        const double fx = sin(camYaw) * cp;
+        const double fy = sin(camPitch);
+        const double fz = -cos(camYaw) * cp;
+        bool found;
+        double hitX, hitZ;
+        for (double distance = 1.0; distance < 90.0; distance += 0.5)
+        {
+            const x = camX + fx * distance;
+            const y = camY + fy * distance;
+            const z = camZ + fz * distance;
+            if (y <= runtime.world.terrainHeight(x, z))
+            {
+                hitX = x;
+                hitZ = z;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            digHeld = dig;
+            buildHeld = build;
+            return;
+        }
+        const material = cast(TerrainMaterial) materialIndex;
+        runtime.world.addEdit(hitX, hitZ, 8.0, dig ? -5.0 : 5.0, material);
+        rebuildTerrainAround(hitX, hitZ, 8.0);
+        notifications ~= format("%s  %s", dig ? "DIG" : "BUILD",
+            materialName(material));
+        if (notifications.length > 4)
+            notifications = notifications[$ - 4 .. $];
+        hudDirty = true;
+        digHeld = dig;
+        buildHeld = build;
+    }
+
     private void drawTerrain(VkCommandBuffer commandBuffer)
     {
+        vk.vkCmdBindDescriptorSets(commandBuffer, 0, terrainPipelineLayout,
+            0, 1, &terrainDescriptorSet, 0, null);
         VkDeviceSize offset = 0;
         foreach (chunk; chunkLods)
         {
-            const dx = camX - chunk[0].centerX;
-            const dz = camZ - chunk[0].centerZ;
+            const dx = chunk[0].centerX - camX;
+            const dz = chunk[0].centerZ - camZ;
             const lodDistance = runtime.world.lodNearDistance;
             const lod = (dx * dx + dz * dz) > lodDistance * lodDistance
                 ? 1 : 0;
@@ -1361,6 +2226,26 @@ private final class App
                 VK_INDEX_TYPE_UINT32);
             vk.vkCmdDrawIndexed(commandBuffer, gpu.indexCount, 1, 0, 0, 0);
         }
+    }
+
+    private void drawHud(VkCommandBuffer commandBuffer, uint width, uint height)
+    {
+        if (!hudVisible || hudIndexCount == 0) return;
+        VkViewport viewport = VkViewport(0, 0, width, height, 0, 1);
+        VkRect2D scissor = VkRect2D(VkOffset2D(0, 0),
+            VkExtent2D(width, height));
+        vk.vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        vk.vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+        vk.vkCmdBindPipeline(commandBuffer, 0, hudPipeline);
+        VkDeviceSize offset = 0;
+        vk.vkCmdBindVertexBuffers(commandBuffer, 0, 1,
+            &hudVertexBuffer, &offset);
+        vk.vkCmdBindIndexBuffer(commandBuffer, hudIndexBuffer, 0,
+            VK_INDEX_TYPE_UINT32);
+        auto mvp = hudMatrix(width, height);
+        pushConstants(commandBuffer, pipelineLayout,
+            VK_SHADER_STAGE_VERTEX_BIT, 0, 64, &mvp);
+        vk.vkCmdDrawIndexed(commandBuffer, hudIndexCount, 1, 0, 0, 0);
     }
 
     private void createCommands()
@@ -1404,7 +2289,7 @@ private final class App
         input.back = keyDown(0x53);
         input.left = keyDown(0x41);
         input.right = keyDown(0x44);
-        input.sprint = keyDown(0x10);
+        input.sprint = keyDown(0x10) && stamina > 2;
         input.jump = keyDown(0x20);
         player.x = camX;
         player.y = camY;
@@ -1418,6 +2303,16 @@ private final class App
         camZ = player.z;
         velocityX = player.velocityX;
         velocityZ = player.velocityZ;
+        const bool moving = input.forward || input.back ||
+            input.left || input.right;
+        if (input.sprint && moving)
+            stamina = stamina - 22.0 * dt < 0 ? 0 :
+                stamina - 22.0 * dt;
+        else
+            stamina = stamina + 12.0 * dt > 100 ? 100 :
+                stamina + 12.0 * dt;
+        pollTerrainRebuild();
+        updateTerrainTools();
     }
 
     private void setMouseCapture(bool captured)
@@ -1488,6 +2383,7 @@ private final class App
             if (!inRender || !keyDown(0x01)) return;
             SetCursorPos(center.x, center.y);
             setMouseCapture(true);
+            buildHeld = true;
             return;
         }
         camYaw += (cursor.x - center.x) * 0.0026;
@@ -1608,7 +2504,7 @@ private final class App
         pass.pClearValues = clears.ptr;
         vk.vkCmdBeginRenderPass(commands, &pass, 1);
         drawSky(commands, Width, Height);
-        vk.vkCmdBindPipeline(commands, 0, pipeline);
+        vk.vkCmdBindPipeline(commands, 0, terrainPipeline);
         VkViewport viewport = VkViewport(0, 0, Width, Height, 0, 1);
         VkRect2D scissor = VkRect2D(VkOffset2D(0, 0),
             VkExtent2D(Width, Height));
@@ -1616,7 +2512,7 @@ private final class App
         vk.vkCmdSetScissor(commands, 0, 1, &scissor);
         updateCamera(seconds, 0);
         auto matrix = this.matrix(seconds, Width, Height);
-        pushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
+        pushConstants(commands, terrainPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
             0, 64, &matrix);
         drawTerrain(commands);
         vk.vkCmdEndRenderPass(commands);
@@ -1675,7 +2571,8 @@ private final class App
 
     void renderAnimated(string surfacePath, int seconds)
     {
-        auto presenter = new SurfacePresenter(surfacePath);
+        if (presenter is null)
+            presenter = new SurfacePresenter(surfacePath);
         stdout.writeln("vulkan3d: animated surface ", surfacePath); stdout.flush();
         const frames = seconds * 60;
         void* readPixels;
@@ -1738,7 +2635,7 @@ private final class App
             pass.pClearValues = clears.ptr;
             vk.vkCmdBeginRenderPass(commands, &pass, 1);
             drawSky(commands, Width, Height);
-            vk.vkCmdBindPipeline(commands, 0, pipeline);
+            vk.vkCmdBindPipeline(commands, 0, terrainPipeline);
             VkViewport viewport = VkViewport(0, 0, Width, Height, 0, 1);
             VkRect2D scissor = VkRect2D(VkOffset2D(0, 0),
                 VkExtent2D(Width, Height));
@@ -1766,11 +2663,24 @@ private final class App
             else
                 updateMouse();
             updateCamera(frame / 60.0, dt);
+            hudRefreshAccumulator += dt;
+            if (hudRefreshAccumulator >= 0.1)
+            {
+                hudRefreshAccumulator = 0;
+                hudDirty = true;
+            }
+            updateHudToggle();
+            if (hudDirty)
+            {
+                updateHud(Width, Height);
+                hudDirty = false;
+            }
 
             auto matrix = this.matrix(frame / 60.0, Width, Height);
-            pushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
+            pushConstants(commands, terrainPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
                 0, 64, &matrix);
             drawTerrain(commands);
+            drawHud(commands, Width, Height);
             vk.vkCmdEndRenderPass(commands);
 
             VkImageMemoryBarrier barrier;
@@ -1793,7 +2703,8 @@ private final class App
                 VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1);
             region.imageOffset = VkOffset3D(0, 0, 0);
             region.imageExtent = VkExtent3D(Width, Height, 1);
-            copyImageToBuffer(commands, colorImage, 6, readBuffer, 1, &region);
+            copyImageToBuffer(commands, colorImage, 6, readBuffer, 1,
+                &region);
             check(vk.vkEndCommandBuffer(commands), "end animated frame");
             VkSubmitInfo submit;
             submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1908,7 +2819,7 @@ private final class App
         pass.pClearValues = clears.ptr;
         vk.vkCmdBeginRenderPass(commands, &pass, 1);
         drawSky(commands, Width, Height);
-        vk.vkCmdBindPipeline(commands, 0, pipeline);
+        vk.vkCmdBindPipeline(commands, 0, terrainPipeline);
         VkViewport viewport = VkViewport(0, 0, target.width, target.height, 0, 1);
         VkRect2D scissor = VkRect2D(VkOffset2D(0, 0),
             VkExtent2D(target.width, target.height));
@@ -1917,7 +2828,7 @@ private final class App
         updateMouse();
         updateCamera(seconds, 1.0 / 60.0);
         auto matrix = this.matrix(seconds, target.width, target.height);
-        pushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
+        pushConstants(commands, terrainPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
             0, 64, &matrix);
         drawTerrain(commands);
         if (hudVisible && hudIndexCount != 0)
@@ -2216,7 +3127,8 @@ void main(string[] args)
         ShowWindow(gChildWindow, SW_SHOW);
         SetForegroundWindow(gChildWindow);
     }
-    auto app = new App();
+    auto app = new App(animate && surfaceOutput.length != 0
+        ? surfaceOutput : null);
     if (gStandaloneWindow)
         app.mouseWindow = gChildWindow;
     timeBeginPeriod(1);

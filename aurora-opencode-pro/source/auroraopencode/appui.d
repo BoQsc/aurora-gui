@@ -23944,6 +23944,14 @@ private void pollButtonSuggestionRequest()
             }
 
         initializeLegacyTask(*session);
+        // The tool-result commit runs on the UI thread inside one tick and has
+        // no time slice of its own, so a slow phase here holds the window
+        // thread for its whole duration. Bracket each phase with a marker: an
+        // emergency report then names the phase instead of the last bubble
+        // that painted before it.
+        noteActivity("applyToolResult start tool=" ~ event.toolName ~
+            " session=" ~ to!string(sessionIndex) ~ " changed=" ~
+            (event.workspaceChanged ? "yes" : "no"));
         invalidateChangedWorkspaceEvidence();
         const receiptWorkspace = workspaceForSession(sessionIndex);
         const currentScope = verificationScope(receiptWorkspace, toolWorkspaceRevision(receiptWorkspace));
@@ -23963,6 +23971,7 @@ private void pollButtonSuggestionRequest()
             verificationWorkspace, currentTimestamp(), toolWorkspaceRevision(verificationWorkspace),
             experimentalOrchestratorEnabled(), _execution.pendingRouting.halt);
         auto settlement = settleToolResult(*session, event, toolArgs, policy);
+        noteActivity("applyToolResult settled tool=" ~ event.toolName);
         auto toolMessage = settlement.message;
         const toolFailed = toolMessage.failed;
         const toolText = toolMessage.content;
@@ -23984,6 +23993,7 @@ private void pollButtonSuggestionRequest()
             applyGoalCompletion(*session, toolArgs);
         if (advanceToolTaskState(*session, settlement, event, toolArgs,
             priorVerificationStatus, priorVerificationScope)) publishThreadUpdated(*session);
+        noteActivity("applyToolResult task state done tool=" ~ event.toolName);
         if (acceptedVerification && session.verificationStatus == "passed")
         {
             const evidenceKey = buildNormalizedPath(verificationWorkspace).toLower();
@@ -24044,6 +24054,7 @@ private void pollButtonSuggestionRequest()
         // incrementally, and it snaps the scroll to the newest output while the
         // model is still working (matching the previous incremental behaviour).
         _toolTranscriptDirty = true;
+        noteActivity("applyToolResult transcript tool=" ~ event.toolName);
         if (!_batchingToolResults)
             flushToolTranscriptChanges();
 
@@ -24113,6 +24124,7 @@ private void pollButtonSuggestionRequest()
             // round's last report resumes it (see collectSubagentResult).
             if (!_toolContinuationPaused && !hasPendingSubagents(session.id))
             {
+                noteActivity("applyToolResult guidance tool=" ~ event.toolName);
                 appendQueuedGuidance(*session);
                 import auroraopencode.executioncontrol : executionToolRecovery;
                 const obstacle = executionToolRecovery(*session);
@@ -24126,6 +24138,7 @@ private void pollButtonSuggestionRequest()
                 _execution.toolContinuationPending = true;
             }
         }
+        noteActivity("applyToolResult done tool=" ~ event.toolName);
     }
 
     private static bool isMutatingTool(string name)
@@ -33062,6 +33075,11 @@ private void pollButtonSuggestionRequest()
     {
         HistoryResult[] results;
         synchronized (this) { results = _historyResults; _historyResults = null; }
+        // Loading and graphing a saved conversation is a whole-session pass on
+        // the UI thread. Name it, so a stall here is not blamed on the last
+        // painted bubble.
+        if (results.length) noteActivity("drainHistoryResults count=" ~
+            to!string(results.length));
         foreach (result; results)
         {
             _threadLoadsPending.remove(result.id);
@@ -33745,6 +33763,9 @@ private void pollButtonSuggestionRequest()
             events = _journalTailEvents;
         }
         if (events is null || !events.length) return;
+        // Replaying a journal tail walks every loaded conversation's messages.
+        // Name the step so a slow replay is reported as itself.
+        noteActivity("drainJournalTailRepairs events=" ~ to!string(events.length));
         bool changed, currentChanged;
         foreach (i, ref session; _sessions)
         {
@@ -34456,18 +34477,22 @@ private void pollButtonSuggestionRequest()
     protected override void onTick(double deltaSeconds)
     {
         if (pollExitCheckpoint()) return;
+        // Emergency freeze detection: stamp the frame, publish what the UI is
+        // doing, service any stall the watchdog reported while the UI was stuck,
+        // and (when enabled) let the overseer look for a runaway conversation.
+        // The stamp comes first. History and journal application below run
+        // before any paint and have no per-frame marker of their own, so a slow
+        // apply used to be reported against whatever bubble painted last. Each
+        // drain now records its own marker when it has work to do.
+        emergencyHeartbeat();
+        updateEmergencyContext();
+        drainEmergency();
+        runOverseer();
         drainHistoryResults();
         // Apply a parent-link repair whose journal read landed after the
         // conversation was loaded. The read runs on the snapshot owner, so the
         // load itself never waits for the journal.
         drainJournalTailRepairs();
-        // Emergency freeze detection: stamp the frame, publish what the UI is
-        // doing, service any stall the watchdog reported while the UI was stuck,
-        // and (when enabled) let the overseer look for a runaway conversation.
-        emergencyHeartbeat();
-        updateEmergencyContext();
-        drainEmergency();
-        runOverseer();
         // experimental: project manager - optional per-project auto-reviews.
         runProjectManagerTriggers();
         // Run the transcript rebuild a busy turn coalesced into this tick (see

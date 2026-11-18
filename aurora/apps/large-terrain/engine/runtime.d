@@ -22,6 +22,8 @@ TerrainRuntime defaultRuntime()
     runtime.sky.sun = [1.0f, 0.68f, 0.28f];
     runtime.lights.sunDirection = [0.35f, 0.85f, -0.40f];
     runtime.lights.sunColor = [1.0f, 0.94f, 0.80f];
+    runtime.lights.skyColor = [0.32f, 0.46f, 0.68f];
+    runtime.lights.groundColor = [0.20f, 0.18f, 0.13f];
     runtime.lights.ambient = 0.65f;
     runtime.lights.sunIntensity = 1.35f;
     return runtime;

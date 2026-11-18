@@ -2,8 +2,8 @@
   "schemaVersion": 2,
   "window": {
     "title": "Large Marching Cubes Terrain",
-    "width": 480,
-    "height": 360,
+    "width": 1600,
+    "height": 900,
     "decorated": false
   },
   "root": {
@@ -26,8 +26,8 @@
         "id": "view",
         "type": "surface",
         "path": "build/large-terrain-live.surface",
-        "width": 480,
-        "height": 328,
+        "width": 1600,
+        "height": 868,
         "flex": 1,
         "staleMs": 1000,
         "events": ["pointer", "key"]
