@@ -23,12 +23,13 @@ public string followUpInstruction()
         "array of exactly 2 strings. Each string is a message the user could " ~
         "send next: at most 14 words, in the user's own voice, as a direct " ~
         "instruction or question referring to the work actually in progress. " ~
-        "Make the two genuinely different in direction: for example verify or " ~
-        "finish the current work, explore an alternative or an edge case, extend " ~
-        "the result to a closely related improvement, and ask about a design " ~
-        "trade-off or remaining risk. Do not repeat the same request with " ~
-        "different wording. No labels and no explanation; output only the JSON " ~
-        "array.";
+        "Make the two genuinely different in direction. Do not suggest " ~
+        "verifying, testing, checking, confirming, or re-running the work; " ~
+        "those are predictable and rarely what the user wants next. Prefer " ~
+        "directions such as extending the result, exploring an alternative, " ~
+        "improving a related part, or asking about a design trade-off or " ~
+        "remaining risk. Do not repeat the same request with different " ~
+        "wording. No labels and no explanation; output only the JSON array.";
 }
 
 /// Drop leading list markers (bullets, numbers, blockquote marks) from a line.
@@ -78,11 +79,40 @@ private string withoutLabel(string value)
     return undecorate(value[colon + 1 .. $]);
 }
 
+/// Whether `text` starts with `phrase` ending at a word boundary.
+private bool startsWithPhrase(string text, string phrase)
+{
+    if (text.length < phrase.length || text[0 .. phrase.length] != phrase)
+        return false;
+    if (text.length == phrase.length) return true;
+    const next = text[phrase.length];
+    return next == ' ' || next == ':' || next == ',' || next == '\n';
+}
+
+/// Whether a candidate is a direct request to verify, test, check, confirm or
+/// re-run the work that just finished. The model falls back to these often;
+/// they are predictable and rarely what the user wants next, so they are
+/// dropped rather than offered.
+private bool isDirectVerification(string value)
+{
+    auto text = value.strip.toLower;
+    static immutable string[] prefixes = [
+        "verify", "verifying", "validate", "validating", "check", "checking",
+        "test", "testing", "confirm", "confirming", "ensure", "ensuring",
+        "prove", "proving", "rerun", "re-run", "double-check", "double check",
+        "run the tests", "run tests", "run the test", "run a test",
+        "run the build", "run a build", "make sure", "see if", "try running",
+    ];
+    foreach (prefix; prefixes)
+        if (startsWithPhrase(text, prefix)) return true;
+    return false;
+}
+
 /// Accept a model reply as up to `maxItems` distinct follow-up messages.
 /// Handles the requested JSON array of strings (or objects with a text-like
 /// field), and falls back to one item per line. Fenced code, labels, duplicate
-/// wording (ignoring case) and blank entries are dropped; an unusable reply
-/// yields an empty list so nothing is shown.
+/// wording (ignoring case), direct verification directions and blank entries
+/// are dropped; an unusable reply yields an empty list so nothing is shown.
 public string[] cleanFollowUps(string raw, size_t maxItems = 2,
     size_t maxChars = 120)
 {
@@ -97,6 +127,7 @@ public string[] cleanFollowUps(string raw, size_t maxItems = 2,
         text = withoutLabel(text);
         text = undecorate(text);
         if (text.length == 0) return;
+        if (isDirectVerification(text)) return;
         // The model sometimes wraps the array in prose; a line ending in a
         // colon is an introduction, not a message.
         if (text[$ - 1] == ':' && text.length < 90) return;
@@ -160,20 +191,28 @@ public string[] cleanFollowUps(string raw, size_t maxItems = 2,
 
 unittest
 {
+    // Direct verification directions are dropped instead of offered.
+    auto filtered = cleanFollowUps(
+        `["Run the tests", "Verify the build", "Check the logs", ` ~
+        `"Add a regression test", "Explain the trade-off"]`);
+    assert(filtered.length == 2);
+    assert(filtered[0] == "Add a regression test", filtered[0]);
+    assert(filtered[1] == "Explain the trade-off", filtered[1]);
+
     // The requested JSON array of strings is capped at two items.
     auto two = cleanFollowUps(
-        `["Run the test suite", "Try a different layout", "Check the logs", ` ~
+        `["Add a keyboard shortcut", "Try a different layout", ` ~
         `"Explain the trade-off"]`);
     assert(two.length == 2);
-    assert(two[0] == "Run the test suite");
+    assert(two[0] == "Add a keyboard shortcut");
     assert(two[1] == "Try a different layout");
 
     // Objects with a text-like field also parse, and duplicates are dropped.
     auto objects = cleanFollowUps(
-        `[{"text":"Open the file"},{"prompt":"Run the tests"},` ~
+        `[{"text":"Open the file"},{"prompt":"Add a shortcut"},` ~
         `{"text":"open the file"}]`);
     assert(objects.length == 2, objects.length.to!string);
-    assert(objects[1] == "Run the tests");
+    assert(objects[1] == "Add a shortcut");
 
     // A fenced or prose-wrapped array is still parsed.
     auto fenced = cleanFollowUps(
@@ -182,14 +221,15 @@ unittest
         `"Review the diff"]` ~ "\n```");
     assert(fenced.length == 2);
     assert(fenced[0] == "Fix the build");
+    assert(fenced[1] == "Add a regression test");
 
     // A plain line list is the fallback: bullets, numbering and labels go.
     auto lines = cleanFollowUps(
         "1. Run the tests\n- Follow-up: open the composer\n" ~
         "* Explain the change\n\"Ship it\"");
     assert(lines.length == 2, lines.length.to!string);
-    assert(lines[0] == "Run the tests");
-    assert(lines[1] == "open the composer");
+    assert(lines[0] == "open the composer");
+    assert(lines[1] == "Explain the change");
 
     // The list is capped, and each item is trimmed to the display budget.
     auto capped = cleanFollowUps(
@@ -208,5 +248,7 @@ unittest
     const instruction = followUpInstruction();
     assert(instruction.indexOf("exactly 2") > 0);
     assert(instruction.indexOf("genuinely different") > 0);
+    assert(instruction.indexOf("Do not suggest verifying") > 0);
+    assert(instruction.indexOf("verify or finish") < 0);
     assert(instruction.indexOf("JSON") > 0);
 }

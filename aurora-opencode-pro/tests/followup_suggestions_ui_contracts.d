@@ -66,8 +66,8 @@ int main()
         ["Add a stop button", "The stop button is in place."]);
     root.setInputForTesting("");
     root.offerFollowUpsForTesting([
-        "Run the tests and fix the failures",
-        "Add a regression test for the stop button"]);
+        "Add a keyboard shortcut for the stop button",
+        "Explain the stop path's trade-off"]);
     root.tickTree(0.02);
     root.projectTranscriptForTesting();
     assert(driver.paint(), "the follow-up chips could not paint");
@@ -92,7 +92,7 @@ int main()
     const composed = root.inputTextForTesting();
     assert(composed.indexOf("Keep this draft") == 0,
         "the user's draft was lost: " ~ composed);
-    assert(composed.indexOf("Add a regression test for the stop button") >= 0,
+    assert(composed.indexOf("Explain the stop path's trade-off") >= 0,
         "the chosen follow-up was not added: " ~ composed);
 
     // Turning the switch off removes the row and drops stored lists.
