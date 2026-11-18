@@ -49,6 +49,7 @@ int main(string[] arguments)
     session.objective = request.content;
     session.contract.intent = "implementation";
     session.contract.currentIntent = "implementation";
+    session.verificationScope = "test-scope";
 
     OpenCodeEvent compileEvent;
     compileEvent.toolName = "run"; compileEvent.toolCallId = "compile-1";
@@ -72,6 +73,28 @@ int main(string[] arguments)
         "The next proof did not name the outstanding behavioral check");
     assert(compiled.message.content.indexOf("does not establish behavior") >= 0,
         "The receipt did not state what compilation fails to establish");
+
+    // A checked run reports no revision of its own; its recipe already locked
+    // the declared inputs. It must still count after the workspace changed, or
+    // every self-check an agent runs after its first edit is rejected and the
+    // task keeps asking for proof it already produced.
+    OpenCodeEvent afterEdit = compileEvent;
+    afterEdit.toolCallId = "compile-after-edit";
+    afterEdit.verificationRevision = 0;
+    auto rechecked = settleToolResult(session, afterEdit,
+        `{"check":"compile","program":"dmd","args":["-c","source/app.d"]}`, policy);
+    assert(rechecked.scopedVerification,
+        "A checked run was rejected after the workspace changed");
+    assert(rechecked.message.verificationScope.length,
+        "Accepted checked-run evidence carried no scope");
+
+    OpenCodeEvent wrongRevision = compileEvent;
+    wrongRevision.toolCallId = "compile-stale";
+    wrongRevision.verificationRevision = 3;
+    auto stale = settleToolResult(session, wrongRevision,
+        `{"check":"compile","program":"dmd","args":["-c","source/app.d"]}`, policy);
+    assert(!stale.scopedVerification,
+        "A check from a different source revision was accepted");
 
     OpenCodeEvent testsEvent = compileEvent;
     testsEvent.toolName = "verify";

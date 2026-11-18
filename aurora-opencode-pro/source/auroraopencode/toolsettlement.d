@@ -89,10 +89,18 @@ ToolSettlement settleToolResult(const ref ChatSession session,
         goalError.length > 0 ? goalError :
         !toolFailed && event.toolName == "update_plan" ? planUpdateText(session, toolArgs) :
         !toolFailed && (event.toolName == "read_plan" || event.toolName == "read_history") ? planView : event.text;
+    // A checked `run` reports no revision of its own: its recipe hashes the
+    // declared inputs before and after the steps and fails as stale when they
+    // change, so a passing report is already locked to the source it ran
+    // against. Comparing its recorded 0 against the live counter rejected every
+    // checked run after the first workspace change - exactly when an agent needs
+    // its checks to count - and left the task asking for the same proof forever.
+    const revisionScoped = event.verificationRevision == 0 ||
+        event.verificationRevision == policy.currentRevision;
     const scopedVerification = !toolFailed && event.verificationPassed && event.verificationExitCode == 0 &&
         event.verificationCheck.length > 0 &&
         sameCheckout(policy.verificationWorkspace, policy.workspace) &&
-        event.verificationRevision == policy.currentRevision;
+        revisionScoped;
     const checkerAttempt = event.verificationCheck.length || event.toolName == "verify";
     const coverage = checkerAttempt ? verificationCoverage(session, scopedVerification ? event.verificationCheck : "") : "";
     const acceptedVerification = scopedVerification && satisfiesEvidence(coverage, requiredEvidence(session));
@@ -166,11 +174,11 @@ ToolSettlement settleToolResult(const ref ChatSession session,
         }
         catch (Exception) {}
     toolMessage.verificationScope = checkerAttempt && sameCheckout(policy.verificationWorkspace, policy.workspace) &&
-        event.verificationRevision == policy.currentRevision ? session.verificationScope : "";
+        revisionScoped ? session.verificationScope : "";
     toolMessage.toolElapsedMs = event.elapsedMs;
     toolMessage.time = policy.timestamp;
     return ToolSettlement(toolMessage, checkerAttempt, scopedVerification, acceptedVerification,
-        toolFailed && checkerAttempt && sameCheckout(policy.verificationWorkspace, policy.workspace) && event.verificationRevision == policy.currentRevision,
+        toolFailed && checkerAttempt && sameCheckout(policy.verificationWorkspace, policy.workspace) && revisionScoped,
         toolFailed ? OrchestratorDirective.init : routing);
 }
 
