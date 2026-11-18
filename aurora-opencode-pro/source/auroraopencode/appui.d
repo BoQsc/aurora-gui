@@ -1276,6 +1276,13 @@ private final class MessageBubble : Widget
     private bool _thinkingHover;
     private double _thinkingElapsed = 0;
     private bool _thinkingLive;
+    // Newest line of live reasoning, drawn as one muted row under the header
+    // while the answer has not started. The header itself stays status-only
+    // (pulse, token count, rate); this body tail is what makes the thinking
+    // phase visibly produce text instead of looking frozen until the answer
+    // arrives in a burst. Bounded so a long unbroken thought cannot grow the
+    // transcript row without limit.
+    private string _thinkingTail;
     // Seconds since the last streamed reasoning or answer fragment, used by the
     // live Thinking header to explain a quiet gap (`no new output for Ns`).
     private double _quietSeconds = 0.0;
@@ -1643,6 +1650,7 @@ private final class MessageBubble : Widget
         _thinkingBuffered.length = 0;
         _thinkingSpill = "";
         _thinkingDirty = false;
+        _thinkingTail = boundedThinkingTail(value);
         ++_thinkingGen;
         invalidate();
     }
@@ -1768,9 +1776,50 @@ private final class MessageBubble : Widget
         }
         _thinkingBuffered ~= toUTF32(chunk);
         _thinkingDirty = true;
+        updateThinkingTail(chunk);
         ++_thinkingGen;
         _quietSeconds = 0.0;
         invalidate();
+    }
+
+    /// Keep only the newest reasoning line, bounded, for the live tail row.
+    /// Trailing line breaks are stripped first so a chunk that ends with one
+    /// still contributes the text before it; a chunk that is only a break
+    /// leaves the previous line in place so the row never blinks out.
+    private void updateThinkingTail(string chunk)
+    {
+        auto body = chunk;
+        while (body.length && (body[$ - 1] == '\n' || body[$ - 1] == '\r'))
+            body = body[0 .. $ - 1];
+        if (body.length == 0) return;
+        size_t lineStart;
+        foreach (index, char c; body)
+            if (c == '\n' || c == '\r') lineStart = index + 1;
+        const next = lineStart == 0 ? _thinkingTail ~ body : body[lineStart .. $];
+        auto line = boundedThinkingTail(next);
+        if (line.length) _thinkingTail = line;
+    }
+
+    /// The newest non-empty line of `text`, trimmed and capped in bytes; a long
+    /// unbroken line keeps its newest characters rather than growing a row.
+    private static string boundedThinkingTail(string text)
+    {
+        size_t lineStart;
+        foreach (index, char c; text)
+            if (c == '\n' || c == '\r') lineStart = index + 1;
+        auto line = text[lineStart .. $];
+        size_t begin;
+        while (begin < line.length && (line[begin] == ' ' || line[begin] == '\t'))
+            ++begin;
+        line = line[begin .. $];
+        const maximum = 240;
+        if (line.length > maximum)
+        {
+            size_t cut = line.length - maximum;
+            while (cut < line.length && (cast(ubyte) line[cut] & 0xc0) == 0x80) ++cut;
+            line = line[cut .. $];
+        }
+        return line;
     }
 
     void appendContent(string chunk)
@@ -1780,6 +1829,7 @@ private final class MessageBubble : Widget
         // only the new chunk into the dstring's existing storage.
         foreach (dchar c; chunk)
             _content ~= c;
+        _thinkingTail = "";
         ++_contentGen;
         _contentCacheCount = 0;
         _contentCacheNext = 0;
@@ -2535,6 +2585,8 @@ private final class MessageBubble : Widget
                     to!string(_thinkingParts.length));
                 height += _thinkingPartsHeight + gap;
             }
+            else if (liveThinkingTailVisible())
+                height += thinkingTailHeight();
         }
 
         if (_editingInPlace)
@@ -2691,6 +2743,11 @@ private final class MessageBubble : Widget
                     y += part.measuredSize().height;
                 }
                 if (_thinkingParts.length > 0) y += gap;
+            }
+            else if (liveThinkingTailVisible())
+            {
+                drawThinkingTail(canvas, innerWidth, y);
+                y += thinkingTailHeight();
             }
         }
 
@@ -3039,6 +3096,12 @@ private final class MessageBubble : Widget
     /// Height of a collapsed one-line reasoning header, matching the other
     /// transcript rows without the tool card's additional border insets.
     private static int thinkingHeaderHeight()
+    {
+        return opencodeFontBase + 2;
+    }
+
+    /// One muted reasoning tail row under the collapsed live header.
+    private static int thinkingTailHeight()
     {
         return opencodeFontBase + 2;
     }
@@ -3487,6 +3550,34 @@ private final class MessageBubble : Widget
         clipped.drawLayout(Point(padH, top), layout,
             live ? opencodeAccent :
             (_thinkingHover ? opencodeText : opencodeMuted));
+    }
+
+    /// Whether the collapsed live Thinking row shows its compact reasoning
+    /// tail. Once the answer starts the tail is redundant: the answer text
+    /// itself is the visible progress.
+    private bool liveThinkingTailVisible() const
+    {
+        return _thinkingCollapsed && !_reasoningInActivity &&
+            (_thinkingLive || _tokensLive) && _content.length == 0 &&
+            hasThinking() && _thinkingTail.length > 0;
+    }
+
+    /// One clipped row of the newest live reasoning under the status header.
+    /// It is deliberately outside `_thinkingRect`, so clicking it does not
+    /// toggle the block; the header remains the only control.
+    private void drawThinkingTail(ref Canvas canvas, int innerWidth, int top)
+    {
+        auto layout = canvas.layoutText(toUTF32(_thinkingTail), 1,
+            FontRole.ui, cast(FontFace) theme().uiFont, 0, false);
+        const h = thinkingTailHeight();
+        auto clipped = canvas.clipped(Rect(padH, top, maxInt(1, innerWidth), h));
+        clipped.drawLayout(Point(padH, top), layout, opencodeThinkingText);
+    }
+
+    /// Test-only: the compact reasoning line under the live Thinking header.
+    public string thinkingTailForTesting() const
+    {
+        return _thinkingTail;
     }
 
     /// Compact display of the command arguments: `(name=value, ...)` for a
@@ -38301,6 +38392,13 @@ private void pollButtonSuggestionRequest()
     public string liveThinkingHeaderForTesting() const
     {
         return _streamBubble is null ? "" : _streamBubble.thinkingHeaderTextForTesting();
+    }
+
+    /// Test-only: the compact live reasoning line under the streaming reply's
+    /// Thinking header ("" once the answer starts or nothing streamed).
+    public string liveThinkingTailForTesting() const
+    {
+        return _streamBubble is null ? "" : _streamBubble.thinkingTailForTesting();
     }
 
     /// Test-only: the text of the first visible "Thinking" block.

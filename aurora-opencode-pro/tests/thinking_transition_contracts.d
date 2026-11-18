@@ -22,7 +22,9 @@ import std.string : indexOf;
 /// the real widget tree through both a synthetic turn and a real HTTP provider
 /// that stalls between the reasoning stream and the answer. The header stays a
 /// status line: it shows the pulse, token count and rate, never the streamed
-/// reasoning text itself.
+/// reasoning text itself. Under that header the collapsed live reply carries a
+/// bounded one-line tail of the newest reasoning, so the thinking phase visibly
+/// produces text instead of staying opaque until the answer arrives.
 int main()
 {
     const state = buildPath(tempDir(), "aurora-thinking-transition-" ~
@@ -77,6 +79,9 @@ int main()
     assert(root.liveThinkingHeaderForTesting().indexOf("Considering the request.") < 0,
         "live Thinking header echoed the reasoning text: [" ~
         root.liveThinkingHeaderForTesting() ~ "]");
+    assert(root.liveThinkingTailForTesting().indexOf("Considering the request.") >= 0,
+        "live Thinking row hid the reasoning it was producing: [" ~
+        root.liveThinkingTailForTesting() ~ "]");
     assert(root.liveThinkingHeaderForTesting().indexOf("no new output") < 0,
         "quiet note appeared before the reply actually went quiet");
     until(delegate() { return root.liveThinkingHeaderForTesting().indexOf("no new output for") >= 0; });
@@ -99,6 +104,9 @@ int main()
     window.saveScreenshot("build/thinking-transition-gap.ppm");
     root.streamContentForTesting("Answer after thinking.");
     until(delegate() { return root.lastAssistantContentForTesting() == "Answer after thinking."; });
+    assert(root.liveThinkingTailForTesting().length == 0,
+        "reasoning tail stayed under the answer text: [" ~
+        root.liveThinkingTailForTesting() ~ "]");
     assert(root.liveThinkingHeaderForTesting().indexOf("no new output") < 0,
         "quiet note stayed after streamed output resumed");
     assert(root.thinkingHeaderCountForTesting() == 1,

@@ -5795,8 +5795,9 @@ int main(string[] args)
     }
 
     // Regression: a reasoning-only stream must print "Thinking" once (the
-    // in-bubble header), keep any phase row BELOW the live reply, and not
-    // reserve a phantom text-cursor line while the answer is still empty.
+    // in-bubble header), keep any phase row BELOW the live reply, and reserve
+    // exactly one live reasoning-preview row - never a phantom text-cursor
+    // line while the answer is still empty.
     {
         root.newChatForTesting();
         // A phase row pinned before the reply arrives — the real
@@ -5823,11 +5824,25 @@ int main(string[] args)
         const int visualCount = root.messageColumnVisualCountForTesting();
         assert(activityIndex == -1 || activityIndex == visualCount - 1,
             "Any phase row must render after the live reply, never above it");
+        assert(root.liveThinkingTailForTesting().indexOf("same reasoning") >= 0,
+            "The live reasoning row hid the thought it was streaming: [" ~
+            root.liveThinkingTailForTesting() ~ "]");
         const int liveHeight = root.bubbleHeightForTesting(3);
-        assert(liveHeight == staticHeight,
-            "A reasoning-only stream reserved a phantom cursor line: live=" ~
+        const int extra = liveHeight - staticHeight;
+        assert(extra > 0,
+            "A reasoning-only stream reserved no reasoning-preview row: live=" ~
             to!string(liveHeight) ~ " static=" ~ to!string(staticHeight));
-        writeln("Reasoning stream: one Thinking header, no phantom cursor");
+        // One preview row is deliberate; a second (the old phantom cursor
+        // placeholder) would add another full line and is still a regression.
+        assert(extra <= staticHeight,
+            "A reasoning-only stream reserved more than one preview row: live=" ~
+            to!string(liveHeight) ~ " static=" ~ to!string(staticHeight));
+        root.streamContentForTesting("answer");
+        assert(paintProjection(root, driver), "Answer after reasoning did not paint");
+        assert(root.liveThinkingTailForTesting().length == 0,
+            "The reasoning preview row survived into the answer: [" ~
+            root.liveThinkingTailForTesting() ~ "]");
+        writeln("Reasoning stream: one Thinking header plus a bounded live preview");
     }
 
     // Regression: a request that fails before any assistant turn exists must
