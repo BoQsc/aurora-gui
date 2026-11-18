@@ -1869,6 +1869,10 @@ public struct Settings
     // message and show it dimmed inside an empty composer; Tab inserts it. On
     // by default; the Settings dialog owns the switch.
     bool composerSuggestion = true;
+    // After a reply settles, show 3-4 clickable follow-up messages at the end
+    // of the chat as deliberately different directions. On by default; the
+    // Settings dialog owns the switch.
+    bool experimentalFollowUpSuggestions = true;
     string diagnosticModel; // opt-in, same-provider read-only review of stalled tasks
     bool hideHunkHeaders = true;
     // Render assistant-viewed images as a compact image-only row instead of a
@@ -2239,6 +2243,10 @@ public Settings loadSettings()
                 if (auto found = "composerSuggestion" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.composerSuggestion = found.type == JSONType.true_;
+                if (auto found = "experimentalFollowUpSuggestions" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.experimentalFollowUpSuggestions =
+                            found.type == JSONType.true_;
                 if (auto found = "diagnosticModel" in value.object)
                     if (found.type == JSONType.string) settings.diagnosticModel = found.str;
                 if (auto found = "hideHunkHeaders" in value.object)
@@ -2621,6 +2629,8 @@ public void saveSettings(const ref Settings settings, bool strictIO = false)
     root["autoGoalFromFirstMessage"] = settings.autoGoalFromFirstMessage;
     root["autoRetireImages"] = settings.autoRetireImages;
     root["composerSuggestion"] = settings.composerSuggestion;
+    root["experimentalFollowUpSuggestions"] =
+        settings.experimentalFollowUpSuggestions;
     root["diagnosticModel"] = settings.diagnosticModel;
     root["hideHunkHeaders"] = settings.hideHunkHeaders;
     root["compactViewedImages"] = settings.compactViewedImages;

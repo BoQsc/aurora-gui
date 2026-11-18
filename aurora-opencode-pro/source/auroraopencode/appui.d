@@ -149,6 +149,7 @@ import auroraopencode.buttonsuggest : ButtonSuggestion,
 import auroraopencode.composersuggestion : cleanComposerSuggestion,
     composerSuggestionCanRequest, composerSuggestionInstruction,
     composerSuggestionTriggerReady;
+import auroraopencode.followups : cleanFollowUps, followUpInstruction;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision, invalidateToolWorkspace;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
 import auroraopencode.preferencewriter : PreferenceWriter;
@@ -8827,6 +8828,171 @@ private final class ContextCompactionNoticeRow : Widget
     }
 }
 
+/// Clickable next-message suggestions at the end of a settled chat. One rounded
+/// chip per follow-up, each wrapped to the transcript width; a click hands the
+/// text to the owner, which sends it (or adds it to an existing draft).
+private final class FollowUpSuggestionsRow : Widget
+{
+    void delegate(string text) onChoose;
+
+    private static immutable int padH = 12;
+    private static immutable int padV = 7;
+    private static immutable int gap = 6;
+    private static immutable int labelHeight = 20;
+    private static immutable int minChipHeight = 30;
+    private static immutable int labelGap = 6;
+
+    private string[] _items;
+    private TextLayout[] _layouts;
+    private int[] _heights;
+    private Rect[] _rects;
+    private int _measuredWidth = -1;
+    private int _hover = -1;
+
+    this()
+    {
+        setId("oc-followups");
+    }
+
+    /// Replace the offered messages. An empty list leaves the row empty; the
+    /// caller simply does not add it to the transcript.
+    void setItems(const(string)[] values)
+    {
+        _items = values.dup;
+        _measuredWidth = -1;
+        _hover = -1;
+        invalidate();
+    }
+
+    /// Test-only: the labels currently offered, in display order.
+    public string[] itemsForTesting() const { return _items.dup; }
+
+    /// Test-only: the chip rects recorded by the last paint.
+    public Rect[] chipBoundsForTesting() const { return _rects.dup; }
+
+    /// Test-only: press the chip at `index` exactly like a pointer click.
+    public bool clickForTesting(int index)
+    {
+        if (index < 0 || index >= cast(int) _items.length ||
+            onChoose is null) return false;
+        onChoose(_items[index]);
+        return true;
+    }
+
+    private void ensureLayouts(int width)
+    {
+        if (width == _measuredWidth && _layouts.length == _items.length) return;
+        _measuredWidth = width;
+        _layouts.length = 0;
+        _heights.length = 0;
+        foreach (item; _items)
+        {
+            TextLayoutOptions options;
+            options.role = FontRole.ui;
+            options.overrideFace = cast(FontFace) theme().uiFont;
+            options.pixelSize = opencodeFontChat;
+            options.maxWidth = maxInt(1, width - 2 * padH);
+            options.wrap = true;
+            TextLayout layout;
+            // A model reply can carry text the shaper rejects; a broken chip
+            // must not take the transcript's paint down with it.
+            try layout = fontSystem().textEngine.layout(toUTF32(item), options);
+            catch (Throwable error)
+            {
+                logError("follow-up shaping failed: " ~ error.toString());
+            }
+            _layouts ~= layout;
+            _heights ~= layout is null ? minChipHeight : maxInt(minChipHeight,
+                cast(int) ceil(cast(float) layout.measuredSize().height) +
+                    2 * padV);
+        }
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        const width = maxInt(0, available.width);
+        if (_items.length == 0)
+        {
+            layoutHints().preferredWidth = width;
+            layoutHints().preferredHeight = 0;
+            return Size(width, 0);
+        }
+        ensureLayouts(width);
+        int height = labelHeight + labelGap;
+        foreach (chipHeight; _heights) height += chipHeight + gap;
+        height -= gap;
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = height;
+        return Size(width, height);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        if (_items.length == 0) return;
+        ensureLayouts(bounds().width);
+        canvas.drawText(Point(0, 2), toUTF32("Suggested follow-ups"),
+            opencodeMuted);
+        int y = labelHeight + labelGap;
+        _rects.length = 0;
+        foreach (index, item; _items)
+        {
+            const rect = Rect(0, y, bounds().width, _heights[index]);
+            _rects ~= rect;
+            const active = cast(int) index == _hover;
+            canvas.drawRoundedRect(rect, 10,
+                active ? opencodeSelection : opencodeField,
+                active ? opencodeAccent : opencodeBorder, 1);
+            if (_layouts[index] is null)
+            {
+                y += _heights[index] + gap;
+                continue;
+            }
+            const textHeight =
+                cast(int) _layouts[index].measuredSize().height;
+            canvas.drawLayout(Point(padH,
+                y + maxInt(padV, (rect.height - textHeight) / 2)),
+                _layouts[index], active ? opencodeText : opencodeMuted);
+            y += _heights[index] + gap;
+        }
+    }
+
+    private int chipAt(Point position) const
+    {
+        foreach (index, rect; _rects)
+            if (rect.contains(position)) return cast(int) index;
+        return -1;
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        const next = chipAt(event.position);
+        if (next != _hover)
+        {
+            _hover = next;
+            setCursor(next >= 0 ? CursorKind.hand : CursorKind.arrow);
+            invalidate();
+        }
+        return false;
+    }
+
+    protected override void onMouseLeave()
+    {
+        if (_hover == -1) return;
+        _hover = -1;
+        setCursor(CursorKind.arrow);
+        invalidate();
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button != MouseButton.left) return false;
+        const index = chipAt(event.position);
+        if (index < 0 || index >= cast(int) _items.length) return false;
+        if (onChoose !is null) onChoose(_items[index]);
+        return true;
+    }
+}
+
 /// Settings credential field that reports pointer entry for usage previews.
 private final class HoverKeyField : TextField
 {
@@ -14674,6 +14840,8 @@ private string _suggestExcludeId;
             rt.client.closeSession();
             if (rt.titleClient !is null) rt.titleClient.closeSession();
             if (rt.compactionClient !is null) rt.compactionClient.closeSession();
+            if (rt.suggestionClient !is null) rt.suggestionClient.closeSession();
+            if (rt.followUpClient !is null) rt.followUpClient.closeSession();
             foreach (client; rt.agentClients) client.closeSession();
         }
     }
@@ -19304,6 +19472,7 @@ private string _suggestExcludeId;
         // Opening a chat whose reply settled earlier (even before this run)
         // starts the same automatic guess a freshly settled reply gets.
         queueComposerSuggestionOnOpen(index);
+        queueFollowUpsOnOpen(index);
         // Opening a conversation is the "attention" its unread dot waits for.
         bool clearedUnread;
         if (_sessions[index].unread)
@@ -20392,6 +20561,7 @@ private string _suggestExcludeId;
                     pendingPromptRemoveAction(false, index));
                 _messageColumn.add(queuedBubble);
             }
+        addFollowUpSuggestions(*session, path);
         // Deliberately do NOT set `_messagesScroll.follow = true` here. A rebuild
         // happens many times while a reply and its tools stream (e.g. every
         // throttled tool-argument delta), and forcing follow each time yanked a
@@ -22827,6 +22997,7 @@ private void pollButtonSuggestionRequest()
                 runtimeTurnId(_sessions[sessionIndex]));
         // A settled reply is where a guess at the user's next message starts.
         if (!cancelled && terminal) queueComposerSuggestion(sessionIndex);
+        if (!cancelled && terminal) queueFollowUps(sessionIndex);
         // The streamed bubble was built for streaming only (no timestamp, usage
         // footer, context menu or collapse wiring). Rebuild so the settled view
         // is canonical immediately — otherwise the transcript silently
@@ -26467,6 +26638,215 @@ private void pollButtonSuggestionRequest()
         _input.setSuggestion(candidate);
     }
 
+    // -- suggested follow-ups -----------------------------------------------
+    // A second tiny stateless request on its own client and routing key. It
+    // asks one settled reply for deliberately different next messages and is
+    // fully independent of the composer suggestion, so either feature can be
+    // switched off without affecting the other.
+
+    private static immutable size_t followUpMaxItems = 4;
+    private static immutable size_t followUpMaxChars = 120;
+
+    /// Queue one follow-up list for this conversation's newest settled reply.
+    /// The anchor prevents asking twice for the same reply (retries, reloads).
+    /// The reply can settle while another conversation is open, so the job stays
+    /// with its own conversation and starts when that one is shown.
+    private void queueFollowUps(int sessionIndex)
+    {
+        if (!_settings.experimentalFollowUpSuggestions) return;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        auto runtime = runtimeForSession(sessionIndex);
+        if (runtime is null) return;
+        const anchor = lastSettledAssistantId(_sessions[sessionIndex]);
+        if (anchor.length == 0 || runtime.followUpAnchor == anchor) return;
+        runtime.followUpAnchor = anchor;
+        // Options for the previous reply are stale the moment a new turn
+        // settles; they reappear when their own answer arrives.
+        runtime.followUpTexts = null;
+        runtime.followUpPending = true;
+    }
+
+    /// Start the automatic list for a settled conversation that is being shown
+    /// and whose newest reply already settled - possibly in an earlier run, so
+    /// no job was queued then. The anchor still limits this to once per reply.
+    private void queueFollowUpsOnOpen(int sessionIndex)
+    {
+        if (!_settings.experimentalFollowUpSuggestions) return;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        if (_current < 0 || _sessions[_current].id != _sessions[sessionIndex].id)
+            return;
+        auto runtime = runtimeForSession(sessionIndex);
+        if (runtime is null) return;
+        if (runtime.followUpTexts.length || runtime.followUpPending ||
+            runtime.followUpClient !is null) return;
+        if (runtime.turnInFlight || runtime.turnTiming ||
+            runtime.phase == RequestPhase.waiting || runtime.effectPending() ||
+            runtime.client.busy()) return;
+        auto session = &_sessions[sessionIndex];
+        const path = activeMessagePath(*session);
+        if (path.length == 0) return;
+        const ref last = session.messages[path[$ - 1]];
+        // Only a finished assistant answer leaves the user free to speak next;
+        // an unanswered prompt or a cancelled reply must not be guessed at.
+        if (last.role != "assistant" || last.internal || last.toolCalls.length)
+            return;
+        if (last.finishReason == "cancelled") return;
+        queueFollowUps(sessionIndex);
+    }
+
+    /// One attempt, only while pending and this conversation's own client is
+    /// idle. Its own routing key means it never waits on another conversation.
+    private void tryFollowUps(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        auto runtime = runtimeForSession(sessionIndex);
+        if (runtime is null || !runtime.followUpPending ||
+            runtime.followUpClient !is null) return;
+        if (!_settings.experimentalFollowUpSuggestions)
+        {
+            runtime.followUpPending = false;
+            return;
+        }
+        // Only the visible conversation needs the chips; a background job waits
+        // for its conversation to be shown again instead of being lost.
+        if (_current < 0 || _sessions[_current].id != _sessions[sessionIndex].id)
+            return;
+        if (runtime.phase == RequestPhase.waiting || runtime.effectPending() ||
+            runtime.client.busy()) return;
+        auto session = &_sessions[sessionIndex];
+        const excerpt = composerSuggestionContext(sessionIndex);
+        if (excerpt.length == 0)
+        {
+            runtime.followUpPending = false;
+            return;
+        }
+        const endpoint = providerForSession(sessionIndex);
+        runtime.followUpClient = new OpenCodeClient(endpoint,
+            credentialForProvider(endpoint));
+        runtime.followUpClient.setEventWake(_window.serviceWake());
+        runtime.followUpClient.setOpenCodeSession(
+            sessionRoutingKey(*session) ~ "-followups");
+        runtime.followUpSessionId = session.id;
+        runtime.followUpOutput = "";
+        ChatRequestMessage instruction;
+        instruction.role = "system";
+        instruction.content = followUpInstruction();
+        ChatRequestMessage request;
+        request.role = "user";
+        request.content = excerpt;
+        const requestId = ++_nextRequestId;
+        _requestTokenKeyIds[requestId] = apiTokenUsageKeyId(activeApiKey(_settings));
+        const started = runtime.followUpClient.startChatMessages(
+            [instruction, request], null, session.model, false, requestId);
+        if (started != ChatStartResult.accepted)
+        {
+            _requestTokenKeyIds.remove(requestId);
+            runtime.followUpClient.closeSession();
+            runtime.followUpClient = null;
+            if (started == ChatStartResult.closed || started == ChatStartResult.failed)
+                runtime.followUpPending = false;
+        }
+    }
+
+    /// Settle a finished follow-up request and offer the list at the end of the
+    /// chat. A reply that produced nothing leaves the anchored reply marked so
+    /// the same request is not repeated on the next tick.
+    private void pollFollowUps(int sessionIndex)
+    {
+        auto runtime = runtimeForSession(sessionIndex);
+        if (runtime is null || runtime.followUpClient is null) return;
+        runtime.followUpClient.drain(runtime.followUpEvents);
+        bool finished, succeeded;
+        foreach (event; runtime.followUpEvents)
+        {
+            if (event.kind == OpenCodeEventKind.delta && !event.reasoning)
+                runtime.followUpOutput ~= event.text;
+            else if (event.kind == OpenCodeEventKind.done)
+            {
+                finished = true;
+                succeeded = !event.cancelled;
+                recordRequestTokenUsage(event.requestId, event.totalTokens,
+                    event.promptTokens, event.completionTokens);
+            }
+            else if (event.kind == OpenCodeEventKind.error)
+            {
+                finished = true;
+                _requestTokenKeyIds.remove(event.requestId);
+            }
+        }
+        runtime.followUpEvents.length = 0;
+        if (!finished) return;
+        runtime.followUpClient.closeSession();
+        runtime.followUpClient = null;
+        runtime.followUpPending = false;
+        auto candidate = succeeded
+            ? cleanFollowUps(runtime.followUpOutput, followUpMaxItems,
+                followUpMaxChars) : null;
+        runtime.followUpOutput = "";
+        const sessionId = runtime.followUpSessionId;
+        runtime.followUpSessionId = "";
+        if (!_settings.experimentalFollowUpSuggestions) candidate = null;
+        bool changed = runtime.followUpTexts.length != candidate.length;
+        if (!changed)
+            foreach (index, text; candidate)
+                if (runtime.followUpTexts[index] != text)
+                {
+                    changed = true;
+                    break;
+                }
+        runtime.followUpTexts = candidate;
+        if (!changed || candidate.length == 0) return;
+        // Store the list with its conversation even when the user has already
+        // switched away, so returning to it still finds the options.
+        if (_current < 0 || _sessions[_current].id != sessionId) return;
+        rebuildMessageColumn();
+    }
+
+    /// Use one offered follow-up: send it immediately when the composer is
+    /// empty, or add it to an existing draft so nothing the user typed is lost.
+    private void chooseFollowUp(string text)
+    {
+        if (_input is null || _execution is null) return;
+        const value = text.strip;
+        if (value.length == 0) return;
+        if (turnIsBusy()) return;
+        if (_input.textUtf8().strip().length == 0)
+        {
+            _input.setText(value);
+            sendMessage();
+            return;
+        }
+        auto draft = _input.textUtf8();
+        if (draft.length > 0 && draft[$ - 1] != '\n') draft ~= "\n";
+        _input.setText(draft ~ value);
+        _input.requestFocus();
+        updateStatus("Follow-up added to the composer.");
+    }
+
+    /// Append the clickable follow-up row when this conversation is idle, the
+    /// newest visible message is a settled answer, and its own list arrived.
+    private void addFollowUpSuggestions(const ref ChatSession session,
+        const(size_t)[] path)
+    {
+        if (!_settings.experimentalFollowUpSuggestions || _current < 0) return;
+        auto runtime = runtimeForSession(_current);
+        if (runtime is null || runtime.followUpTexts.length == 0) return;
+        if (runtime.followUpPending || runtime.followUpClient !is null) return;
+        if (path.length == 0) return;
+        const ref last = session.messages[path[$ - 1]];
+        if (last.role != "assistant" || last.internal || last.toolCalls.length)
+            return;
+        if (last.finishReason == "cancelled") return;
+        if (runtime.followUpAnchor != last.id) return;
+        auto row = new FollowUpSuggestionsRow();
+        row.setItems(runtime.followUpTexts);
+        row.onChoose = delegate(string text)
+        {
+            chooseFollowUp(text);
+        };
+        _messageColumn.add(row);
+    }
+
 
     private static ChatRequestMessage[] buildRequestMessages(
         const ref ChatSession session, string afterMessageId = "",
@@ -29365,6 +29745,35 @@ private void pollButtonSuggestionRequest()
         };
         suggestionRow.add(suggestionCheck);
         optionsBody.add(suggestionRow);
+
+        // Suggested follow-ups: 3-4 clickable, deliberately different next
+        // messages at the end of a settled chat. Experimental but on by default.
+        auto followUpsRow = new HBox(8);
+        followUpsRow.layoutHints().preferredHeight = 32;
+        auto followUpsCheck = new CheckBox("Suggest follow-ups at end of chat");
+        followUpsCheck.setId("oc-followups");
+        followUpsCheck.setChecked(_settings.experimentalFollowUpSuggestions, false);
+        followUpsCheck.onChanged = delegate(bool value)
+        {
+            _settings.experimentalFollowUpSuggestions = value;
+            saveSettingsNow();
+            // Turning the feature off drops stored lists and lets a later
+            // re-enable ask for the current reply again.
+            if (!value)
+                foreach (runtime; _conversationRuntimes)
+                {
+                    runtime.followUpTexts = null;
+                    runtime.followUpPending = false;
+                    runtime.followUpAnchor = "";
+                }
+            if (_current >= 0)
+            {
+                if (value) queueFollowUpsOnOpen(_current);
+                rebuildMessageColumn();
+            }
+        };
+        followUpsRow.add(followUpsCheck);
+        optionsBody.add(followUpsRow);
 
         // Detached plan: the durable plan as a floating card pinned to the
         // transcript's top-right corner. On by default; turning it off returns
@@ -33348,6 +33757,7 @@ private void pollButtonSuggestionRequest()
                         recoverInvalidInputPause();
                         // The guess waits for the transcript it reads.
                         queueComposerSuggestionOnOpen(cast(int) i);
+                        queueFollowUpsOnOpen(cast(int) i);
                     }
                     break;
                 }
@@ -34261,7 +34671,8 @@ private void pollButtonSuggestionRequest()
                 if (runtime.eventScratch.length || runtime.client.hasPendingEvents() ||
                     (runtime.compactionClient !is null && runtime.compactionClient.hasPendingEvents()) ||
                     (runtime.titleClient !is null && runtime.titleClient.hasPendingEvents()) ||
-                    (runtime.suggestionClient !is null && runtime.suggestionClient.hasPendingEvents()))
+                    (runtime.suggestionClient !is null && runtime.suggestionClient.hasPendingEvents()) ||
+                    (runtime.followUpClient !is null && runtime.followUpClient.hasPendingEvents()))
                 {
                     auto wake = _window.serviceWake();
                     if (wake !is null) wake();
@@ -34302,6 +34713,7 @@ private void pollButtonSuggestionRequest()
                 if (!runtime.busy() && !runtime.titlePending &&
                     runtime.titleClient is null &&
                     !runtime.suggestionPending && runtime.suggestionClient is null &&
+                    !runtime.followUpPending && runtime.followUpClient is null &&
                     !runtime.client.hasPendingEvents() &&
                     runtime.eventScratch.length == 0 &&
                     runtime.autoContinuePendingSession < 0 &&
@@ -34316,6 +34728,8 @@ private void pollButtonSuggestionRequest()
         retryQuickTitle(cast(int) runtimeIndex);
         pollComposerSuggestion(cast(int) runtimeIndex);
         tryComposerSuggestion(cast(int) runtimeIndex);
+        pollFollowUps(cast(int) runtimeIndex);
+        tryFollowUps(cast(int) runtimeIndex);
         if (!_eventScratch.length) _client.drain(_eventScratch, 64, 256 * 1024);
         _batchingToolResults = true;
         size_t eventIndex;
@@ -36533,6 +36947,62 @@ private void pollButtonSuggestionRequest()
         if (_input !is null) _input.setSuggestion(value);
     }
 
+    /// Test-only: the follow-up list currently stored for this conversation.
+    public string[] followUpsForTesting()
+    {
+        if (_current < 0) return null;
+        auto runtime = runtimeForSession(_current);
+        return runtime is null ? null : runtime.followUpTexts.dup;
+    }
+
+    /// Test-only: whether a follow-up list is queued or in flight.
+    public bool followUpsPendingForTesting()
+    {
+        if (_current < 0) return false;
+        auto runtime = runtimeForSession(_current);
+        return runtime !is null &&
+            (runtime.followUpPending || runtime.followUpClient !is null);
+    }
+
+    /// Test-only: offer follow-ups without a model request.
+    public void offerFollowUpsForTesting(const(string)[] values)
+    {
+        if (_current < 0) return;
+        auto runtime = runtimeForSession(_current);
+        if (runtime is null) return;
+        runtime.followUpTexts = values.dup;
+        runtime.followUpAnchor = lastSettledAssistantId(_sessions[_current]);
+        rebuildMessageColumn();
+    }
+
+    /// Test-only: global bounds of the rendered follow-up chips.
+    public Rect[] followUpChipBoundsForTesting()
+    {
+        foreach (child; _messageColumn.children())
+        {
+            auto row = cast(FollowUpSuggestionsRow) child;
+            if (row is null) continue;
+            const origin = row.localToGlobal(Point(0, 0));
+            Rect[] result;
+            foreach (rect; row.chipBoundsForTesting())
+                result ~= Rect(origin.x + rect.x, origin.y + rect.y,
+                    rect.width, rect.height);
+            return result;
+        }
+        return null;
+    }
+
+    /// Test-only: press one rendered follow-up chip.
+    public bool clickFollowUpForTesting(int index)
+    {
+        foreach (child; _messageColumn.children())
+        {
+            auto row = cast(FollowUpSuggestionsRow) child;
+            if (row !is null) return row.clickForTesting(index);
+        }
+        return false;
+    }
+
     /// Test-only: focus the composer so key events reach it.
     public void focusComposerForTesting()
     {
@@ -38623,6 +39093,13 @@ private void pollButtonSuggestionRequest()
         _settings.compactViewedImages = value;
         saveSettingsNow();
         if (_current >= 0) rebuildMessageColumn();
+    }
+
+    /// Test-only: open Settings and return the suggested follow-ups checkbox.
+    public CheckBox followUpsCheckboxForTesting()
+    {
+        showSettingsDialog();
+        return cast(CheckBox) findWidgetById(this, "oc-followups");
     }
 
     public CheckBox compactViewedImagesCheckboxForTesting()

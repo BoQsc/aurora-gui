@@ -376,6 +376,7 @@ private void writeStartupState(string stateDir)
     // from a synthetic turn and make the suite time-dependent.
     JSONValue settingsRoot;
     settingsRoot["composerSuggestion"] = false;
+    settingsRoot["experimentalFollowUpSuggestions"] = false;
     settingsRoot["quickTitle"] = false;
     write(buildPath(stateDir, "settings.json"), settingsRoot.toString());
 }

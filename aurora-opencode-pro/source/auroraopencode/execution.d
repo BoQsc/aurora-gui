@@ -88,6 +88,18 @@ public class ThreadEngine
     // Kept with the conversation so switching chats never shows another chat's
     // guess in the one shared input widget.
     string suggestionText;
+    // Suggested follow-ups: one tiny stateless request for 3-4 different next
+    // messages, shown as clickable chips at the end of a settled chat.
+    OpenCodeClient followUpClient;
+    OpenCodeEvent[] followUpEvents;
+    string followUpOutput;
+    string followUpSessionId;
+    bool followUpPending;
+    // The settled reply these follow-ups belong to, so a reload never re-asks.
+    string followUpAnchor;
+    // The list offered for this conversation. Kept with the conversation so
+    // switching chats never shows another chat's follow-ups.
+    string[] followUpTexts;
     ToolCancellation cancellation;
     private ToolCancellation _effectCancellation;
     private ulong _effectRequestId;
@@ -331,6 +343,7 @@ public class ThreadEngine
         if (compactionClient !is null) compactionClient.closeSession();
         if (titleClient !is null) titleClient.closeSession();
         if (suggestionClient !is null) suggestionClient.closeSession();
+        if (followUpClient !is null) followUpClient.closeSession();
     }
 
     bool busy()
