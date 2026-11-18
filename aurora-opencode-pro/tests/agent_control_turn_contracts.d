@@ -20,6 +20,7 @@ import aurora;
 import auroraopencode.core;
 import auroraopencode.appui;
 import auroraopencode.events : OpenCodeEvent;
+import auroraopencode.executioncontrol : executionState;
 import auroraopencode.toolsettlement : settleToolResult, ToolResultPolicy;
 import auroraopencode.tools : runFilesystemHelperMode;
 import core.thread : Thread;
@@ -108,6 +109,35 @@ int main(string[] arguments)
     assert(tested.message.content.indexOf("nextProof") < 0,
         "A complete receipt still demanded another proof");
     writeln("PASS receipts state what a check establishes and name the missing proof");
+
+    // A failure recorded through a checked `run` ("python tests") must be
+    // clearable by a later passing `verify` of the same command
+    // ("verify:tests"). Comparing the raw labels left permanent failures that
+    // no passing rerun could resolve.
+    ChatSession ledger;
+    ChatMessage ask; ask.id = "ask"; ask.role = "user";
+    ask.content = "Fix the loader and prove it.";
+    ledger.messages ~= ask; ledger.activeLeafId = ask.id;
+    ledger.contract.intent = "implementation";
+    ledger.contract.currentIntent = "implementation";
+    ledger.verificationStatus = "required";
+    ledger.verificationScope = "ledger-scope";
+    ChatMessage bad; bad.id = "bad"; bad.parentId = ask.id; bad.role = "tool";
+    bad.toolName = "run"; bad.toolCallId = "bad-call"; bad.failed = true;
+    bad.verificationCheck = "python tests"; bad.verificationScope = "ledger-scope";
+    bad.toolArgs = `{"program":"python","args":["tests/run_architecture_checks.py","fixture"],"timeout":1000,"workdir":"w"}`;
+    bad.content = "AssertionError: the loader fixture failed";
+    ledger.messages ~= bad; ledger.activeLeafId = bad.id;
+    assert(executionState(ledger).remaining.indexOf("Behavioral check") >= 0,
+        "A failed behavioral check was not recorded");
+    ChatMessage good; good.id = "good"; good.parentId = bad.id; good.role = "tool";
+    good.toolName = "verify"; good.toolCallId = "good-call";
+    good.verificationCheck = "verify:tests"; good.verificationScope = "ledger-scope";
+    good.content = `{"passed":true,"steps":[{"kind":"tests","command":{"program":"python","args":["tests/run_architecture_checks.py","fixture"],"timeout":1000,"workdir":"w"}}]}`;
+    ledger.messages ~= good; ledger.activeLeafId = good.id;
+    assert(executionState(ledger).remaining.indexOf("Behavioral check") < 0,
+        "A passing verify could not clear the same checked-run failure");
+    writeln("PASS a later passing check clears the same behavioral failure across surfaces");
 
     // Derived status churn must not append a new user turn; a durable plan change
     // must still re-anchor the state the model reads.

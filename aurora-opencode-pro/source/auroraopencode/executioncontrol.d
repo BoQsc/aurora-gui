@@ -9,7 +9,7 @@ import auroraopencode.tools : diagnosticRefusalPrefix;
 import std.algorithm : canFind, remove, sort;
 import std.conv : to;
 import std.json : JSONValue, JSONType, parseJSON;
-import std.string : startsWith, indexOf, strip;
+import std.string : startsWith, indexOf, strip, toLower;
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 
@@ -127,6 +127,21 @@ private struct FailedCheck
 {
     string call, category;
     string[] commands;
+}
+
+/// One behavioral obligation, whatever surface reported it. A checked `run`
+/// labels a test command "python tests" while the `verify` tool labels the same
+/// work "verify:tests"; comparing the raw labels meant a failure recorded by one
+/// surface could never be cleared by a passing check from the other, so the task
+/// kept demanding a rerun that had already happened.
+private string checkCategory(string check)
+{
+    const lower = check.toLower;
+    if (lower.canFind("interaction")) return "interaction";
+    if (lower.canFind("render")) return "render";
+    if (lower.canFind("test")) return "tests";
+    if (lower.canFind("compile") || lower.canFind("build") || lower == "cargo check") return "compile";
+    return lower;
 }
 
 /// The commands a check actually ran, normalized across the `run` and `verify`
@@ -311,7 +326,7 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
                 else
                     foreach_reverse (i, failed; failedChecks)
                     {
-                        if (failed.category != message.verificationCheck) continue;
+                        if (checkCategory(failed.category) != checkCategory(message.verificationCheck)) continue;
                         bool rerun = true;
                         foreach (required; failed.commands)
                             if (!commands.canFind(required)) { rerun = false; break; }
