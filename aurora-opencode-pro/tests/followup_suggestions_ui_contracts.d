@@ -1,6 +1,6 @@
 module followup_suggestions_ui_contracts;
 
-// Suggested follow-ups: 3-4 clickable next messages at the end of a settled
+// Suggested follow-ups: 2 clickable next messages at the end of a settled
 // chat, on by default behind an experimental Settings switch. No provider
 // request is completed here: the queued job is dropped with its conversation.
 
@@ -59,7 +59,7 @@ int main()
         "suggested follow-ups are not on by default");
     root.dismissPopupForTesting();
 
-    // A settled conversation paints three chips at the end of the transcript.
+    // A settled conversation paints two chips at the end of the transcript.
     root.newChatForTesting();
     root.tickTree(0.02);
     root.addConversationForTesting(["user", "assistant"],
@@ -67,24 +67,23 @@ int main()
     root.setInputForTesting("");
     root.offerFollowUpsForTesting([
         "Run the tests and fix the failures",
-        "Add a regression test for the stop button",
-        "Explain the stop path's trade-off"]);
+        "Add a regression test for the stop button"]);
     root.tickTree(0.02);
     root.projectTranscriptForTesting();
     assert(driver.paint(), "the follow-up chips could not paint");
     const chips = root.followUpChipBoundsForTesting();
-    assert(chips.length == 3,
-        "expected three clickable follow-ups, got " ~ to!string(chips.length));
+    assert(chips.length == 2,
+        "expected two clickable follow-ups, got " ~ to!string(chips.length));
     foreach (chip; chips)
         assert(chip.width > 0 && chip.height > 0,
             "a follow-up chip has no clickable area");
-    assert(chips[0].y < chips[1].y && chips[1].y < chips[2].y,
+    assert(chips[0].y < chips[1].y,
         "follow-up chips are not stacked in display order");
     const rows = root.messageColumnDumpForTesting();
     assert(rows.length > 0 &&
         rows[$ - 1].indexOf("FollowUpSuggestionsRow") >= 0,
         "the follow-up row is not at the end of the chat");
-    assert(root.followUpsForTesting().length == 3,
+    assert(root.followUpsForTesting().length == 2,
         "the conversation lost its follow-up list");
 
     // Clicking with a draft keeps the draft and adds the chosen message.

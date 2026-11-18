@@ -26644,7 +26644,7 @@ private void pollButtonSuggestionRequest()
     // fully independent of the composer suggestion, so either feature can be
     // switched off without affecting the other.
 
-    private static immutable size_t followUpMaxItems = 4;
+    private static immutable size_t followUpMaxItems = 2;
     private static immutable size_t followUpMaxChars = 120;
 
     /// Queue one follow-up list for this conversation's newest settled reply.
@@ -29746,7 +29746,7 @@ private void pollButtonSuggestionRequest()
         suggestionRow.add(suggestionCheck);
         optionsBody.add(suggestionRow);
 
-        // Suggested follow-ups: 3-4 clickable, deliberately different next
+        // Suggested follow-ups: 2 clickable, deliberately different next
         // messages at the end of a settled chat. Experimental but on by default.
         auto followUpsRow = new HBox(8);
         followUpsRow.layoutHints().preferredHeight = 32;

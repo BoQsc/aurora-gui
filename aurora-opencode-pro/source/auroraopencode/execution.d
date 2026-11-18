@@ -88,7 +88,7 @@ public class ThreadEngine
     // Kept with the conversation so switching chats never shows another chat's
     // guess in the one shared input widget.
     string suggestionText;
-    // Suggested follow-ups: one tiny stateless request for 3-4 different next
+    // Suggested follow-ups: one tiny stateless request for 2 different next
     // messages, shown as clickable chips at the end of a settled chat.
     OpenCodeClient followUpClient;
     OpenCodeEvent[] followUpEvents;

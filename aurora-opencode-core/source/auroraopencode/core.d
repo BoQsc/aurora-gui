@@ -1869,7 +1869,7 @@ public struct Settings
     // message and show it dimmed inside an empty composer; Tab inserts it. On
     // by default; the Settings dialog owns the switch.
     bool composerSuggestion = true;
-    // After a reply settles, show 3-4 clickable follow-up messages at the end
+    // After a reply settles, show 2 clickable follow-up messages at the end
     // of the chat as deliberately different directions. On by default; the
     // Settings dialog owns the switch.
     bool experimentalFollowUpSuggestions = true;
