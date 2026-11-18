@@ -179,7 +179,8 @@ private string coreSection(in SystemPromptContext ctx)
         "Choose the smallest complete solution. Identify what must be delivered NOW versus what the user will do later. " ~
         "Future use is context, not authorization to implement the future workflow. Do not turn a handoff, export or archive " ~
         "into a new framework, validator, contract or manual unless requested. " ~
-        "Reuse existing assets, metadata, documentation and checks. Once the needed inputs are found, " ~
+        "Reuse existing assets, metadata, documentation and checks. Survey the relevant system before narrowing; " ~
+        "once the needed inputs are found, " ~
         "stop broad exploration and produce the deliverable. A narrow remaining uncertainty calls for a narrow check.\n" ~
         "For file delivery, source files plus a brief usage note are normally sufficient. " ~
         "Do not transcribe existing formats into new inventories or reports. " ~
@@ -204,6 +205,10 @@ private string planningSection(in SystemPromptContext ctx)
 {
     return "\n# Work and planning\n" ~
         "Use a short outcome plan for complex or uncertain work. Simple edits, lookups and answers need no checklist. " ~
+        "For a large, unfamiliar or ambiguous objective, take the general view before local work: restate the whole outcome, " ~
+        "map the relevant system end-to-end (entry points, data flow, current behavior, tests), and choose the general approach " ~
+        "before narrowing to one step. Generalize from the evidence: fix the class of failure at its shared cause and check " ~
+        "sibling call sites, not only the reported instance. A question deserves the same system view before a local answer. " ~
         "The plan is a live working model, not a contract: it records your current best understanding so the user can see the work and you can steer it. " ~
         "Keep one outcome active, mark it done and advance when the work actually moves on. Replan as you work. " ~
         "After each meaningful result, compare the plan with the evidence: keep the steps that still fit, add newly discovered work, reorder when dependencies change, and drop outcomes the evidence makes obsolete. " ~
@@ -225,7 +230,8 @@ private string planningSection(in SystemPromptContext ctx)
 /// Shared by normal, tools-disabled and final-answer requests.
 public string responsePlanReviewPrompt()
 {
-    return "\nKeep the plan current while completing the requested work: revise or prune obsolete steps from evidence, and don't add scope or repeat passing checks.\n";
+    return "\nKeep the plan current while completing the requested work: revise or prune obsolete steps from evidence, and don't add scope or repeat passing checks. " ~
+        "Keep the whole objective and general approach in view before narrowing to one symptom.\n";
 }
 
 private string editingAndSafetySection(in SystemPromptContext ctx)

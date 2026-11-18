@@ -259,7 +259,9 @@ public string goalContinuationInstruction(const ref ChatSession session)
     const answerGoal = goalIsAnswerOnly(session.goal);
     return "Persistent goal continuation: " ~ session.goal ~ "\n" ~
         "Continue from the recorded work and current evidence. Do work rather than " ~
-        "restating the goal. Reconcile update_plan with the remaining work before " ~
+        "restating the goal. If the plan only covers a local symptom, widen it to the " ~
+        "general cause and the whole objective before the next action; generalize the " ~
+        "fix and its checks rather than patching one instance. Reconcile update_plan with the remaining work before " ~
         "continuing, explaining any changed path. If the goal is now demonstrably complete, call " ~
         "`goal_complete` with a concise summary" ~
         (answerGoal

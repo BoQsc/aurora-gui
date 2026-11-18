@@ -717,12 +717,16 @@ private OpenCodeToolDef updatePlanToolDefinition()
         return OpenCodeToolDef("update_plan",
             "Maintain a short live outcome plan for substantial work. Update finished and next active outcomes together; " ~
         "revise or prune when evidence changes. Additions and reordering are normal; explain a dropped unfinished outcome or changed acceptance. " ~
+        "For a large objective, record the general approach and whole scope before local steps, and plan the class of fix " ~
+        "rather than one-off patches. " ~
         "Default planning needs no evidence-ID bookkeeping; checks are tracked separately. " ~
         "Send the current list. Preserve the user's acceptance; keep optional future work outside it. Small requests need no plan.",
         `{"type":"object","properties":{"explanation":{"type":"string"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["step","status"],"additionalProperties":false}}},"required":["plan"],"additionalProperties":false}`);
     return OpenCodeToolDef(
         "update_plan",
         "Strict tracked planning: keep stable outcome IDs, observable done criteria and compatible successful evidence. " ~
+        "For a large objective, record the general approach and whole scope before local steps, and plan the class of fix " ~
+        "rather than one-off patches. " ~
         "The plan is a live snapshot: add discovered work and reorder freely; explain a dropped unfinished outcome, changed acceptance, or reopened work. " ~
         "Prefer plan_mode patch for changed rows; omitted fields persist. work_items and work_context are optional " ~
         "for a real detour or useful detail, not mandatory bookkeeping. Preserve the user's acceptance and current scope.",
