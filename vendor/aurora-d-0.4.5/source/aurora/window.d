@@ -448,6 +448,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         return _native !is null && _native.setVisible(visible);
     }
 
+    /** True once `run()` has shown the native window. */
+    bool windowShown() const @safe pure nothrow @nogc
+    {
+        return _windowShown;
+    }
+
     int run()
     {
         if (_root !is null)

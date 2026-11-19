@@ -1950,6 +1950,59 @@ int main(string[] args)
     assert(root.selectedMessageTextForTesting(selIndex) == "select this text",
         "Dragging across the message did not select its text");
 
+    // The selected transcript text can be dragged out of the message and
+    // released over a text field. Headless hosts cannot run an OS drag session,
+    // so exercise the two halves separately: pressing inside the completed
+    // selection past the threshold publishes its text, and the drop event then
+    // travels through the real window hit-test into the composer.
+    {
+        auto dragInput = requireWidget!TextArea(root, "oc-input");
+        dragInput.setText("");
+        root.tickTree(0.02);
+
+        driver.moveTo(selOrigin);
+        driver.mouseDown();
+        driver.moveTo(Point(selOrigin.x + 12, selOrigin.y + 2));
+        root.tickTree(0.02);
+        assert(root.draggedMessageTextForTesting(selIndex) == "select this text",
+            "Pressing inside the selection did not publish a text drag: '" ~
+            root.draggedMessageTextForTesting(selIndex) ~ "'");
+        driver.mouseUp();
+        root.tickTree(0.02);
+
+        DragPayload payload;
+        payload.text = toUTF32("select this text");
+        const dropPoint = globalCenter(dragInput);
+        assert(driver.dragEnter(dropPoint, payload,
+            dragActions(DragAction.copy)) == DragAction.copy,
+            "The composer did not accept the text drag");
+        assert(driver.drop(dropPoint, payload,
+            dragActions(DragAction.copy)) == DragAction.copy,
+            "The composer did not consume the text drop");
+        root.tickTree(0.02);
+        assert(dragInput.textUtf8() == "select this text",
+            "Dropped text did not land in the composer: '" ~
+            dragInput.textUtf8() ~ "'");
+
+        // The same target behaviour lives on the shared TextEditor, so a plain
+        // TextField accepts a dropped payload too.
+        auto filterField = requireWidget!TextField(root, "oc-filter");
+        filterField.setText("");
+        root.tickTree(0.02);
+        const filterPoint = globalCenter(filterField);
+        assert(driver.drop(filterPoint, payload,
+            dragActions(DragAction.copy)) == DragAction.copy,
+            "A TextField did not consume the text drop");
+        root.tickTree(0.02);
+        assert(filterField.textUtf8() == "select this text",
+            "Dropped text did not land in the filter field: '" ~
+            filterField.textUtf8() ~ "'");
+        filterField.setText("");
+        dragInput.setText("");
+        root.tickTree(0.02);
+        writeln("Selected transcript text drags into the composer and text fields");
+    }
+
     // Select all from the right-click menu, then Copy the selection.
     root.openMessageContextMenuForTesting(selIndex);
     root.tickTree(0.02);

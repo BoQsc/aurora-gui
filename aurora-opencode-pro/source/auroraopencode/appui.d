@@ -1117,6 +1117,16 @@ private final class MessageBubble : Widget
     private int _selFocusSeg = -1;
     private size_t _selFocusChar;
     private bool _textHover;
+    // Pressing inside an existing selection arms a text drag: crossing the
+    // threshold hands the selected text to the operating system, so it can be
+    // released over the composer or any other text field. A press that never
+    // moves collapses the selection where it landed.
+    private bool _dragPressArmed;
+    private Point _dragPressPoint;
+    private int _dragPressSeg = -1;
+    private size_t _dragPressChar;
+    private static immutable int textDragThreshold = 5;
+    private string _lastDragText;
     // Payload of the last Ctrl+C on this bubble, exposed for the smoke test
     // (the clipboard itself is global state).
     private string _lastClipboardText;
@@ -3753,6 +3763,20 @@ private final class MessageBubble : Widget
              _selAnchorChar != _selFocusChar);
     }
 
+    /// True when a (segment, character) caret lies inside the current range,
+    /// so a press there can drag the selection instead of starting a new one.
+    private bool selectionContains(int segIndex, size_t charIndex)
+    {
+        if (!hasSelection()) return false;
+        int firstSeg, lastSeg;
+        size_t firstChar, lastChar;
+        orderedSelection(firstSeg, firstChar, lastSeg, lastChar);
+        if (segIndex < firstSeg || segIndex > lastSeg) return false;
+        if (segIndex == firstSeg && charIndex < firstChar) return false;
+        if (segIndex == lastSeg && charIndex > lastChar) return false;
+        return true;
+    }
+
     /// The selected message text ("" when nothing is selected).
     public string selectedText()
     {
@@ -4265,6 +4289,33 @@ private final class MessageBubble : Widget
             _pointerInside = true;
             invalidate();
         }
+        if (_dragPressArmed)
+        {
+            const dx = event.position.x - _dragPressPoint.x;
+            const dy = event.position.y - _dragPressPoint.y;
+            if (dx * dx + dy * dy >= textDragThreshold * textDragThreshold)
+            {
+                _dragPressArmed = false;
+                releaseMouse();
+                const text = selectedText();
+                if (text.length > 0)
+                {
+                    _lastDragText = text;
+                    // A hidden window (offscreen screenshot modes and the
+                    // synthetic smoke driver) has no native drag surface to
+                    // negotiate on, so only record the payload there.
+                    auto window = cast(GuiWindow) host();
+                    if (window !is null && window.windowShown())
+                    {
+                        DragPayload payload;
+                        payload.text = toUTF32(text);
+                        beginDrag(payload, dragActions(DragAction.copy));
+                    }
+                }
+                invalidate();
+            }
+            return true;
+        }
         if (_selecting)
         {
             extendSelection(event.position);
@@ -4497,6 +4548,19 @@ private final class MessageBubble : Widget
         size_t charIndex;
         if (selectSegmentAt(event.position, segIndex, charIndex))
         {
+            if (event.clickCount == 1 && !event.shift() && !event.control() &&
+                !event.meta() && hasSelection() &&
+                selectionContains(segIndex, charIndex))
+            {
+                _dragPressArmed = true;
+                _dragPressPoint = event.position;
+                _dragPressSeg = segIndex;
+                _dragPressChar = charIndex;
+                setFocusable(true);
+                requestFocus();
+                captureMouse();
+                return true;
+            }
             _selecting = true;
             _selWordMode = false;
             if (event.clickCount >= 3)
@@ -4539,6 +4603,20 @@ private final class MessageBubble : Widget
 
     override bool onMouseUp(ref Event event)
     {
+        if (_dragPressArmed)
+        {
+            _dragPressArmed = false;
+            releaseMouse();
+            // A click inside the selection collapses it at the press point,
+            // while a drag keeps the highlighted range for the drop.
+            _selAnchorSeg = _dragPressSeg;
+            _selAnchorChar = _dragPressChar;
+            _selFocusSeg = _dragPressSeg;
+            _selFocusChar = _dragPressChar;
+            _dragPressSeg = -1;
+            invalidate();
+            return true;
+        }
         if (_selecting)
         {
             _selecting = false;
@@ -4574,6 +4652,12 @@ private final class MessageBubble : Widget
     public string lastClipboardTextForTesting() const
     {
         return _lastClipboardText;
+    }
+
+    /// Test-only: the selected text this bubble last handed to a native drag.
+    public string lastDraggedTextForTesting() const
+    {
+        return _lastDragText;
     }
 
     protected override void onMouseLeave()
@@ -37509,6 +37593,13 @@ private void pollButtonSuggestionRequest()
     {
         auto bubble = messageBubbleForTesting(index);
         return bubble is null ? "" : bubble.lastClipboardTextForTesting();
+    }
+
+    /// Test-only: the selected text the bubble at `index` last dragged.
+    public string draggedMessageTextForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble is null ? "" : bubble.lastDraggedTextForTesting();
     }
 
     /// Test-only: route clipboard copies and pastes through an in-process

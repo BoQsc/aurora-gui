@@ -2,6 +2,7 @@ module aurora.widgets.texteditor;
 
 import aurora.canvas : Canvas;
 import aurora.color : Color;
+import aurora.dragdrop : DragAction;
 import aurora.event : Event, EventType, Key, KeyModifier, MouseButton;
 import aurora.font : FontFace, FontRole, fontPixelSize;
 import aurora.icons : IconKind;
@@ -618,6 +619,27 @@ class TextEditor : Widget
     {
         if (_readOnly) return;
         insertText(value);
+    }
+
+    /**
+     * Accept dropped text at a widget-local point, as if it had been pasted
+     * there. The caret moves to the drop point and the text replaces any
+     * selection, so a drop lands where the pointer released it. Returns false
+     * for a read-only field or an empty payload.
+     */
+    bool insertDroppedTextAt(Point point, const(dchar)[] value)
+    {
+        if (_readOnly || value.length == 0) return false;
+        requestFocus();
+        const hit = caretAtPoint(point);
+        _cursor = hit.logicalIndex;
+        _anchor = _cursor;
+        _caretAffinity = hit.affinity;
+        _preferredX = -1;
+        ensureCursorVisible();
+        resetCaret();
+        pasteText(value);
+        return true;
     }
 
     void undo()
@@ -1264,6 +1286,42 @@ class TextEditor : Widget
         resetCaret();
         notifyCursor();
         return true;
+    }
+
+    private bool acceptsTextDrop(ref Event event)
+    {
+        return !_readOnly && event.dragPayload.text.length != 0;
+    }
+
+    override bool onDragEnter(ref Event event)
+    {
+        if (acceptsTextDrop(event))
+        {
+            event.dragAction = DragAction.copy;
+            return true;
+        }
+        return super.onDragEnter(event);
+    }
+
+    override bool onDragMove(ref Event event)
+    {
+        if (acceptsTextDrop(event))
+        {
+            event.dragAction = DragAction.copy;
+            return true;
+        }
+        return super.onDragMove(event);
+    }
+
+    override bool onDrop(ref Event event)
+    {
+        if (acceptsTextDrop(event) &&
+            insertDroppedTextAt(event.position, event.dragPayload.text))
+        {
+            event.dragAction = DragAction.copy;
+            return true;
+        }
+        return super.onDrop(event);
     }
 
     override bool onMouseMove(ref Event event)
