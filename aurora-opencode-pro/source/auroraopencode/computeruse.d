@@ -1876,6 +1876,11 @@ version (Windows)
     /// frame is delivered; input coordinates are image pixels plus this origin.
     private __gshared int computerUseFrameOriginX;
     private __gshared int computerUseFrameOriginY;
+    /// Pixel size of that frame. A point outside it is a misread: clamping it
+    /// to the screen edge would move the pointer somewhere the model never saw
+    /// (the screen origin, i.e. whatever window happens to be there).
+    private __gshared int computerUseFrameWidth;
+    private __gshared int computerUseFrameHeight;
 
     /// Longest edge of a capture. Keeping the frame near 1280px matches the
     /// ~1300px budget vision models resize to anyway, and keeps the PNG under
@@ -1921,6 +1926,36 @@ version (Windows)
         if (realY < 0) realY = 0;
         else if (realY > height - 1) realY = height - 1;
         return [cast(int) realX, cast(int) realY];
+    }
+
+    /// Whether a point names a pixel of the current frame. Before the first
+    /// frame the session works directly in desktop pixels, so an unknown frame
+    /// size falls back to the screen.
+    private bool pointInFrame(int x, int y)
+    {
+        int width = computerUseFrameWidth;
+        int height = computerUseFrameHeight;
+        if (width <= 0 || height <= 0)
+        {
+            width = GetSystemMetrics(SM_CXSCREEN);
+            height = GetSystemMetrics(SM_CYSCREEN);
+        }
+        return x >= 0 && y >= 0 && x < width && y < height;
+    }
+
+    private string frameBoundsRefusal(string action, int x, int y)
+    {
+        int width = computerUseFrameWidth;
+        int height = computerUseFrameHeight;
+        if (width <= 0 || height <= 0)
+        {
+            width = GetSystemMetrics(SM_CXSCREEN);
+            height = GetSystemMetrics(SM_CYSCREEN);
+        }
+        return "Error: " ~ action ~ " at " ~ to!string(x) ~ "," ~ to!string(y) ~
+            " is outside the " ~ to!string(width) ~ "x" ~ to!string(height) ~
+            " frame you were shown. Nothing was sent. Read the latest frame " ~
+            "and aim inside it.";
     }
 
     /// Capture the screen. With a positive region (screenshot-space x,y,w,h)
@@ -2293,6 +2328,8 @@ version (Windows)
         {
             computerUseFrameOriginX = capture.originX;
             computerUseFrameOriginY = capture.originY;
+            computerUseFrameWidth = capture.width;
+            computerUseFrameHeight = capture.height;
         }
         return screenshotCaptureResult(prefix, capture, rx, ry, rw, rh);
     }
@@ -3266,6 +3303,8 @@ version (Windows)
         string targetWindow, bool screenshot,
         DWORD down = MOUSEEVENTF_LEFTDOWN, DWORD up = MOUSEEVENTF_LEFTUP)
     {
+        if (!pointInFrame(x, y))
+            return failedResult(frameBoundsRefusal("click", x, y));
         if (targetWindow.length > 0)
         {
             // An explicit window overrides "whatever is under the point".
@@ -3367,6 +3406,8 @@ version (Windows)
             // coordinate the next call must pass.
             computerUseFrameOriginX = 0;
             computerUseFrameOriginY = 0;
+            computerUseFrameWidth = before.width;
+            computerUseFrameHeight = before.height;
             refusal.output ~= retry
                 ? "One retry grounded in these crops is permitted; first verify the control, button and coordinates."
                 : "The focused retry did not establish progress. Further " ~ actionLabel ~ " are withheld; choose a different action or report the blocker.";
@@ -3379,6 +3420,9 @@ version (Windows)
     {
         if (button.length && !["left", "right", "middle"].canFind(button))
             return failedResult("Error: drag button must be left, right or middle. Nothing was dragged.");
+        if (!pointInFrame(x, y) || !pointInFrame(x2, y2))
+            return failedResult(frameBoundsRefusal("drag",
+                pointInFrame(x, y) ? x2 : x, pointInFrame(x, y) ? y2 : y));
         string why;
         auto target = targetWindow.length ? resolveInputTarget(targetWindow, why) : noteClickTarget(x, y);
         if (target is null)
@@ -5032,12 +5076,20 @@ version (Windows)
                                     // add the loop frame's origin a second time.
                                     const savedOriginX = computerUseFrameOriginX;
                                     const savedOriginY = computerUseFrameOriginY;
+                                    const savedWidth = computerUseFrameWidth;
+                                    const savedHeight = computerUseFrameHeight;
                                     computerUseFrameOriginX = 0;
                                     computerUseFrameOriginY = 0;
+                                    // Zero means "the desktop" for the bounds
+                                    // check, which is the space these args use.
+                                    computerUseFrameWidth = 0;
+                                    computerUseFrameHeight = 0;
                                     result = experimentalComputerUseExecute(
                                         scaledArgs, workspace);
                                     computerUseFrameOriginX = savedOriginX;
                                     computerUseFrameOriginY = savedOriginY;
+                                    computerUseFrameWidth = savedWidth;
+                                    computerUseFrameHeight = savedHeight;
                                     if (!result.failed && aims)
                                     {
                                         lastActionX = clickedX;

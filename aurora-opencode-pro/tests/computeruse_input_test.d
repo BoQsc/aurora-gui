@@ -23,6 +23,10 @@ int main(string[] args)
         850, 200, 180, 100, null, null, null, null);
     assert(own !is null);
     scope (exit) DestroyWindow(own);
+    // A test process enables the feature it drives instead of depending on the
+    // developer's saved Settings.
+    setComputerUseSetting(true);
+    scope (exit) setComputerUseSetting(false);
     setComputerUseVirtualPointer(true);
     scope (exit) setComputerUseVirtualPointer(false);
     if (args.length > 3)

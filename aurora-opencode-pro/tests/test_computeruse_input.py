@@ -97,6 +97,10 @@ with tempfile.TemporaryDirectory(prefix='aurora-input-test-') as temporary:
         print('PASS: 30 calls; real input, target checks, focused JPEG/origins, batch recovery, one retry, exhausted retry refusal')
     finally:
         (directory / 'stop').touch()
-        fixture.wait(timeout=5)
+        try:
+            fixture.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            fixture.terminate()
+            fixture.wait(timeout=5)
         if previous:
             ctypes.windll.user32.SetForegroundWindow(previous)

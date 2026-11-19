@@ -19,6 +19,18 @@ from PIL import Image
 
 package = Path(__file__).resolve().parents[1]
 repo = package.parent
+
+
+class RECT(ctypes.Structure):
+    _fields_ = [('left', ctypes.c_long), ('top', ctypes.c_long),
+                ('right', ctypes.c_long), ('bottom', ctypes.c_long)]
+
+
+ctypes.windll.user32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+ctypes.windll.user32.FindWindowW.restype = ctypes.c_void_p
+ctypes.windll.user32.GetWindowRect.argtypes = [ctypes.c_void_p,
+    ctypes.POINTER(RECT)]
+
 with tempfile.TemporaryDirectory(prefix='aurora-nested-test-') as temporary:
     directory = Path(temporary)
     driver = directory / 'input.exe'
@@ -38,15 +50,27 @@ with tempfile.TemporaryDirectory(prefix='aurora-nested-test-') as temporary:
         while not (directory / 'state.json').exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         positions = json.loads((directory / 'state.json').read_text(encoding='utf-8'))
+        # The loop frames its bound window, so scripted coordinates are in that
+        # window's pixels: convert the fixture's desktop points and then halve
+        # them for the loop's default half-scale frame.
+        hwnd = ctypes.windll.user32.FindWindowW(None, positions['A']['title'])
+        assert hwnd, 'fixture A window not found'
+        rect = RECT()
+        assert ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        # halfRgb rounds up, so the advertised half frame is ceil(w/2), ceil(h/2).
+        frame_w = (rect.right - rect.left + 1) // 2
+        frame_h = (rect.bottom - rect.top + 1) // 2
         ax, ay = positions['A']['entry']
-        bx, by = positions['B']['entry']
+        entry_x = (ax - rect.left) // 2
+        entry_y = (ay - rect.top) // 2
         responses = [
             {'action': 'key', 'name': 'alt+tab'},
-            {'action': 'click', 'x': bx // 2, 'y': by // 2},
+            # Outside the bound window's frame: a misread must be rejected.
+            {'action': 'click', 'x': 900, 'y': 700},
             {'steps': [{'action': 'screen', 'region': {'x': 30, 'y': 90, 'w': 120, 'h': 60}},
                        {'action': 'wait_for_change', 'timeout_ms': 100, 'interval_ms': 50}]},
             {'input_mode': 'virtual', 'steps': [
-                {'action': 'click', 'x': ax // 2, 'y': ay // 2},
+                {'action': 'click', 'x': entry_x, 'y': entry_y},
                 {'action': 'type', 'text': 'N'}]},
             'Fixture input verified.',
             {'action': 'focus', 'title': positions['B']['title']},
@@ -110,7 +134,7 @@ with tempfile.TemporaryDirectory(prefix='aurora-nested-test-') as temporary:
         assert all(r['images'] == 1 for r in rows), 'Loop exit omitted current evidence'
         assert 'model=deepseek-v4.1-flash, input_mode=native' in rows[0]['output'], rows[0]
         assert 'desktop-switching shortcuts' in rows[0]['output']
-        assert 'coordinates are outside' in rows[0]['output']
+        assert 'coordinates fall outside' in rows[0]['output']
         assert 'Sent native click' in rows[0]['output'], 'Inner mode overrode loop mode'
         assert 'input cannot leave' in rows[1]['output']
         assert 'without verified completion' in rows[2]['output']
@@ -130,7 +154,9 @@ with tempfile.TemporaryDirectory(prefix='aurora-nested-test-') as temporary:
                 if part.get('type') == 'image_url']
         assert len(images(requests[3])) == 2, 'Requested native crop did not reach next request'
         main = Image.open(io.BytesIO(base64.b64decode(images(requests[0])[0].split(',', 1)[1])))
-        assert main.size == (960, 540), 'Default loop frame did not match the advertised half scale'
+        assert main.size == (frame_w, frame_h), \
+            ('Default loop frame is not the bound window at half scale',
+             main.size, (frame_w, frame_h))
         crop = Image.open(io.BytesIO(base64.b64decode(images(requests[3])[-1].split(',', 1)[1])))
         assert crop.size == (240, 120), crop.size
         assert len(images(requests[4])) == 1, 'Crop accumulated in later model requests'
@@ -144,6 +170,10 @@ with tempfile.TemporaryDirectory(prefix='aurora-nested-test-') as temporary:
             server.shutdown()
             server.server_close()
         (directory / 'stop').touch()
-        fixture.wait(timeout=5)
+        try:
+            fixture.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            fixture.terminate()
+            fixture.wait(timeout=5)
         if previous:
             ctypes.windll.user32.SetForegroundWindow(previous)
