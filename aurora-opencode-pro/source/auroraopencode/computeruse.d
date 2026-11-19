@@ -58,6 +58,7 @@ import std.json : JSONType, JSONValue, parseJSON, toJSON;
 import std.file : exists, readText;
 import std.process : environment;
 import std.string : indexOf, lastIndexOf, split, startsWith, strip, toLower;
+import core.stdc.string : memset;
 import std.base64 : Base64;
 import std.utf : toUTF16z;
 import core.thread : Thread;
@@ -342,7 +343,10 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "or file route); prefer reading/editing code and running a probe " ~
             "or test to establish the same fact. " ~
             "Drive the local desktop like a person at the keyboard: `screen` " ~
-            "returns a screenshot, and `click`, `double_click`, `right_click`, " ~
+            "captures the window the input is aimed at (or the one named with " ~
+            "`window`/`title`); the whole desktop is captured only with " ~
+            "`full_screen:true`, so unrelated windows stay out of the frame. " ~
+            "`click`, `double_click`, `right_click`, " ~
             "`mouse_move`, `drag`, `type`, `key`, `key_down`, `key_up`, " ~
             "`scroll` and `wait_for_change` act on it. Coordinates are in the " ~
             "screenshot's own pixel space (x right, y down): pass the x,y you " ~
@@ -370,7 +374,8 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "macro for `seconds` at `interval_ms` with no model turns at all. " ~
             "`type` text may " ~
             "contain a literal newline for Enter " ~
-            "and a tab character. `screen` accepts a `region` {x,y,w,h} for a " ~
+            "and a tab character. `screen` accepts a `region` {x,y,w,h} in " ~
+             "desktop pixels for a " ~
              "zoomed-in crop of one area. Every plain action costs a full model " ~
              "turn, so drive any multi-step desktop task with the `loop` action " ~
              "(`subagent`) rather than issuing one click per call: a single call " ~
@@ -395,7 +400,7 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "not an application response. Set `input_mode` to `native` for games or " ~
             "shell controls that ignore virtual input. Verify progress in the latest " ~
             "screenshot; never treat an attempted action as proof of success. Windows only.",
-            `{"type":"object","properties":{"input_mode":{"type":"string","enum":["native","virtual"],"description":"Input mode for this call and its batch/nested actions. Native sends real OS input and is needed by games/shell controls that ignore posted messages. Virtual queues window messages with a ghost cursor; application response must be verified. Omit to use Settings. The streaming loop (action: \"subagent\") defaults to native; all its nested calls inherit the loop mode."},"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change","wait"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up (e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\"; key_down key_up hold it until the matching key_up) OR the macro name for macro"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"wait: full dwell 1..10000 ms (default 1000); drag: movement duration (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"click/double_click/drag: mouse button (default left); right_click always uses right"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\""},"window":{"type":"string","description":"Input target for type/key/click/drag: window title substring. Overrides the remembered target and refocuses it, so input cannot land in the wrong window; subagent: bind the loop to this window (otherwise inherits the established target)"},"repeat":{"type":"integer","description":"macro: how many times to run the sequence (default 1, max 64)"},"delay_ms":{"type":"integer","description":"macro: pause between repeats, in ms"},"seconds":{"type":"integer","description":"loop/subagent: time budget in seconds (loop default 10; subagent default 60)"},"task":{"type":"string","description":"subagent: the goal for the nested computer-use loop"},"max_steps":{"type":"integer","description":"subagent: how many model steps the nested loop may take (default 4, max 16)"},"frame":{"type":"string","enum":["full","half","quarter","tiny","diff"],"description":"subagent: per-step view - full/half/quarter (downscaled) or diff (only changed tiles at native scale with origins, fastest + most accurate coordinates; default half)"},"model":{"type":"string","description":"subagent: explicit model override; omission uses the selected application model"},"reasoning":{"type":"string","enum":["none","default"],"description":"subagent: hidden thinking - none (fast, default) or default (slower, better spatial judgement)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in screenshot pixels for a zoomed view of one area","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change","wait"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string","enum":["left","right","middle"],"description":"Mouse button for click/double_click/drag (default left); right_click uses right"},"title":{"type":"string"},"window":{"type":"string"},"repeat":{"type":"integer"},"delay_ms":{"type":"integer"},"seconds":{"type":"integer"},"task":{"type":"string"},"max_steps":{"type":"integer"},"frame":{"type":"string"},"model":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
+            `{"type":"object","properties":{"input_mode":{"type":"string","enum":["native","virtual"],"description":"Input mode for this call and its batch/nested actions. Native sends real OS input and is needed by games/shell controls that ignore posted messages. Virtual queues window messages with a ghost cursor; application response must be verified. Omit to use Settings. The streaming loop (action: \"subagent\") defaults to native; all its nested calls inherit the loop mode."},"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change","wait"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up (e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\"; key_down key_up hold it until the matching key_up) OR the macro name for macro"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"wait: full dwell 1..10000 ms (default 1000); drag: movement duration (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"click/double_click/drag: mouse button (default left); right_click always uses right"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\"; screen: same as window"},"window":{"type":"string","description":"Target window title substring: input (type/key/click/drag) is focused there; screen captures that window (default: the committed target, else the foreground window, never the whole desktop unless full_screen is set); subagent binds the loop to it"},"full_screen":{"type":"boolean","description":"screen: capture the whole desktop instead of the target window. Use only when the question genuinely spans the desktop; window captures keep unrelated content out of the frame"},"repeat":{"type":"integer","description":"macro: how many times to run the sequence (default 1, max 64)"},"delay_ms":{"type":"integer","description":"macro: pause between repeats, in ms"},"seconds":{"type":"integer","description":"loop/subagent: time budget in seconds (loop default 10; subagent default 60)"},"task":{"type":"string","description":"subagent: the goal for the nested computer-use loop"},"max_steps":{"type":"integer","description":"subagent: how many model steps the nested loop may take (default 4, max 16)"},"frame":{"type":"string","enum":["full","half","quarter","tiny","diff"],"description":"subagent: per-step view - full/half/quarter (downscaled) or diff (only changed tiles at native scale with origins, fastest + most accurate coordinates; default half)"},"model":{"type":"string","description":"subagent: explicit model override; omission uses the selected application model"},"reasoning":{"type":"string","enum":["none","default"],"description":"subagent: hidden thinking - none (fast, default) or default (slower, better spatial judgement)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in desktop pixels for a zoomed detail view of one area; add the reported frame offset to a point read in the crop","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change","wait"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string","enum":["left","right","middle"],"description":"Mouse button for click/double_click/drag (default left); right_click uses right"},"title":{"type":"string"},"window":{"type":"string"},"repeat":{"type":"integer"},"delay_ms":{"type":"integer"},"seconds":{"type":"integer"},"task":{"type":"string"},"max_steps":{"type":"integer"},"frame":{"type":"string"},"model":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
         ),
     ];
 }
@@ -1214,6 +1219,9 @@ version (Windows)
         void* SelectObject(void* hdc, void* object);
         int BitBlt(void* dest, int x, int y, int width, int height,
             void* source, int srcX, int srcY, DWORD rop);
+        int PrintWindow(void* hwnd, void* hdc, uint flags);
+        void* CreateDIBSection(void* hdc, BITMAPINFO* info, uint usage,
+            void** bits, void* section, uint offset);
         int GetDIBits(void* hdc, void* bitmap, UINT start, UINT lines,
             void* bits, BITMAPINFO* info, UINT usage);
         int DeleteObject(void* object);
@@ -1650,10 +1658,7 @@ version (Windows)
     private void virtualMoveTo(int x, int y)
     {
         if (overlayThread is null) startVirtualOverlay();
-        const step = screenDownscale();
-        const width = GetSystemMetrics(SM_CXSCREEN);
-        const height = GetSystemMetrics(SM_CYSCREEN);
-        const point = clampScreenPoint(x, y, step, width, height);
+        const point = screenPointFor(x, y);
         virtualX = point[0];
         virtualY = point[1];
         if (overlayHwnd !is null)
@@ -1856,7 +1861,21 @@ version (Windows)
         int width;
         int height;
         ubyte[] rgb;
+        /// Desktop pixel the image's (0,0) pixel maps to. A window-scoped
+        /// frame starts at that window's own origin, so input read off the
+        /// image is shifted by this before it reaches the real desktop.
+        int originX;
+        int originY;
+        /// Window the frame shows (null for the whole desktop) and its title,
+        /// so the caption can say what the image actually depicts.
+        void* window;
+        string windowLabel;
     }
+
+    /// Desktop origin of the frame the model is working from. Set whenever a
+    /// frame is delivered; input coordinates are image pixels plus this origin.
+    private __gshared int computerUseFrameOriginX;
+    private __gshared int computerUseFrameOriginY;
 
     /// Longest edge of a capture. Keeping the frame near 1280px matches the
     /// ~1300px budget vision models resize to anyway, and keeps the PNG under
@@ -1884,6 +1903,24 @@ version (Windows)
         const maxEdge = width > height ? width : height;
         if (maxEdge <= captureMaxEdge) return 1;
         return (maxEdge + captureMaxEdge - 1) / captureMaxEdge;
+    }
+
+    /// Translate a point read off the delivered frame into a real desktop
+    /// point: image pixels plus the frame's own origin, clamped to the screen.
+    /// This is the one mapping every pointer, click and window lookup uses, so
+    /// the ghost cursor and the click it stands for can never disagree.
+    private int[2] screenPointFor(int x, int y)
+    {
+        const step = screenDownscale();
+        const width = GetSystemMetrics(SM_CXSCREEN);
+        const height = GetSystemMetrics(SM_CYSCREEN);
+        long realX = cast(long) computerUseFrameOriginX + cast(long) x * step;
+        long realY = cast(long) computerUseFrameOriginY + cast(long) y * step;
+        if (realX < 0) realX = 0;
+        else if (realX > width - 1) realX = width - 1;
+        if (realY < 0) realY = 0;
+        else if (realY > height - 1) realY = height - 1;
+        return [cast(int) realX, cast(int) realY];
     }
 
     /// Capture the screen. With a positive region (screenshot-space x,y,w,h)
@@ -1964,7 +2001,229 @@ version (Windows)
         capture.width = outWidth;
         capture.height = outHeight;
         capture.rgb = rgb;
+        capture.originX = srcX;
+        capture.originY = srcY;
         return capture;
+    }
+
+    /// True when every sampled pixel of a BGRA frame is identical, i.e. the
+    /// window did not actually render itself. PrintWindow leaves such buffers
+    /// uniformly zero on apps that draw through a composition surface.
+    private bool uniformWindowFrame(const(ubyte)* bgra, int width, int height)
+    {
+        const count = cast(size_t) width * height;
+        if (count == 0) return true;
+        const stride = count / 4096 > 0 ? count / 4096 : 1;
+        const blue = bgra[0];
+        const green = bgra[1];
+        const red = bgra[2];
+        for (size_t i = stride; i < count; i += stride)
+            if (bgra[i * 4] != blue || bgra[i * 4 + 1] != green ||
+                bgra[i * 4 + 2] != red)
+                return false;
+        return true;
+    }
+
+    /// Capture a window's own rendered pixels with PrintWindow, so a window
+    /// that another app covers still produces its own picture instead of that
+    /// app's. Returns not-ok when the window does not render itself; the caller
+    /// then falls back to the window rectangle on screen.
+    private Capture captureWindowContent(void* hwnd)
+    {
+        Capture capture;
+        capture.window = hwnd;
+        capture.windowLabel = windowTitleOf(hwnd);
+        int x, y, w, h;
+        if (!windowRectOf(hwnd, x, y, w, h))
+        {
+            capture.error = "Error: the window \"" ~ capture.windowLabel ~
+                "\" has no usable area (it may be minimized). Restore it, or " ~
+                "pass full_screen:true.";
+            return capture;
+        }
+        capture.originX = x;
+        capture.originY = y;
+        auto screenDc = GetDC(null);
+        if (screenDc is null)
+        {
+            capture.error = "Error: cannot access the desktop.";
+            return capture;
+        }
+        scope (exit) ReleaseDC(null, screenDc);
+        auto memDc = CreateCompatibleDC(screenDc);
+        if (memDc is null)
+        {
+            capture.error = "Error: cannot allocate a capture buffer.";
+            return capture;
+        }
+        scope (exit) DeleteDC(memDc);
+        BITMAPINFO info;
+        info.bmiHeader.biSize = BITMAPINFOHEADER.sizeof;
+        info.bmiHeader.biWidth = w;
+        info.bmiHeader.biHeight = -h; // top-down rows
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = 0; // BI_RGB
+        void* bits;
+        auto bitmap = CreateDIBSection(memDc, &info, 0, &bits, null, 0);
+        if (bitmap is null || bits is null)
+        {
+            capture.error = "Error: cannot allocate a capture buffer.";
+            return capture;
+        }
+        scope (exit) DeleteObject(bitmap);
+        auto previous = SelectObject(memDc, bitmap);
+        scope (exit)
+        {
+            if (previous !is null) SelectObject(memDc, previous);
+        }
+        memset(bits, 0, cast(size_t) w * h * 4);
+        // PW_RENDERFULLCONTENT: also render surfaces that the legacy
+        // WM_PRINT path leaves blank (DWM/DirectComposition clients).
+        if (PrintWindow(hwnd, memDc, 2) == 0)
+        {
+            capture.error = "Error: the window \"" ~ capture.windowLabel ~
+                "\" did not render itself.";
+            return capture;
+        }
+        auto source = cast(const(ubyte)*) bits;
+        if (uniformWindowFrame(source, w, h))
+        {
+            capture.error = "Error: the window \"" ~ capture.windowLabel ~
+                "\" returned a blank picture.";
+            return capture;
+        }
+        auto rgb = new ubyte[cast(size_t) w * h * 3];
+        foreach (i; 0 .. cast(size_t) w * h)
+        {
+            rgb[i * 3] = source[i * 4 + 2];
+            rgb[i * 3 + 1] = source[i * 4 + 1];
+            rgb[i * 3 + 2] = source[i * 4];
+        }
+        capture.ok = true;
+        capture.width = w;
+        capture.height = h;
+        capture.rgb = rgb;
+        return capture;
+    }
+
+    /// The window a screenshot shows when the caller names none.
+    private __gshared void* defaultCaptureWindowResult;
+
+    private extern (Windows) int defaultCaptureProc(void* hwnd, LPARAM)
+    {
+        try
+        {
+            if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) return 1;
+            if (isOwnProcessWindow(hwnd)) return 1;
+            if (windowTitleOf(hwnd).length == 0) return 1;
+            int x, y, w, h;
+            if (!windowRectOf(hwnd, x, y, w, h)) return 1;
+            defaultCaptureWindowResult = hwnd;
+            return 0; // EnumWindows is z-ordered: the first hit is topmost.
+        }
+        catch (Throwable) {}
+        return 1;
+    }
+
+    /// Window a screenshot defaults to: the committed input target, else the
+    /// foreground window, else the topmost window of another app. Deliberately
+    /// never "everything": an unrelated desktop in the frame is what made
+    /// captures at an arbitrary moment misleading.
+    private void* defaultCaptureWindow()
+    {
+        if (targetUsable(computerUseFocusTarget) &&
+            IsIconic(computerUseFocusTarget) == 0)
+            return computerUseFocusTarget;
+        auto foreground = GetForegroundWindow();
+        if (foreground !is null && !isOwnProcessWindow(foreground) &&
+            IsWindow(foreground) != 0 && IsWindowVisible(foreground) != 0 &&
+            IsIconic(foreground) == 0)
+            return foreground;
+        defaultCaptureWindowResult = null;
+        EnumWindows(cast(void*) &defaultCaptureProc, 0);
+        return defaultCaptureWindowResult;
+    }
+
+    /// What a delivered frame depicts. `window` null means the whole desktop.
+    private struct FrameView
+    {
+        void* window;
+        string windowLabel;
+        int originX;
+        int originY;
+    }
+
+    /// Resolve the window a `screen` call shows. Returns false with `problem`
+    /// only when the caller explicitly named a window that cannot be captured;
+    /// without a name the desktop is a legitimate fallback.
+    private bool resolveFrameWindow(string explicitTitle, out FrameView view,
+        out string problem)
+    {
+        view = FrameView.init;
+        problem = null;
+        void* hwnd;
+        if (explicitTitle.length)
+        {
+            hwnd = findTopWindow(strip(toLower(explicitTitle)));
+            if (hwnd is null)
+            {
+                problem = "Error: no visible window matches \"" ~ explicitTitle ~
+                    "\". Pass full_screen:true to capture the whole desktop.";
+                return false;
+            }
+            if (IsIconic(hwnd))
+            {
+                problem = "Error: window \"" ~ windowTitleOf(hwnd) ~
+                    "\" is minimized, so it has no picture to capture. " ~
+                    "Restore it, or pass full_screen:true.";
+                return false;
+            }
+        }
+        else hwnd = defaultCaptureWindow();
+        if (hwnd is null) return true;
+        if (IsIconic(hwnd) != 0) return true;
+        int x, y, w, h;
+        if (!windowRectOf(hwnd, x, y, w, h)) return true;
+        view.window = hwnd;
+        view.windowLabel = windowTitleOf(hwnd);
+        view.originX = x;
+        view.originY = y;
+        return true;
+    }
+
+    /// The model-facing capture: the target window's own pixels by default, a
+    /// native-resolution desktop region when one is requested, and the whole
+    /// desktop only when the caller explicitly asked for it.
+    private Capture captureFrameView(FrameView view, bool fullScreen,
+        int rx = -1, int ry = -1, int rw = 0, int rh = 0)
+    {
+        // A region is a desktop-space detail crop: keeping that contract means
+        // an old region argument still means the same area.
+        if (rw > 0 && rh > 0) return captureScreen(rx, ry, rw, rh);
+        if (!fullScreen && view.window !is null)
+        {
+            auto window = captureWindowContent(view.window);
+            if (window.ok) return window;
+            // Some GPU-rendered windows refuse to render themselves; grabbing
+            // their rectangle off the screen is still window-scoped, unlike the
+            // whole desktop.
+            int x, y, w, h;
+            if (windowRectOf(view.window, x, y, w, h))
+            {
+                auto area = captureScreen(x, y, w, h);
+                if (area.ok)
+                {
+                    area.window = view.window;
+                    area.windowLabel = view.windowLabel;
+                    area.originX = x;
+                    area.originY = y;
+                    return area;
+                }
+            }
+            return window;
+        }
+        return captureScreen();
     }
 
     /// Cheap whole-frame fingerprint used to detect that "something changed".
@@ -2006,20 +2265,34 @@ version (Windows)
     /// catch a small label, high enough to ignore a stray artifact.
     private enum size_t frameChangeThreshold = 16;
 
+    /// Post-action evidence: the window the action went to, never the whole
+    /// desktop unless no window can be resolved.
     private ComputerUseResult screenshotResult(string prefix)
     {
-        return screenshotResult(prefix, -1, -1, 0, 0);
+        FrameView view;
+        string problem;
+        resolveFrameWindow("", view, problem);
+        return screenshotResult(prefix, view, false);
     }
 
-    private ComputerUseResult screenshotResult(string prefix, int rx, int ry,
-        int rw, int rh)
+    private ComputerUseResult screenshotResult(string prefix, FrameView view,
+        bool fullScreen, int rx = -1, int ry = -1, int rw = 0, int rh = 0)
     {
-        auto capture = captureScreen(rx, ry, rw, rh);
+        auto capture = captureFrameView(view, fullScreen, rx, ry, rw, rh);
         if (!capture.ok) return failedResult(capture.error);
         if (rw > 0 && rh > 0 && capture.width >= 32 && capture.height >= 32)
         {
             desktopClickProgress.reset();
             desktopDragProgress.reset();
+        }
+        // A delivered main frame defines the pixel space the next input is read
+        // in: the point the model names is an image pixel plus this origin. A
+        // region is a detail view of the current frame (not a new frame), so it
+        // reports an origin relative to that frame instead of moving it.
+        if (!(rw > 0 && rh > 0))
+        {
+            computerUseFrameOriginX = capture.originX;
+            computerUseFrameOriginY = capture.originY;
         }
         return screenshotCaptureResult(prefix, capture, rx, ry, rw, rh);
     }
@@ -2033,20 +2306,30 @@ version (Windows)
         const screenW = GetSystemMetrics(SM_CXSCREEN);
         const screenH = GetSystemMetrics(SM_CYSCREEN);
         string note;
+        const scopeText = capture.window is null
+            ? "the " ~ to!string(screenW) ~ "x" ~ to!string(screenH) ~ " desktop"
+            : "window \"" ~ capture.windowLabel ~ "\"";
         if (rw > 0 && rh > 0)
-            note = "a " ~ to!string(rw) ~ "x" ~ to!string(rh) ~
-                " region at " ~ to!string(rx) ~ "," ~ to!string(ry) ~
-                " of the " ~ to!string(screenW) ~ "x" ~ to!string(screenH) ~
-                " screen, so add the region origin to these pixels";
-        else if (step > 1)
-            note = "1/" ~ to!string(step) ~ " of the " ~ to!string(screenW) ~
-                "x" ~ to!string(screenH) ~ " screen";
+            note = "a " ~ to!string(capture.width) ~ "x" ~
+                to!string(capture.height) ~ " region at desktop " ~
+                to!string(capture.originX) ~ "," ~ to!string(capture.originY) ~
+                " (frame " ~
+                to!string(capture.originX - computerUseFrameOriginX) ~ "," ~
+                to!string(capture.originY - computerUseFrameOriginY) ~
+                "), so add the frame offset to a point read in this crop";
+        else
+            note = scopeText ~ " at desktop " ~ to!string(capture.originX) ~ "," ~
+                to!string(capture.originY) ~
+                (step > 1 ? ", 1/" ~ to!string(step) ~ " of native pixels" : "");
         const active = foregroundWindowTitle();
+        const coordinateText = rw > 0 && rh > 0
+            ? "read points here, add the frame offset, and pass main-frame pixels"
+            : "click in these image pixels, they are translated to the desktop";
         ComputerUseResult result;
         result.output = prefix ~ " (" ~ to!string(capture.width) ~ "x" ~
             to!string(capture.height) ~ ", " ~ to!string(jpeg.length) ~
             " bytes" ~ (note.length ? ", " ~ note : "") ~
-            "; click in these image pixels" ~
+            "; " ~ coordinateText ~
             (active.length ? ", active window \"" ~ active ~ "\"" : "") ~
             ").";
         // This frame is now the one the model has seen.
@@ -2241,10 +2524,10 @@ version (Windows)
     /// become a target).
     private void* noteClickTarget(int x, int y)
     {
-        const step = screenDownscale();
+        const mapped = screenPointFor(x, y);
         POINT point;
-        point.x = cast(int)(cast(long) x * step);
-        point.y = cast(int)(cast(long) y * step);
+        point.x = mapped[0];
+        point.y = mapped[1];
         auto hwnd = WindowFromPoint(point);
         if (hwnd is null) return null;
         auto root = GetAncestor(hwnd, 2 /*GA_ROOT*/);
@@ -2266,18 +2549,10 @@ version (Windows)
             virtualMoveTo(x, y);
             return true;
         }
-        const step = screenDownscale();
-        const width = GetSystemMetrics(SM_CXSCREEN);
-        const height = GetSystemMetrics(SM_CYSCREEN);
-        long realX = cast(long) x * step;
-        long realY = cast(long) y * step;
-        if (realX < 0) realX = 0;
-        else if (realX > width - 1) realX = width - 1;
-        if (realY < 0) realY = 0;
-        else if (realY > height - 1) realY = height - 1;
-        const moved = SetCursorPos(cast(int) realX, cast(int) realY) != 0;
+        const mapped = screenPointFor(x, y);
+        const moved = SetCursorPos(mapped[0], mapped[1]) != 0;
         if (!moved) computerUseInputError = "Error: Windows refused to move the pointer. No click was sent.";
-        else injectRelativeMove(cast(int) realX, cast(int) realY);
+        else injectRelativeMove(mapped[0], mapped[1]);
         return moved;
     }
 
@@ -2840,14 +3115,31 @@ version (Windows)
         switch (action)
         {
             case "screen":
+            {
+                const fullScreen = jsonBoolFlag(value, "full_screen") == 1;
+                auto windowTitle = jsonString(value, "window");
+                if (!windowTitle.length) windowTitle = jsonString(value, "title");
+                FrameView view;
+                string problem;
+                if (!fullScreen &&
+                    !resolveFrameWindow(windowTitle, view, problem))
+                    return failedResult(problem);
+                int rx, ry, rw, rh;
                 if (auto region = "region" in value.object)
                     if (region.type == JSONType.object)
-                        return screenshotResult("Captured screen region",
-                            cast(int) jsonInt(*region, "x", 0),
-                            cast(int) jsonInt(*region, "y", 0),
-                            cast(int) jsonInt(*region, "w", 0),
-                            cast(int) jsonInt(*region, "h", 0));
-                return screenshotResult("Captured the screen");
+                    {
+                        rx = cast(int) jsonInt(*region, "x", 0);
+                        ry = cast(int) jsonInt(*region, "y", 0);
+                        rw = cast(int) jsonInt(*region, "w", 0);
+                        rh = cast(int) jsonInt(*region, "h", 0);
+                    }
+                const prefix = rw > 0 && rh > 0
+                    ? "Captured screen region"
+                    : fullScreen || view.window is null
+                        ? "Captured the desktop"
+                        : "Captured window \"" ~ view.windowLabel ~ "\"";
+                return screenshotResult(prefix, view, fullScreen, rx, ry, rw, rh);
+            }
             case "macro":
                 return withFinalScreenshot(runMacro(value, computerUseWorkspace),
                     screenshot);
@@ -3029,17 +3321,17 @@ version (Windows)
             observation, observeDesktop(current.width, current.height, current.rgb), down);
         if (!screenshot) return succeededResult(output);
         if (!current.ok) return failedResult(current.error);
-        return screenshotCaptureResult(output ~ " Screen after the action", current);
+        return screenshotResult(output ~ " Screen after the action");
     }
 
     /// Resolve a window under a screenshot point without side effects (used only
     /// to check that an explicit-window click lands where it was asked to).
     private void* WindowFromPoint2(int x, int y)
     {
-        const step = screenDownscale();
+        const mapped = screenPointFor(x, y);
         POINT point;
-        point.x = cast(int)(cast(long) x * step);
-        point.y = cast(int)(cast(long) y * step);
+        point.x = mapped[0];
+        point.y = mapped[1];
         auto hwnd = WindowFromPoint(point);
         if (hwnd is null) return null;
         auto root = GetAncestor(hwnd, 2 /*GA_ROOT*/);
@@ -3070,6 +3362,11 @@ version (Windows)
                 "Attached instruction strip: " ~ to!string(instructions.width) ~ "x" ~
                 to!string(instructions.height) ~ " at origin (0,0). Both are native pixels " ~
                 "from the same current frame. ";
+            // These crops are described in desktop pixels, so the frame space
+            // becomes the desktop itself: a crop pixel plus its origin is the
+            // coordinate the next call must pass.
+            computerUseFrameOriginX = 0;
+            computerUseFrameOriginY = 0;
             refusal.output ~= retry
                 ? "One retry grounded in these crops is permitted; first verify the control, button and coordinates."
                 : "The focused retry did not establish progress. Further " ~ actionLabel ~ " are withheld; choose a different action or report the blocker.";
@@ -4048,9 +4345,10 @@ version (Windows)
             jsonQuote(toolDefs[0].name) ~ `,"description":` ~
             jsonQuote(toolDefs[0].description) ~ `,"parameters":` ~
             toolDefs[0].parametersJson ~ `}}`;
-        string system = "You operate the desktop using the computer tool. Inspect the current " ~
-            "screenshot before each decision. Read coordinates in the main image's pixel space; " ~
-            "the tool scales them. Native detail crops report desktop origins: add their origin, " ~
+        string system = "You operate the desktop using the computer tool. Each frame shows the " ~
+            "bound window, not the whole desktop. Inspect the current screenshot before each " ~
+            "decision. Read coordinates in the main image's pixel space; the tool scales them. " ~
+            "Native detail crops report desktop origins: add their origin, " ~
             "then divide by the main frame scale for subsequent actions. You may inspect a crop " ~
             "without sending input. A text label or tooltip is not a control: hover an " ~
             "unfamiliar control with mouse_move first and confirm the frame changes before " ~
@@ -4355,7 +4653,8 @@ version (Windows)
                             captions ~= "Changed area: origin " ~ to!string(x) ~
                                 "," ~ to!string(y) ~ ", size " ~ to!string(w) ~
                                 "x" ~ to!string(h) ~ " (coordinates are in the " ~
-                                "full native desktop space):";
+                                "current frame's pixels; add this origin to a " ~
+                                "point read inside the tile):";
                             jpegs ~= encodeScreenshotJpeg(w, h,
                                 cropRgb(shot.width, shot.rgb, x, y, w, h));
                         }
@@ -4727,8 +5026,18 @@ version (Windows)
                                 }
                                 else
                                 {
+                                    // Nested arguments are already in desktop
+                                    // pixels (scaleComputerArgs +
+                                    // offsetComputerArgs), so the tool must not
+                                    // add the loop frame's origin a second time.
+                                    const savedOriginX = computerUseFrameOriginX;
+                                    const savedOriginY = computerUseFrameOriginY;
+                                    computerUseFrameOriginX = 0;
+                                    computerUseFrameOriginY = 0;
                                     result = experimentalComputerUseExecute(
                                         scaledArgs, workspace);
+                                    computerUseFrameOriginX = savedOriginX;
+                                    computerUseFrameOriginY = savedOriginY;
                                     if (!result.failed && aims)
                                     {
                                         lastActionX = clickedX;
@@ -4907,12 +5216,9 @@ version (Windows)
         if (!before.ok) return failedResult(before.error);
         const deadline = MonoTime.currTime +
             msecs(timeoutMs > 60000 ? 60000 : timeoutMs);
-        // The frame the model will see: the newest capture, so a timeout still
-        // hands back the current screen instead of leaving the model blind. A
-        // timed-out wait that returned text only forced another `screen` round
-        // trip (and the next call's frame was one action stale), which read as
-        // "late awareness" of the desktop.
-        auto latest = before;
+        // Change is detected across the whole desktop (the window may move or
+        // a dialog may open), but the frame handed to the model is the scoped
+        // one, so a timeout does not dump unrelated windows into the request.
         const observation = observeDesktop(before.width, before.height, before.rgb);
         bool changed;
         while (MonoTime.currTime < deadline)
@@ -4922,23 +5228,16 @@ version (Windows)
             Thread.sleep(msecs(intervalMs));
             auto now = captureScreen();
             if (!now.ok) return failedResult(now.error);
-            latest = now;
             if (desktopVisiblyChanged(observation, observeDesktop(now.width, now.height, now.rgb)))
             {
                 changed = true;
                 break;
             }
         }
-        auto jpeg = encodeScreenshotJpeg(latest.width, latest.height,
-            latest.rgb);
-        ComputerUseResult result;
-        result.output = changed
-            ? "Visible screen change detected; this does not verify the intended action succeeded. Inspect this current frame."
+        return screenshotResult(changed
+            ? "Visible screen change detected; this does not verify the intended action succeeded. Inspect this current frame"
             : "No substantial screen change within " ~ to!string(timeoutMs) ~
-              " ms; this is the current screen.";
-        result.images = [attachmentImageForData("image/jpeg", "screen.jpg",
-            jpeg)];
-        return result;
+              " ms; this is the current frame");
     }
 }
 

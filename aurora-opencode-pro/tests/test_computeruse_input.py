@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix='aurora-input-test-') as temporary:
             {'input_mode': 'invalid', 'action': 'click', 'x': 50, 'y': 50},
             {'steps': [{'action': 'click', 'x': -100, 'y': -100},
                        {'action': 'type', 'text': 'MUST-NOT-BE-SENT'}]},
-            click('B'), {'action': 'screen'}]
+            click('B'), {'action': 'screen', 'full_screen': True}]
         x, y = positions['A']['entry']
         blank = {'action': 'click', 'input_mode': 'native', 'x': x,
                  'y': y + 95, 'screenshot': False}
@@ -52,7 +52,7 @@ with tempfile.TemporaryDirectory(prefix='aurora-input-test-') as temporary:
         cases.append({'action': 'focus', 'title': positions['A']['title'], 'screenshot': False})
         cases.extend([dict(blank, x=x + i * 2) for i in range(3)])
         cases.append(dict(blank, x=x + 7))
-        cases.append({'action': 'screen'})
+        cases.append({'action': 'screen', 'full_screen': True})
         cases.append(dict(blank, x=x + 9))
         cases.append({'action': 'screen', 'region': {'x': x - 10, 'y': y + 75, 'w': 80, 'h': 40}})
         cases.append(dict(blank, x=x + 11))
