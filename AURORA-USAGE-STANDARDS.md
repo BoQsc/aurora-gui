@@ -115,6 +115,13 @@ scheduled work still ran (see `headless_smoke` `notificationRefreshCountForTesti
 
 ## 7. Font rendering ownership
 
+- **Apps render 2D UI and content through Aurora Canvas and `FontSystem`.** This
+  is the highest-priority rendering rule for new applications. Do not use GDI,
+  DirectWrite, FreeType, native `TextOut`/`DrawText`, a private glyph atlas,
+  private text layout, or a private rounded-rect/icon rasterizer. The app
+  workflow compiles imports from `aurora-d`; use `aurora.Canvas`.
+- A domain rasterizer (3D, image processing, media) may own its pixels, but its
+  labels, controls, and other UI still use Aurora Canvas/text.
 - Aurora's `GlyphAtlas` owns the default grayscale coverage contrast (`0.5`).
   Applications must not copy that policy into startup helpers or set
   `AURORA_TEXT_CONTRAST` merely to reproduce the framework default.

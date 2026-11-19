@@ -8,6 +8,12 @@ shared surface.
 
 These rules are mandatory for app presentation:
 
+- **Highest priority: render through Aurora Canvas and text.** New 2D app UI
+  and content use `aurora.Canvas` and `aurora.text`/`FontSystem`. Do not use GDI,
+  DirectWrite, FreeType, native text APIs, a private glyph atlas, private text
+  layout, or a private shape/icon rasterizer. `aurora-hotswap` compiles with
+  `aurora-d` on the import path and enables `-i` so app modules can import the
+  framework directly.
 - The app's visual area is a host-owned `AURSFACE`. Apps must not put their
   primary visual area in an external child HWND or child swapchain. A child
   swapchain can be DPI-virtualized to 288x192 and offset from a 360x240 host
@@ -55,8 +61,8 @@ apps/<name>/
   README.md      app-specific notes
 ```
 
-Use `apps/pyramid-sample` as the reference sample. `apps/new-app` is the
-editable working app that uses the same workflow.
+Use `apps/pyramid-sample` for geometry and `apps/browser-mockup` for Aurora
+Canvas/text UI. `apps/new-app` remains the editable working app.
 
 ## Surface contract
 
@@ -88,13 +94,17 @@ The host passes these arguments to the module:
 ## Create an app
 
 1. Create `apps/<name>/`.
-2. Copy `apps/new-app/module.d` and rename its module.
-3. Set the app dimensions, colors, state, and `Revision`.
-4. Copy `apps/new-app/smoke_test.py`; update `PROJECT`, title, and watch time.
-5. Add a README that links back to this standard.
-6. Run the smoke test before the first live session.
+2. For 2D UI, copy `apps/browser-mockup/module.d`; for geometry, copy
+   `apps/pyramid-sample/module.d`.
+3. Draw with `aurora.Canvas` and shape text through `FontSystem`. Do not add a
+   private rasterizer or native text API.
+4. Set the app dimensions, colors, state, and `Revision`.
+5. Copy `apps/new-app/smoke_test.py`; update `PROJECT`, title, and watch time.
+6. Add a README that links back to this standard.
+7. Run the smoke test before the first live session.
 
-No host source change is required for a new app.
+No app-specific host source change is required for a new app. The generic
+hotswap tool already puts `aurora-d`/`aurora-standard` on the import path.
 
 ## Start live
 
@@ -103,6 +113,10 @@ From `aurora-host/`:
 ```text
 aurora-hotswap.exe dev --source ../apps/<name>/module.d --host aurora-host.exe --out build/<name> --watch 3600 --events pointer --title "<Name>"
 ```
+
+Add `--width <logical-width> --height <logical-height>` when the app surface is
+not the 320x240 dev default. The supervisor uses those values for the host
+window and the surface node, so the app is not scaled down to the demo size.
 
 The host window opens and stays open. Hotswap builds the first generation and
 prints:
@@ -215,6 +229,8 @@ Close the host window, or stop the supervised hotswap process. Confirm no stale
 
 - [ ] App is self-contained under `apps/<name>/`.
 - [ ] Module publishes valid `AURSFACE` frames.
+- [ ] 2D UI and text render through `aurora.Canvas`/`FontSystem`; no GDI or
+      private text rasterizer.
 - [ ] Host opens with the app title.
 - [ ] Hotswap builds generation 1.
 - [ ] An edit rebuilds with the same host PID.

@@ -29,6 +29,12 @@ short guide. Detailed explanations remain in `aurora-d/docs/` and
 
 ## 2. One framework source
 
+- **Aurora Canvas and text are the top priority for new app rendering.** All
+  2D app UI and content use `aurora.Canvas` plus `aurora.text`/`FontSystem`.
+  Do not use GDI, DirectWrite, FreeType, a private glyph atlas, a private text
+  layout engine, or a private rounded-rect/icon rasterizer in an application.
+  Domain rasterizers remain allowed only for content Aurora cannot express, such
+  as a 3D software renderer, and must not become the app's UI stack.
 - All applications use the same `aurora-d` source. When an application finds a
   better default, fix the framework; do not keep a private text, theme,
   rendering, window-shell, or hit-testing policy beside it.

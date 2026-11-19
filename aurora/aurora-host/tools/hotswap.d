@@ -18,6 +18,8 @@ import std.string : indexOf, replace, strip;
 
 enum int Width = 320;
 enum int Height = 240;
+private int sceneWidth = Width;
+private int sceneHeight = Height;
 enum int StaleMs = 500;
 enum int EventBytes = 24;
 enum int EventCapacity = 64;
@@ -268,8 +270,8 @@ private JSONValue surfaceNode(string surfacePath, string[] events)
     surface.object["id"] = JSONValue("module");
     surface.object["type"] = JSONValue("surface");
     surface.object["path"] = JSONValue(surfacePath);
-    surface.object["width"] = JSONValue(Width);
-    surface.object["height"] = JSONValue(Height);
+    surface.object["width"] = JSONValue(sceneWidth);
+    surface.object["height"] = JSONValue(sceneHeight);
     surface.object["staleMs"] = JSONValue(StaleMs);
     JSONValue[] eventValues;
     if (events !is null)
@@ -287,9 +289,9 @@ private void writeScene(string path, string surfacePath, string title,
     scene.object["schemaVersion"] = JSONValue(2);
     auto window = JSONValue(string[string].init);
     window.object["title"] = JSONValue(title);
-    window.object["width"] = JSONValue(Width);
+    window.object["width"] = JSONValue(sceneWidth);
     window.object["height"] = JSONValue(customTitlebar
-        ? Height + titlebarHeight : Height);
+        ? sceneHeight + titlebarHeight : sceneHeight);
     window.object["decorated"] = JSONValue(!customTitlebar);
     scene.object["window"] = window;
     auto surface = surfaceNode(surfacePath, events);
@@ -495,7 +497,12 @@ private double buildLiveModule(string source, string exe)
 {
     import std.datetime.stopwatch : StopWatch, AutoStart;
     auto watch = StopWatch(AutoStart.yes);
-    auto child = spawnProcess(["dmd", "-O", "-release", "-of=" ~ exe, source]);
+    const hostDir = dirName(thisExePath());
+    const auroraD = buildPath(hostDir, "..", "aurora-d", "source");
+    const auroraStandard = buildPath(hostDir, "..", "aurora-standard",
+        "source");
+    auto child = spawnProcess(["dmd", "-O", "-release", "-i",
+        "-I" ~ auroraD, "-I" ~ auroraStandard, "-of=" ~ exe, source]);
     const status = wait(child);
     watch.stop();
     if (status != 0)
@@ -549,6 +556,10 @@ private void devMain(string[] args)
             outDir = args[++i];
         else if (args[i] == "--title" && i + 1 < args.length)
             title = args[++i];
+        else if (args[i] == "--width" && i + 1 < args.length)
+            sceneWidth = to!int(args[++i]);
+        else if (args[i] == "--height" && i + 1 < args.length)
+            sceneHeight = to!int(args[++i]);
         else if (args[i] == "--events" && i + 1 < args.length)
             eventKind = args[++i];
         else if (args[i] == "--titlebar")
