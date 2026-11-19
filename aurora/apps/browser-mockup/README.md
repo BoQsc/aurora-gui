@@ -14,6 +14,16 @@ ordinary rectangles that are both drawn and hit-tested by the module.
 
 ## Run
 
+Double-click [`RUN-BROWSER-MOCKUP.bat`](RUN-BROWSER-MOCKUP.bat), or run:
+
+```text
+python -B aurora/apps/browser-mockup/run.py
+```
+
+The launcher starts `aurora-hotswap`, which builds the module and opens the
+960x640 host window. Keep the host window open; the detached hotswap session
+continues in the background and logs to `build/browser-mockup/hotswap.log`.
+
 From `aurora-host/`:
 
 ```text
@@ -23,6 +33,11 @@ aurora-hotswap.exe dev --source ../apps/browser-mockup/module.d --host aurora-ho
 The `--width` and `--height` options set the host scene and surface node to the
 mockup's native 960x640 size. Edit `module.d` while it runs; hotswap rebuilds in
 the same host.
+
+`build/browser-mockup.exe` is the child live module, not a standalone
+application. Double-clicking that file intentionally exits with a message
+asking for `--surface` and `--state`; it has no window or host of its own.
+Always start the mockup through the launcher or `aurora-hotswap`.
 
 ## Try
 
@@ -57,6 +72,8 @@ All navigation is local. The reload button animates a short mock loading cycle.
 ## Files
 
 - [`module.d`](module.d) - the browser shell and all four pages.
+- [`run.py`](run.py) and [`RUN-BROWSER-MOCKUP.bat`](RUN-BROWSER-MOCKUP.bat) -
+  the user-facing launcher through the live host.
 - [`smoke_test.py`](smoke_test.py) - builds through `aurora-hotswap`, opens the
   real host, and verifies the first 960x640 frame.
 - [`interaction_test.py`](interaction_test.py) - acts as the host side of the

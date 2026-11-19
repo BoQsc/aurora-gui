@@ -2244,7 +2244,10 @@ void main(string[] args)
             buildId = to!int(args[++i]);
     }
     if (surfacePath.length == 0 || statePath.length == 0)
-        throw new Exception("Browser mockup requires --surface and --state");
+        throw new Exception(
+            "Browser mockup is a live child module. Use " ~
+            "RUN-BROWSER-MOCKUP.bat or aurora-hotswap; direct launch requires " ~
+            "--surface and --state.");
 
     auto browser = Browser();
     browser.init(statePath, buildId);
