@@ -266,6 +266,10 @@ private string toolPolicySection(in SystemPromptContext ctx)
         "Screenshots show the target window by default; request the full screen only when the whole desktop genuinely matters. " ~
         "Ground actions in current screenshots, verify the application's response, and batch actions whose controls are established. " ~
         "Change the approach after repeated ineffective input. Chat text is not evidence that another application's UI changed.\n";
+    else text ~= "Computer use is disabled in Settings. Do not create or run custom Python scripts, " ~
+        "automation helpers or other programs that control the computer or drive its desktop unless the user " ~
+        "enables \"Experimental computer use\"; keep work to files, programs and tests. If the task genuinely " ~
+        "requires the desktop, ask the user to enable it instead of building a workaround.\n";
     return text;
 }
 
