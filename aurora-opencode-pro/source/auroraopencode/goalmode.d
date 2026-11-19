@@ -45,7 +45,7 @@ public bool goalIsAnswerOnly(string goal)
     const text = goal.strip.toLower;
     foreach (prefix; ["remember ", "note ", "keep in mind ", "bear in mind ",
             "keep this ", "acknowledge ", "reply with ", "just say ", "just reply ",
-            "confirm "])
+            "say exactly "])
         if (text.startsWith(prefix)) return true;
     return false;
 }
