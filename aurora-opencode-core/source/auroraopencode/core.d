@@ -2083,9 +2083,11 @@ public void ensureStateDirectory()
     if (!exists(directory)) mkdirRecurse(directory);
 }
 
-/// Read one provider's `key` from the opencode CLI auth store
-/// (`~/.local/share/opencode/auth.json`). "" when the provider or file is
-/// missing.
+/// Read one provider's credential from the opencode CLI auth store
+/// (`~/.local/share/opencode/auth.json`). `opencode auth login` stores either
+/// an API key (`type: "api"`) or an OAuth session (`type: "oauth"`) whose
+/// access token the gateway accepts as the same bearer credential. "" when the
+/// provider or file is missing.
 private string readAuthProviderKey(string provider)
 {
     const profile = environment.get("USERPROFILE");
@@ -2104,6 +2106,21 @@ private string readAuthProviderKey(string provider)
                 if (auto key = "key" in found.object)
                     if (key.type == JSONType.string && key.str.length > 0)
                         return key.str;
+                if (auto access = "access" in found.object)
+                    if (access.type == JSONType.string && access.str.length > 0)
+                    {
+                        // The CLI refreshes an expired session before use;
+                        // without a refresh here a stale token would shadow a
+                        // newer credential, so treat it as absent.
+                        bool expired;
+                        if (auto expires = "expires" in found.object)
+                            if (expires.type == JSONType.integer &&
+                                expires.integer > 0 &&
+                                expires.integer <=
+                                    Clock.currTime.toUnixTime * 1000L)
+                                expired = true;
+                        if (!expired) return access.str;
+                    }
             }
         }
     }
@@ -2155,6 +2172,12 @@ public string readProviderKey(string providerId)
             auto key = readAuthProviderKey("opencode-go");
             if (key.length > 0) return key;
             key = readAuthProviderKey("opencode");
+            if (key.length > 0) return key;
+            // The CLI also takes the key from OPENCODE_API_KEY. A machine set
+            // up that way has no other local credential, so without this the
+            // app sends no Authorization header and the gateway answers
+            // `401 Invalid credential`.
+            key = environment.get("OPENCODE_API_KEY").strip();
             if (key.length > 0) return key;
             return readDefaultKeyFile();
         }
@@ -2860,6 +2883,53 @@ unittest
     Settings probe = loaded;
     probe.baseUrl = opencodeGoBaseUrl;
     assert(activeApiKey(probe) == "k-open");
+}
+
+unittest
+{
+    // A machine whose only credential was given to the opencode CLI through
+    // OPENCODE_API_KEY must send that key, and an explicit app key still wins.
+    const dir = buildPath(tempDir(), "aurora-opencode-env-key-test");
+    const profile = buildPath(tempDir(), "aurora-opencode-env-key-profile");
+    if (exists(dir)) rmdirRecurse(dir);
+    if (exists(profile)) rmdirRecurse(profile);
+    mkdirRecurse(dir);
+    mkdirRecurse(profile);
+    const previousProfile = environment.get("USERPROFILE");
+    const hadEnvKey = environment.get("OPENCODE_API_KEY", "").length > 0;
+    const previousEnvKey = environment.get("OPENCODE_API_KEY", "");
+    scope (exit)
+    {
+        setOpencodeStateDirectoryForTesting("");
+        environment["USERPROFILE"] = previousProfile;
+        if (hadEnvKey) environment["OPENCODE_API_KEY"] = previousEnvKey;
+        else environment.remove("OPENCODE_API_KEY");
+        if (exists(dir)) rmdirRecurse(dir);
+        if (exists(profile)) rmdirRecurse(profile);
+    }
+    setOpencodeStateDirectoryForTesting(dir);
+    environment["USERPROFILE"] = profile;
+    environment["OPENCODE_API_KEY"] = " env-open-key ";
+
+    Settings fromEnv = loadSettings();
+    assert(fromEnv.baseUrl == opencodeGoBaseUrl);
+    assert(fromEnv.apiKey == "env-open-key");
+
+    const authDir = buildPath(profile, ".local", "share", "opencode");
+    mkdirRecurse(authDir);
+    const authPath = buildPath(authDir, "auth.json");
+    // A stale CLI session must not shadow the key from the environment.
+    write(authPath, `{"opencode-go":{"type":"oauth","refresh":"r",` ~
+        `"access":"stale-access","expires":1000}}`);
+    assert(loadSettings().apiKey == "env-open-key");
+    write(authPath, `{"opencode-go":{"type":"oauth","refresh":"r",` ~
+        `"access":"live-access","expires":4102444800000}}`);
+    assert(loadSettings().apiKey == "live-access");
+
+    Settings saved;
+    saved.apiKey = "app-key";
+    saveSettings(saved);
+    assert(loadSettings().apiKey == "app-key");
 }
 
 // ---------------------------------------------------------------------------
