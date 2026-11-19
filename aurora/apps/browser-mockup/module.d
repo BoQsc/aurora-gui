@@ -955,7 +955,7 @@ struct Browser
 
     Rect copyHexRect() const
     {
-        return Rect(648, pageTop() + 410, 228, 30);
+        return Rect(648, pageTop() + 414, 228, 30);
     }
 
     Rect menuRect() const
@@ -971,13 +971,13 @@ struct Browser
 
     Rect suggestRect() const
     {
-        return Rect(184, 100, Width - 184 - 124, 206);
+        return Rect(184, 100, Width - 184 - 124, 224);
     }
 
     Rect suggestRowRect(int index) const
     {
         auto area = suggestRect();
-        return Rect(area.x + 8, area.y + 34 + index * 42, area.w - 16, 42);
+        return Rect(area.x + 8, area.y + 34 + index * 46, area.w - 16, 44);
     }
 
     Rect aboutCloseRect() const
@@ -1617,7 +1617,7 @@ private struct Renderer
         canvas.roundOutline(copy.x, copy.y, copy.w, copy.h, 7, 1.0f,
             b.copiedTicks > 0 ? C(0x2d6a5a) : C(0x2c3c4c));
 
-        auto note = Rect(292, top + 414, Width - 292 - 32, 44);
+        auto note = Rect(292, top + 430, Width - 292 - 32, 44);
         canvas.roundRect(note.x, note.y, note.w, note.h, 8, C(0x101b19));
         canvas.fill(note.x, note.y + 8, 2, note.h - 16, green());
     }
@@ -1981,7 +1981,7 @@ private struct Renderer
             "and routes pointer events back.",
             292, top + 380, Width - 292 - 32, 46, muted());
 
-        auto noteRect = Rect(292, top + 414, Width - 292 - 32, 44);
+        auto noteRect = Rect(292, top + 430, Width - 292 - 32, 44);
         text(fonts.small, note, noteRect.x + 14, noteRect.y + 10,
             C(0xa9c9bf));
     }
@@ -2006,9 +2006,9 @@ private struct Renderer
             const labelColor = (i == 2 || i == 4) ?
                 C(0x20252f) : C(0xffffff);
             text(fonts.boldBody, swatchNames[i], card.x + 16,
-                card.y + card.h - 42, labelColor);
+                card.y + card.h - 50, labelColor);
             text(fonts.tiny, swatchHex[i], card.x + 16,
-                card.y + card.h - 23,
+                card.y + card.h - 24,
                 labelColor.withAlpha(190));
             if (b.tab().galleryIndex == i)
             {
@@ -2023,12 +2023,12 @@ private struct Renderer
         auto detail = Rect(628, top + 156, 268, 290);
         text(fonts.boldSmall, "SELECTED STUDY", detail.x + 18,
             detail.y + 166, accent());
-        text(fonts.boldLarge, swatchNames[selected], detail.x + 18,
-            detail.y + 182, ink());
+        text(fonts.boldTitle, swatchNames[selected], detail.x + 18,
+            detail.y + 188, ink());
         text(fonts.monoSmall, swatchHex[selected], detail.x + 18,
-            detail.y + 218, C(0x9db3c8));
+            detail.y + 224, C(0x9db3c8));
         text(fonts.tiny, "RGB  " ~ swatchRgb(selected),
-            detail.x + 18, detail.y + 236, dim());
+            detail.x + 18, detail.y + 240, dim());
 
         auto copy = b.copyHexRect();
         if (b.copiedTicks > 0)
@@ -2139,9 +2139,9 @@ private struct Renderer
                 canvas.roundRect(row.x, row.y, row.w, row.h, 8,
                     C(0x213044));
             canvas.circle(row.x + 18, row.y + 21, 5.0f, C(tints[i]));
-            text(fonts.boldBody, titles[i], row.x + 36, row.y + 7,
+            text(fonts.boldBody, titles[i], row.x + 36, row.y + 4,
                 b.hovered(Action.suggestion, i) ? ink() : C(0xd3dfeb));
-            text(fonts.monoSmall, urls[i], row.x + 36, row.y + 24,
+            text(fonts.monoSmall, urls[i], row.x + 36, row.y + 27,
                 dim());
             arrowRight(row.x + row.w - 24, row.y + 21,
                 b.hovered(Action.suggestion, i) ? ink() : dim());
@@ -2172,11 +2172,11 @@ private struct Renderer
             "module draws the chrome and pages into a shared surface and " ~
             "turns pointer events into tabs, history, bookmarks and " ~
             "viewport changes.",
-            card.x + 28, card.y + 86, card.w - 56, 78,
+            card.x + 28, card.y + 86, card.w - 56, 96,
             C(0xaebdcd));
         wrap(fonts.monoSmall,
             "aurora/apps/browser-mockup/module.d",
-            card.x + 28, card.y + 174, card.w - 56, 24, C(0x75b9d8));
+            card.x + 28, card.y + 190, card.w - 56, 24, C(0x75b9d8));
 
         auto button = b.aboutCloseRect();
         if (b.hovered(Action.aboutClose))
