@@ -2,6 +2,14 @@
 
 ![Aurora Browser Mockup](preview.png)
 
+Keyboard address editing and the local search results page:
+
+![Search results](preview-search.png)
+
+The same design contained in a 1200×900 host window:
+
+![Resized host window](preview-resized.png)
+
 An interactive browser-shell sample for Aurora Host v2. It is a single live D
 module: no network stack, no embedded HTML engine, and no app-specific code in
 the generic host. The shell, the four sample pages, and all navigation state
@@ -27,12 +35,17 @@ continues in the background and logs to `build/browser-mockup/hotswap.log`.
 From `aurora-host/`:
 
 ```text
-aurora-hotswap.exe dev --source ../apps/browser-mockup/module.d --host aurora-host.exe --out build/browser-mockup --watch 3600 --events pointer --title "Aurora Browser Mockup" --width 960 --height 640
+aurora-hotswap.exe dev --source ../apps/browser-mockup/module.d --host aurora-host.exe --out build/browser-mockup --watch 3600 --events pointer,key --title "Aurora Browser Mockup" --width 960 --height 640
 ```
 
 The `--width` and `--height` options set the host scene and surface node to the
 mockup's native 960x640 size. Edit `module.d` while it runs; hotswap rebuilds in
 the same host.
+
+The host surface node is flexed and uses `fit: "contain"`. Resizing the host
+window preserves the mockup's 3:2 composition and centers it in the available
+client area; pointer and wheel coordinates are mapped back into the 960×640
+surface space. At the native aspect ratio there are no letterbox bars.
 
 `build/browser-mockup.exe` is the child live module, not a standalone
 application. Double-clicking that file intentionally exits with a message
@@ -43,11 +56,14 @@ Always start the mockup through the launcher or `aurora-hotswap`.
 
 - Click a tab, the `+`, or a tab's close button.
 - Use back and forward. The article's "Read the field notes" link opens Gallery.
-- Click the address bar to open recent-page suggestions.
+- Click the address bar, type, and press Enter to navigate or search.
+- Use `Ctrl+L`/`Ctrl+K` to focus the address bar, `Ctrl+T` for a new tab,
+  `Ctrl+W` to close the active tab, `Ctrl+R` to reload, and Escape to dismiss.
 - Use the bookmark chips or the star button.
 - Open the overflow menu to add a tab, go home, bookmark, toggle the bookmark
   bar, or show the About card.
 - In Docs, click the sidebar sections; in Gallery, click a color study.
+- Unknown address queries open the new local Search results page.
 
 All navigation is local. The reload button animates a short mock loading cycle.
 
@@ -62,6 +78,9 @@ All navigation is local. The reload button animates a short mock loading cycle.
   routes pointer events.
 - **Pointer-first interaction.** The module reads the 24-byte input ring and
   matches pointer down/up against the same geometry it draws.
+- **Editable local navigation.** The address bar accepts typed text, a blinking
+  caret, select-all, backspace/delete, Home/End, Enter, Escape, and the common
+  `Ctrl+L/K/T/W/R` shortcuts. Unknown submissions open the local Search page.
 - **Cached repaint.** The frame is rebuilt only when the render signature
   changes (hover, tab state, page state, loading, toast). Idle publication keeps
   the surface fresh without redrawing the whole shell at host refresh rate.
@@ -79,17 +98,25 @@ All navigation is local. The reload button animates a short mock loading cycle.
 - [`interaction_test.py`](interaction_test.py) - acts as the host side of the
   surface, injects clicks, and verifies address suggestions, back navigation,
   new tabs, docs sections, gallery selection, menu toggles, and tab closing.
+- [`host_keyboard_test.py`](host_keyboard_test.py) - starts the real host,
+  injects `Ctrl+L`/typed text/Enter through the host's scene input path, and
+  verifies the local Search page.
 - [`preview.png`](preview.png) - captured from the live host.
+- [`preview-search.png`](preview-search.png) - keyboard search results capture.
+- [`preview-resized.png`](preview-resized.png) - 1200×900 host resize capture.
 
 ## Verify
 
 ```text
 python -B aurora/apps/browser-mockup/smoke_test.py
 python -B aurora/apps/browser-mockup/interaction_test.py
+python -B aurora/apps/browser-mockup/host_keyboard_test.py
 ```
 
 The first test proves the normal live-host path. The second proves that pointer
 events change real persisted UI state and that the frame changes with each page.
+The third proves keyboard events travel through `aurora-host` into the shared
+surface and drive the address/search flow.
 
 ## Notes
 

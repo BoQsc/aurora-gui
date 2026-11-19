@@ -25,6 +25,10 @@ These rules are mandatory for app presentation:
 - A host surface node must set `"flex": 1` to consume the remaining layout
   space. Fixed `width`/`height` without `flex` intentionally stays fixed when
   the host window is resized or maximized.
+- Use `"fit": "contain"` with a flexed surface when the composition must keep
+  its aspect ratio while the window resizes. The host centers the image,
+  fills the letterbox with the node background, and maps pointer/wheel
+  coordinates back into surface pixels.
 - A captured surface hides the cursor from the host window thread and restores
   it on Escape or focus loss. Producer-side `ShowCursor` does not control the
   host window's cursor state.
@@ -63,6 +67,11 @@ apps/<name>/
 
 Use `apps/pyramid-sample` for geometry and `apps/browser-mockup` for Aurora
 Canvas/text UI. `apps/new-app` remains the editable working app.
+
+For a reflowing application shell, use
+[`apps/browser-mockup-host`](browser-mockup-host/README.md): native host widgets
+and a flexed host canvas with a small control client. The live `browser-mockup`
+remains the fixed-surface Canvas example.
 
 ## Surface contract
 

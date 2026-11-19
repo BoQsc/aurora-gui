@@ -44,7 +44,7 @@ def main() -> int:
         "--host", str(HOST_EXE),
         "--out", str(OUT),
         "--watch", str(args.watch),
-        "--events", "pointer",
+        "--events", "pointer,key",
         "--title", "Aurora Browser Mockup",
         "--width", "960",
         "--height", "640",

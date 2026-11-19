@@ -30,17 +30,19 @@ struct CaveEdit
 
 struct WorldConfig
 {
-    string title = "Large Marching Cubes Terrain";
-    int chunksX = 16;
-    int chunksZ = 16;
+    string title = "Large Marching Cubes Terrain V2";
+    // v2: 32 x 32 chunks over a 4096 x 4096 world, with three mesh tiers.
+    int chunksX = 32;
+    int chunksZ = 32;
     int baseCells = 48;
     int verticalCells = 128;
-    double extentX = 2048;
+    double extentX = 4096;
     double extentY = 512;
-    double extentZ = 2048;
-    int lodCount = 2;
-    int lodFullRadiusChunks = 4;
-    double farPlane = 5000;
+    double extentZ = 4096;
+    int lodCount = 3;
+    int lodFullRadiusChunks = 3;
+    int lodMidRadiusChunks = 7;
+    double farPlane = 6000;
     TerrainEdit[] edits;
     CaveEdit[] caves;
 
@@ -53,7 +55,11 @@ struct WorldConfig
 
     double baseHeight(double x, double z) const
     {
+        // A broad ridge layer on top of the original rolling field gives v2
+        // visible mountain groups across the larger world without changing
+        // the local detail scale used by edits and collision.
         return 18.0 * sin(x * 0.007) * cos(z * 0.006) +
+            9.0 * sin(x * 0.0042 + 1.2) * cos(z * 0.0038 - 0.7) +
             6.0 * sin(x * 0.019 + z * 0.013) +
             3.0 * cos(z * 0.031) - 2.0;
     }

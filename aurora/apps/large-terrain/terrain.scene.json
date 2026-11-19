@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "window": {
-    "title": "Large Marching Cubes Terrain",
+    "title": "Large Marching Cubes Terrain V2",
     "width": 1600,
     "height": 900,
     "decorated": false
@@ -16,7 +16,7 @@
       {
         "id": "titlebar",
         "type": "titleBar",
-        "text": "Large Marching Cubes Terrain",
+        "text": "Large Marching Cubes Terrain V2",
         "height": 32,
         "background": "#0b1220",
         "border": "#1e293b",

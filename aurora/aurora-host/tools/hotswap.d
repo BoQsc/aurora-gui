@@ -14,7 +14,7 @@ import std.process : Pid, kill, spawnProcess, tryWait, wait;
 import std.random : uniform;
 import std.socket : InternetAddress, Socket, SocketException, TcpSocket;
 import std.stdio : File, stderr, stdout, writeln;
-import std.string : indexOf, replace, strip;
+import std.string : indexOf, replace, split, strip;
 
 enum int Width = 320;
 enum int Height = 240;
@@ -272,6 +272,9 @@ private JSONValue surfaceNode(string surfacePath, string[] events)
     surface.object["path"] = JSONValue(surfacePath);
     surface.object["width"] = JSONValue(sceneWidth);
     surface.object["height"] = JSONValue(sceneHeight);
+    surface.object["flex"] = JSONValue(1);
+    surface.object["fit"] = JSONValue("contain");
+    surface.object["background"] = JSONValue("#080c12");
     surface.object["staleMs"] = JSONValue(StaleMs);
     JSONValue[] eventValues;
     if (events !is null)
@@ -577,7 +580,12 @@ private void devMain(string[] args)
     if (!exists(source)) throw new Exception("missing live source: " ~ source);
 
     string[] events;
-    if (eventKind.length != 0) events ~= eventKind;
+    if (eventKind.length != 0)
+        foreach (part; eventKind.split(","))
+        {
+            const name = strip(part);
+            if (name.length != 0) events ~= name;
+        }
 
     const temp = buildPath(tempDir(), "aurora-live-dev-" ~
         to!string(GetCurrentProcessId()) ~ "-" ~ to!string(uniform(0, 100000)));

@@ -48,7 +48,7 @@ def main() -> int:
                 "--out", str(out),
                 "--watch", "4",
                 "--hold", "1",
-                "--events", "pointer",
+                "--events", "pointer,key",
                 "--title", TITLE,
                 "--width", "960",
                 "--height", "640",
@@ -70,8 +70,12 @@ def main() -> int:
                 "first frame is not a binary PPM")
         header = data[:32].split(b"\n", 3)
         require(header[0] == b"P6", "PPM magic changed")
-        require(header[1] in (b"960 640", b"960  640"),
-                f"unexpected surface dimensions: {header[1]!r}")
+        width, height = map(int, header[1].split())
+        require(width >= 200 and height >= 200,
+                f"unexpected host screenshot dimensions: {width}x{height}")
+        # Host DPI scaling may report 960x640 or a scaled 3:2 image.
+        require(abs(width * 640 - height * 960) <= 8,
+                f"host screenshot is not the 3:2 mockup: {width}x{height}")
         print(f"PASS browser mockup live host shot={shot} bytes={len(data)}")
     return 0
 

@@ -4,8 +4,8 @@ import aurorahost.events : HostEvent;
 import aurorahost.protocol : MaxInputEvents, MaxSurfacePixels,
     SurfaceBufferCount, SurfaceHeaderSize, SurfaceInputEventSize,
     SurfaceInputReserve, SurfaceMagic, SurfaceVersion;
-import aurora : Canvas, Color, Event, GuiWindow, Key, MouseButton, PointF,
-    Rect, RgbaImage, Widget;
+import aurora : Canvas, Color, Event, GuiWindow, Key, MouseButton, Point,
+    PointF, Rect, RgbaImage, Widget;
 import std.algorithm : canFind, equal;
 import std.conv : to;
 import std.exception : enforce;
@@ -24,6 +24,7 @@ struct SurfaceSpec
     int width;
     int height;
     int flex;
+    string fit;
     bool hasBackground;
     Color background;
     string[] events;
@@ -111,6 +112,7 @@ class SurfaceWidget : Widget
     private string _path;
     private int _width;
     private int _height;
+    private bool _fitContain;
     private bool _hasBackground;
     private Color _background;
     private bool _pointerEvents;
@@ -165,6 +167,7 @@ class SurfaceWidget : Widget
         _path = spec.path;
         _width = spec.width;
         _height = spec.height;
+        _fitContain = spec.fit == "contain";
         _hasBackground = spec.hasBackground;
         _background = spec.background;
         _pointerEvents = spec.events.canFind("pointer");
@@ -229,6 +232,47 @@ class SurfaceWidget : Widget
     {
         const value = cast(double) logical * scale;
         return value <= 0 ? 1 : cast(uint) (value + 0.5);
+    }
+
+    private Rect contentRect()
+    {
+        const full = Rect(0, 0, bounds().width, bounds().height);
+        if (!_fitContain || _image is null || full.empty)
+            return full;
+        const imageWidth = _image.width();
+        const imageHeight = _image.height();
+        if (imageWidth <= 0 || imageHeight <= 0)
+            return full;
+        const imageAspect = cast(double) imageWidth / imageHeight;
+        const boundsAspect = cast(double) full.width / full.height;
+        if (boundsAspect > imageAspect)
+        {
+            const width = cast(int) (full.height * imageAspect + 0.5);
+            return Rect((full.width - width) / 2, 0, width, full.height);
+        }
+        const height = cast(int) (full.width / imageAspect + 0.5);
+        return Rect(0, (full.height - height) / 2, full.width, height);
+    }
+
+    private Point mappedPointer(int x, int y)
+    {
+        if (!_fitContain || _image is null || _pixelWidth == 0 ||
+            _pixelHeight == 0)
+            return Point(x, y);
+        const destination = contentRect();
+        if (destination.width <= 0 || destination.height <= 0)
+            return Point(x, y);
+        int mappedX = (x - destination.x) * cast(int) _pixelWidth /
+            destination.width;
+        int mappedY = (y - destination.y) * cast(int) _pixelHeight /
+            destination.height;
+        if (mappedX < 0) mappedX = 0;
+        if (mappedY < 0) mappedY = 0;
+        if (mappedX >= cast(int) _pixelWidth)
+            mappedX = cast(int) _pixelWidth - 1;
+        if (mappedY >= cast(int) _pixelHeight)
+            mappedY = cast(int) _pixelHeight - 1;
+        return Point(mappedX, mappedY);
     }
 
     private void clearMapping(string error)
@@ -468,8 +512,9 @@ class SurfaceWidget : Widget
             case "wheel": code = 4; break;
             default: return;
         }
+        const mapped = mappedPointer(x, y);
         pushInput(kind == "wheel" ? 4 : code, button, Key.unknown, modifiers,
-            x, y, wheelX, wheelY);
+            mapped.x, mapped.y, wheelX, wheelY);
         if (onInput is null)
             return;
         HostEvent event;
@@ -686,7 +731,7 @@ class SurfaceWidget : Widget
         if (_image !is null)
         {
             auto imageStart = MonoTime.currTime;
-            canvas.drawImage(full, _image);
+            canvas.drawImage(contentRect(), _image);
             const imageMs = (MonoTime.currTime - imageStart)
                 .total!"usecs" / 1000.0;
             _imageSumMs += imageMs;

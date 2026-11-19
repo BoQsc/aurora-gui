@@ -14,11 +14,14 @@ EXE = ROOT / "aurora-host.exe"
 
 
 class Host:
-    def __init__(self, scene: Path, exe: Path = EXE, watch: bool = False) -> None:
+    def __init__(self, scene: Path, exe: Path = EXE, watch: bool = False,
+                 minimized: bool = True) -> None:
         self.exe = exe
         arguments = [str(exe), "--run", str(scene), "--control"]
         if watch:
             arguments.append("--watch")
+        if minimized:
+            arguments.append("--minimized")
         self.process = subprocess.Popen(
             arguments,
             cwd=str(ROOT),
@@ -65,7 +68,8 @@ class Host:
                 continue
             if line.startswith("RESPONSE "):
                 return json.loads(line[9:])
-            raise RuntimeError(f"unexpected host line: {line!r}")
+            if line != "READY":
+                self.errors.append(line)
 
     def request(self, command: str, **fields) -> dict:
         self.next_id += 1
@@ -101,7 +105,7 @@ class Host:
             elif line.startswith("RESPONSE "):
                 raise RuntimeError(f"unexpected response while waiting: {line!r}")
             elif line != "READY":
-                raise RuntimeError(f"unexpected host line: {line!r}")
+                self.errors.append(line)
 
     def pop_event(self, predicate, timeout: float = 5.0) -> dict:
         deadline = time.monotonic() + timeout
@@ -123,7 +127,7 @@ class Host:
             elif line.startswith("RESPONSE "):
                 raise RuntimeError(f"unexpected response while waiting: {line!r}")
             elif line != "READY":
-                raise RuntimeError(f"unexpected host line: {line!r}")
+                self.errors.append(line)
 
     def close(self) -> None:
         try:

@@ -265,7 +265,12 @@ The host prints `READY`. Send one JSON object per line:
 {"id":16,"command":"setIcon","icon":"<base64 ICO>"}
 {"id":17,"command":"close"}
 {"id":18,"command":"reload"}
+{"id":19,"command":"resize","width":1200,"height":900}
 ```
+
+`resize` is a diagnostic path that dispatches the same logical resize event as
+the native window loop. It updates layout, flex/contain surface placement, and
+input mapping without requiring desktop focus.
 
 Responses are `RESPONSE {json}`; button events are `EVENT {json}`. A button
 with an `action` field emits an action event instead of the default activation
@@ -368,9 +373,16 @@ height:
   "height": 240,
   "staleMs": 250,
   "events": ["pointer", "key"],
-  "flex": 1
+  "flex": 1,
+  "fit": "contain",
+  "background": "#080c12"
 }
 ```
+
+`fit` is `"stretch"` by default or `"contain"` to preserve the frame aspect
+ratio inside a flexed node. In contain mode the image is centered, the optional
+background fills the letterbox, and pointer/wheel coordinates are mapped back to
+the native surface pixels before entering the input ring.
 
 The file is a little-endian, versioned mapping. The generated
 [API reference](generated/api.md) lists every header offset and the event ring

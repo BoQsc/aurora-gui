@@ -2,6 +2,10 @@
 
 layout(push_constant) uniform PushConstants {
     mat4 mvp;
+    vec4 fogColor;
+    vec4 fogParams;
+    vec4 tint;
+    vec4 camera;
 } pc;
 
 layout(location = 0) in vec3 inPosition;

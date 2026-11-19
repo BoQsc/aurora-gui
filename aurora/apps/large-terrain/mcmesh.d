@@ -4,7 +4,8 @@ import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : MonoTime;
 import engine.lighting : LightingModel;
-import engine.lod : chunkLod, lodHorizontalCells, lodVerticalCells;
+import engine.lod : MaxLodLevels, chunkLod, lodHorizontalCells,
+    lodVerticalCells;
 import engine.world : TerrainMaterial, WorldConfig;
 import std.math : cos, sin, sqrt;
 import std.parallelism : totalCPUs;
@@ -40,8 +41,8 @@ struct MeshData
 
 struct TerrainChunk
 {
-    MeshData[2] lods;
-    bool[2] lodReady;
+    MeshData[MaxLodLevels] lods;
+    bool[MaxLodLevels] lodReady;
     double centerX;
     double centerZ;
 }
@@ -209,6 +210,7 @@ final class TerrainChunkRebuild
     {
         this.config = config;
         this.config.edits = config.edits.dup;
+        this.config.caves = config.caves.dup;
         this.lights = lights;
         this.indices = indices;
         mutex = new Mutex();
@@ -306,12 +308,60 @@ private final class RebuildWorker
     }
 }
 
-final class TerrainChunkCompletion
+struct LodRequest
 {
-    // Keep background completion from competing with the startup path.
-    enum int backgroundLodWorkers = 4;
+    int index;
+    int lod;
+}
 
-    private TerrainChunk[] chunks;
+/// Plans the v2 streaming work: chunks whose desired tier is not ready yet,
+/// nearest first. Callers submit the returned requests to TerrainLodRefresh.
+LodRequest[] planLodRefresh(const WorldConfig config,
+    const TerrainChunk[] chunks, double cameraX, double cameraZ,
+    int maxRequests = 24)
+{
+    LodRequest[] requests;
+    if (maxRequests <= 0) return requests;
+    foreach (index, chunk; chunks)
+    {
+        const lod = chunkLod(config, cameraX, cameraZ, chunk.centerX,
+            chunk.centerZ);
+        if (lod >= 0 && lod < chunk.lods.length && chunk.lodReady[lod])
+            continue;
+        const dx = chunk.centerX - cameraX;
+        const dz = chunk.centerZ - cameraZ;
+        requests ~= LodRequest(cast(int) index, lod);
+        // Cheap insertion by squared distance; the queue is short and this
+        // runs at most a few times per second.
+        for (size_t slot = requests.length - 1; slot > 0; --slot)
+        {
+            const previous = chunks[requests[slot - 1].index];
+            const current = chunks[requests[slot].index];
+            const pdx = previous.centerX - cameraX;
+            const pdz = previous.centerZ - cameraZ;
+            const cdx = current.centerX - cameraX;
+            const cdz = current.centerZ - cameraZ;
+            if (pdx * pdx + pdz * pdz <= cdx * cdx + cdz * cdz) break;
+            auto swap = requests[slot - 1];
+            requests[slot - 1] = requests[slot];
+            requests[slot] = swap;
+        }
+        if (requests.length > maxRequests)
+            requests.length = maxRequests;
+    }
+    return requests;
+}
+
+/// Builds one LOD for each requested chunk on a background thread. v2 keeps
+/// only the desired tier resident per chunk, so the job returns a replacement
+/// chunk whose single requested LOD is ready.
+final class TerrainLodRefresh
+{
+    enum int maxWorkers = 8;
+
+    int[] indices;
+    int[] lods;
+    TerrainChunk[] chunks;
     private WorldConfig config;
     private LightingModel lights;
     private Thread worker;
@@ -321,11 +371,14 @@ final class TerrainChunkCompletion
     private MonoTime started;
     private MonoTime ended;
 
-    this(TerrainChunk[] chunks, WorldConfig config, LightingModel lights)
+    this(WorldConfig config, LightingModel lights, int[] indices, int[] lods)
     {
-        this.chunks = chunks.dup;
         this.config = config;
+        this.config.edits = config.edits.dup;
+        this.config.caves = config.caves.dup;
         this.lights = lights;
+        this.indices = indices;
+        this.lods = lods;
         mutex = new Mutex();
     }
 
@@ -347,21 +400,33 @@ final class TerrainChunkCompletion
     {
         try
         {
-            Thread[] workers;
-            CompletionWorker[] jobs;
-            foreach (job; 0 .. backgroundLodWorkers)
+            chunks.length = indices.length;
+            const workerCount = indices.length < maxWorkers
+                ? cast(int) indices.length : maxWorkers;
+            if (workerCount > 1)
             {
-                jobs ~= new CompletionWorker(chunks, config, lights, job,
-                    backgroundLodWorkers);
-                workers ~= new Thread(&jobs[$ - 1].run);
-                workers[$ - 1].start();
+                RefreshWorker[] jobs;
+                Thread[] workers;
+                foreach (job; 0 .. workerCount)
+                {
+                    jobs ~= new RefreshWorker(chunks, config, lights, indices,
+                        lods, job, workerCount);
+                    workers ~= new Thread(&jobs[$ - 1].run);
+                    workers[$ - 1].start();
+                }
+                foreach (current; workers)
+                    current.join();
+                foreach (job; jobs)
+                    if (job.failureMessage.length != 0)
+                        throw new Exception("LOD refresh worker: " ~
+                            job.failureMessage);
             }
-            foreach (current; workers)
-                current.join();
-            foreach (job; jobs)
-                if (job.failureMessage.length != 0)
-                    throw new Exception("completion worker: " ~
-                        job.failureMessage);
+            else
+            {
+                foreach (slot, index; indices)
+                    chunks[slot] = buildTerrainChunkLod(config, lights, index,
+                        lods[slot]);
+            }
         }
         catch (Throwable error)
             failureMessage = error.msg;
@@ -370,13 +435,11 @@ final class TerrainChunkCompletion
             done = true;
     }
 
-    TerrainChunk[] take()
+    void take()
     {
         if (worker !is null) worker.join();
         if (failureMessage.length != 0)
-            throw new Exception("chunk LOD completion failed: " ~
-                failureMessage);
-        return chunks;
+            throw new Exception("chunk LOD refresh failed: " ~ failureMessage);
     }
 
     double elapsedMs() const
@@ -385,21 +448,25 @@ final class TerrainChunkCompletion
     }
 }
 
-private final class CompletionWorker
+private final class RefreshWorker
 {
     private TerrainChunk[] chunks;
     private WorldConfig config;
     private LightingModel lights;
+    private int[] indices;
+    private int[] lods;
     private int first;
     private int stride;
     string failureMessage;
 
     this(TerrainChunk[] chunks, WorldConfig config, LightingModel lights,
-        int first, int stride)
+        int[] indices, int[] lods, int first, int stride)
     {
         this.chunks = chunks;
         this.config = config;
         this.lights = lights;
+        this.indices = indices;
+        this.lods = lods;
         this.first = first;
         this.stride = stride;
     }
@@ -408,17 +475,10 @@ private final class CompletionWorker
     {
         try
         {
-            ensureTable();
-            foreach (index; first .. chunks.length)
-                if ((index % stride) == first)
-                    foreach (lod; 0 .. chunks[index].lods.length)
-                        if (!chunks[index].lodReady[lod])
-                        {
-                            chunks[index].lods[lod] = buildChunkLodMesh(
-                                config, lights, cast(int) index,
-                                cast(int) lod);
-                            chunks[index].lodReady[lod] = true;
-                        }
+            foreach (slot; first .. indices.length)
+                if ((slot % stride) == first)
+                    chunks[slot] = buildTerrainChunkLod(config, lights,
+                        indices[slot], lods[slot]);
         }
         catch (Throwable error)
             failureMessage = error.msg;
@@ -794,6 +854,18 @@ TerrainChunk buildTerrainChunk(WorldConfig config, LightingModel lights,
     return chunk;
 }
 
+TerrainChunk buildTerrainChunkLod(WorldConfig config, LightingModel lights,
+    int index, int lod)
+{
+    ensureTable();
+    if (lod < 0 || lod >= MaxLodLevels)
+        throw new Exception("chunk LOD is out of range");
+    auto chunk = makeTerrainChunk(config, index);
+    chunk.lods[lod] = buildChunkLodMesh(config, lights, index, lod);
+    chunk.lodReady[lod] = true;
+    return chunk;
+}
+
 TerrainChunk buildTerrainChunkForCamera(WorldConfig config,
     LightingModel lights, int index, double cameraX, double cameraZ)
 {
@@ -801,9 +873,7 @@ TerrainChunk buildTerrainChunkForCamera(WorldConfig config,
     auto chunk = makeTerrainChunk(config, index);
     const lod = chunkLod(config, cameraX, cameraZ, chunk.centerX,
         chunk.centerZ);
-    chunk.lods[lod] = buildChunkLodMesh(config, lights, index, lod);
-    chunk.lodReady[lod] = true;
-    return chunk;
+    return buildTerrainChunkLod(config, lights, index, lod);
 }
 
 MeshData buildTorusMesh()

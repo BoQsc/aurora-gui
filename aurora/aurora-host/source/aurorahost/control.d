@@ -10,7 +10,7 @@ import aurorahost.scene : applyScene, describeScene, loadScene,
 import aurorahost.scene_icon : decodeIcon, sceneIconPath;
 import aurorahost.surface : SurfaceInfo;
 import aurora : ContextMenu, FileDialogMode, FileDialogOptions, GuiWindow, Key,
-    MouseButton, Point, Rect, TextEditor, Theme, UiTestDriver, Widget,
+    MouseButton, Point, Rect, Size, TextEditor, Theme, UiTestDriver, Widget,
     runFileDialogWindow;
 import aurora.image : RgbaImage, decodeIcoImage;
 import core.sync.mutex : Mutex;
@@ -559,6 +559,9 @@ class ControlServer
                     break;
                 case "click":
                     click(requestId, document);
+                    break;
+                case "resize":
+                    resizeWindow(requestId, document);
                     break;
                 case "screenshot":
                     screenshot(requestId, document);
@@ -1371,6 +1374,22 @@ class ControlServer
         }
         JSONValue[string] extra;
         extra["node"] = JSONValue(node);
+        respond(id, true, null, extra);
+    }
+
+    private void resizeWindow(long id, JSONValue document)
+    {
+        const width = optionalInt(document, "width", -1);
+        const height = optionalInt(document, "height", -1);
+        enforce(width >= 200 && width <= 10000 &&
+            height >= 200 && height <= 10000,
+            "resize width and height must be between 200 and 10000");
+        auto driver = new UiTestDriver(_window);
+        driver.resize(Size(cast(int) width, cast(int) height));
+        driver.paint();
+        JSONValue[string] extra;
+        extra["width"] = JSONValue(width);
+        extra["height"] = JSONValue(height);
         respond(id, true, null, extra);
     }
 

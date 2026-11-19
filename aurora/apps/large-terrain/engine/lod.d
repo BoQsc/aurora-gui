@@ -3,10 +3,14 @@ module engine.lod;
 import engine.world : WorldConfig;
 import std.math : floor;
 
-/// Returns the LOD for one chunk. Rings 0..lodFullRadiusChunks use LOD 0;
-/// every chunk past that radius uses the half-resolution LOD 1.
-/// Rings are measured in chunks, not world units, so the rule does not change
-/// with the configured chunk size.
+/// Number of LOD tiers every chunk carries. v2 adds the quarter-resolution
+/// far tier used by the 4096-unit world.
+enum int MaxLodLevels = 3;
+
+/// Returns the LOD for one chunk. Rings 0..lodFullRadiusChunks use LOD 0,
+/// rings past that up to lodMidRadiusChunks use LOD 1, and everything farther
+/// uses the quarter-resolution LOD 2. Rings are measured in chunks, not world
+/// units, so the rule does not change with the configured chunk size.
 int chunkLod(const WorldConfig config, double cameraX, double cameraZ,
     double centerX, double centerZ)
 {
@@ -23,7 +27,9 @@ int chunkLod(const WorldConfig config, double cameraX, double cameraZ,
     const dz = cameraChunkZ > chunkZ
         ? cameraChunkZ - chunkZ : chunkZ - cameraChunkZ;
     const ring = dx > dz ? dx : dz;
-    return ring > config.lodFullRadiusChunks ? 1 : 0;
+    if (ring <= config.lodFullRadiusChunks) return 0;
+    if (ring <= config.lodMidRadiusChunks) return 1;
+    return 2;
 }
 
 /// Horizontal marching-cubes cell count for a LOD; each LOD halves it.

@@ -1,0 +1,283 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Aurora Browser Mockup",
+    "width": 1100,
+    "height": 760,
+    "theme": "dark"
+  },
+  "themeOverrides": {
+    "windowBackground": "#0b0f15",
+    "panelBackground": "#111722",
+    "panelElevated": "#17202c",
+    "text": "#e7eef6",
+    "textMuted": "#8c9caf",
+    "border": "#232d3a",
+    "accent": "#38bdf8",
+    "selection": "#15384d",
+    "fieldBackground": "#0c121a",
+    "buttonBackground": "#16202c",
+    "buttonHover": "#1d2a38",
+    "buttonPressed": "#243447",
+    "cornerRadius": 7,
+    "borderWidth": 1,
+    "controlHeight": 30,
+    "fontScale": 1,
+    "spacing": 6
+  },
+  "root": {
+    "id": "root",
+    "type": "column",
+    "spacing": 0,
+    "padding": 0,
+    "background": "#0b0f15",
+    "children": [
+      {
+        "id": "tab-row",
+        "type": "row",
+        "height": 42,
+        "spacing": 4,
+        "padding": 5,
+        "background": "#10161f",
+        "border": "#232d3a",
+        "children": [
+          {
+            "id": "brand",
+            "type": "label",
+            "text": "AURORA",
+            "width": 82,
+            "height": 30,
+            "scale": 1,
+            "textColor": "#38bdf8"
+          },
+          {
+            "id": "tabs",
+            "type": "tabs",
+            "width": 560,
+            "height": 30,
+            "items": [
+              {
+                "label": "●  Aurora Start",
+                "action": "tab.0",
+                "active": true
+              }
+            ]
+          },
+          {
+            "id": "new-tab",
+            "type": "button",
+            "style": "toolbar",
+            "text": "+",
+            "width": 30,
+            "height": 30,
+            "action": "tab.new",
+            "tooltip": "New tab"
+          },
+          {
+            "id": "close-tab",
+            "type": "button",
+            "style": "toolbar",
+            "text": "×",
+            "width": 30,
+            "height": 30,
+            "action": "tab.close",
+            "tooltip": "Close active tab"
+          },
+          {
+            "type": "spacer",
+            "flex": 1
+          },
+          {
+            "type": "label",
+            "text": "LOCAL SESSION",
+            "width": 108,
+            "scale": 1,
+            "textColor": "#5f7186",
+            "align": "right"
+          }
+        ]
+      },
+      {
+        "id": "nav-row",
+        "type": "row",
+        "height": 48,
+        "spacing": 5,
+        "padding": 7,
+        "background": "#0f161f",
+        "border": "#232d3a",
+        "children": [
+          {
+            "id": "back",
+            "type": "button",
+            "style": "toolbar",
+            "text": "‹",
+            "width": 32,
+            "height": 32,
+            "action": "nav.back",
+            "tooltip": "Back"
+          },
+          {
+            "id": "forward",
+            "type": "button",
+            "style": "toolbar",
+            "text": "›",
+            "width": 32,
+            "height": 32,
+            "action": "nav.forward",
+            "tooltip": "Forward"
+          },
+          {
+            "id": "reload",
+            "type": "button",
+            "style": "toolbar",
+            "icon": "refresh",
+            "text": "",
+            "width": 32,
+            "height": 32,
+            "action": "nav.reload",
+            "tooltip": "Reload"
+          },
+          {
+            "id": "home",
+            "type": "button",
+            "style": "toolbar",
+            "icon": "home",
+            "text": "",
+            "width": 32,
+            "height": 32,
+            "action": "nav.home",
+            "tooltip": "Home"
+          },
+          {
+            "id": "address",
+            "type": "textField",
+            "flex": 1,
+            "height": 32,
+            "text": "aurora://start",
+            "background": "#0c121a",
+            "textColor": "#dbe7f2",
+            "tooltip": "Type an address or search"
+          },
+          {
+            "id": "go",
+            "type": "button",
+            "style": "toolbar",
+            "text": "Go",
+            "width": 46,
+            "height": 32,
+            "action": "address.go"
+          },
+          {
+            "id": "star",
+            "type": "button",
+            "style": "toolbar",
+            "text": "Save",
+            "width": 56,
+            "height": 32,
+            "action": "bookmark.toggle"
+          }
+        ]
+      },
+      {
+        "id": "bookmark-row",
+        "type": "row",
+        "height": 36,
+        "spacing": 5,
+        "padding": 5,
+        "background": "#0d131b",
+        "border": "#232d3a",
+        "children": [
+          {
+            "type": "label",
+            "text": "BOOKMARKS",
+            "width": 78,
+            "scale": 1,
+            "textColor": "#5f7186"
+          },
+          {
+            "id": "bookmark-start",
+            "type": "button",
+            "style": "toolbar",
+            "text": "Aurora Start",
+            "width": 102,
+            "height": 26,
+            "action": "bookmark.start"
+          },
+          {
+            "id": "bookmark-design",
+            "type": "button",
+            "style": "toolbar",
+            "text": "Design Notes",
+            "width": 112,
+            "height": 26,
+            "action": "bookmark.design"
+          },
+          {
+            "id": "bookmark-docs",
+            "type": "button",
+            "style": "toolbar",
+            "text": "Docs",
+            "width": 62,
+            "height": 26,
+            "action": "bookmark.docs"
+          },
+          {
+            "id": "bookmark-gallery",
+            "type": "button",
+            "style": "toolbar",
+            "text": "Gallery",
+            "width": 72,
+            "height": 26,
+            "action": "bookmark.gallery"
+          },
+          {
+            "type": "spacer",
+            "flex": 1
+          },
+          {
+            "type": "label",
+            "text": "OFFLINE  /  LOCAL",
+            "scale": 1,
+            "textColor": "#5f7186",
+            "align": "right"
+          }
+        ]
+      },
+      {
+        "id": "page",
+        "type": "canvas",
+        "flex": 1,
+        "background": "#09111d",
+        "events": ["pointer", "tick"],
+        "tickHz": 4
+      },
+      {
+        "id": "status-row",
+        "type": "row",
+        "height": 30,
+        "spacing": 8,
+        "padding": 6,
+        "background": "#0c1118",
+        "border": "#1c2632",
+        "children": [
+          {
+            "id": "status",
+            "type": "label",
+            "text": "READY  /  aurora://start",
+            "scale": 1,
+            "textColor": "#5d6e82",
+            "flex": 1
+          },
+          {
+            "id": "status-mode",
+            "type": "label",
+            "text": "LOCAL MOCKUP  ·  NO NETWORK",
+            "scale": 1,
+            "textColor": "#5d6e82",
+            "align": "right"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -8,6 +8,7 @@ module browsermockup;
 
 import aurora.canvas : Canvas;
 import aurora.color : Color;
+import aurora.event : Key, KeyModifier;
 import aurora.font : FontRole;
 import aurora.surface : Surface;
 import aurora.types;
@@ -21,6 +22,7 @@ import std.file : exists, readText, write;
 import std.json : JSONValue, parseJSON, toJSON;
 import std.mmfile : MmFile;
 import std.stdio : File;
+import std.string : indexOf, strip, toLower;
 import std.utf : toUTF32;
 
 enum Revision = 1;
@@ -33,7 +35,7 @@ enum int StatusH = 24;
 enum int MaxTabs = 4;
 enum int HistorySlots = 12;
 enum int LoadingFrames = 20;
-enum int PageCount = 4;
+enum int PageCount = 5;
 
 // ---------------------------------------------------------------------------
 // Shared surface
@@ -121,6 +123,12 @@ struct LiveSurface
                 ((head + i) % EventCapacity) * EventBytes;
             events[used].kind = data[offset];
             events[used].button = data[offset + 1];
+            ushort key;
+            uint modifiers;
+            memcpy(&key, data.ptr + offset + 2, ushort.sizeof);
+            memcpy(&modifiers, data.ptr + offset + 4, uint.sizeof);
+            events[used].key = key;
+            events[used].modifiers = modifiers;
             int x;
             int y;
             memcpy(&x, data.ptr + offset + 8, int.sizeof);
@@ -143,6 +151,8 @@ struct InputEvent
 {
     int kind;
     int button;
+    int key;
+    uint modifiers;
     int x;
     int y;
 }
@@ -338,6 +348,7 @@ enum Page : int
     design,
     docs,
     gallery,
+    search,
 }
 
 enum Action
@@ -359,6 +370,7 @@ enum Action
     copyCode,
     articleNext,
     gallerySwatch,
+    searchResult,
     copyHex,
     menuItem,
     suggestion,
@@ -397,6 +409,7 @@ struct TabState
     bool starred;
     int docSection;
     int galleryIndex;
+    string query;
 
     void reset()
     {
@@ -406,6 +419,7 @@ struct TabState
         starred = false;
         docSection = 0;
         galleryIndex = 0;
+        query = "";
     }
 
     Page page() const
@@ -426,6 +440,8 @@ struct Browser
     bool menuOpen;
     bool suggestOpen;
     bool aboutOpen;
+    bool addressFocused;
+    bool addressSelectAll;
     bool mouseDown;
     int mouseX;
     int mouseY;
@@ -437,6 +453,8 @@ struct Browser
     int toastSerial;
     string toast;
     string statePath;
+    string addressText;
+    int addressCaret;
     Hit pressHit;
     Hit hover;
 
@@ -450,12 +468,16 @@ struct Browser
         menuOpen = false;
         suggestOpen = false;
         aboutOpen = false;
+        addressFocused = false;
+        addressSelectAll = false;
         mouseX = -100;
         mouseY = -100;
         loadingTicks = 0;
         toastTicks = 0;
         copiedTicks = 0;
         toast = "";
+        addressText = "";
+        addressCaret = 0;
         foreach (i; 0 .. MaxTabs) tabs[i].reset();
         loadState();
         hover = hitTest(mouseX, mouseY);
@@ -508,6 +530,8 @@ struct Browser
                 const gallery = saved["galleryIndex"].get!int;
                 if (gallery >= 0 && gallery < 6) tabs[i].galleryIndex = gallery;
                 tabs[i].starred = saved["starred"].get!bool;
+                if (auto query = "query" in saved)
+                    tabs[i].query = (*query).get!string;
             }
             if (tabCount < 1) tabCount = 1;
             if (activeTab >= tabCount) activeTab = tabCount - 1;
@@ -538,6 +562,7 @@ struct Browser
             saved.object["docSection"] = JSONValue(tabs[i].docSection);
             saved.object["galleryIndex"] = JSONValue(tabs[i].galleryIndex);
             saved.object["starred"] = JSONValue(tabs[i].starred);
+            saved.object["query"] = JSONValue(tabs[i].query);
             savedTabs ~= saved;
         }
         state.object["tabs"] = JSONValue(savedTabs);
@@ -555,6 +580,7 @@ struct Browser
 
     void navigate(Page page)
     {
+        blurAddress();
         auto currentTab = tab();
         if (currentTab.historyLength > 0 && currentTab.page() == page)
         {
@@ -584,6 +610,7 @@ struct Browser
 
     void goBack()
     {
+        blurAddress();
         auto currentTab = tab();
         if (currentTab.historyIndex > 0)
         {
@@ -597,6 +624,7 @@ struct Browser
 
     void goForward()
     {
+        blurAddress();
         auto currentTab = tab();
         if (currentTab.historyIndex + 1 < currentTab.historyLength)
         {
@@ -610,6 +638,7 @@ struct Browser
 
     void reload()
     {
+        blurAddress();
         loadingTicks = LoadingFrames;
         suggestOpen = false;
         menuOpen = false;
@@ -623,6 +652,7 @@ struct Browser
 
     void openNewTab()
     {
+        blurAddress();
         if (tabCount >= MaxTabs)
         {
             notify("Four tabs is the demo limit");
@@ -640,6 +670,7 @@ struct Browser
 
     void closeTab(int index)
     {
+        blurAddress();
         if (index < 0 || index >= tabCount) return;
         if (tabCount == 1)
         {
@@ -664,6 +695,7 @@ struct Browser
 
     void toggleStar()
     {
+        blurAddress();
         auto currentTab = tab();
         currentTab.starred = !currentTab.starred;
         suggestOpen = false;
@@ -698,10 +730,11 @@ struct Browser
             case Page.design: return "Designing for focus";
             case Page.docs: return "Docs & guides";
             case Page.gallery: return "Color studies";
+            case Page.search: return "Search";
         }
     }
 
-    string pageURL(Page page, int section) const
+    string pageURL(Page page, int section, string query = "") const
     {
         final switch (page)
         {
@@ -717,13 +750,260 @@ struct Browser
                     default: return "aurora://docs/overview";
                 }
             case Page.gallery: return "aurora://gallery";
+            case Page.search:
+                return "aurora://search" ~
+                    (query.length > 0 ? "?q=" ~ query : "");
         }
+    }
+
+    string currentURL() const
+    {
+        return pageURL(tab().page(), tab().docSection, tab().query);
     }
 
     // ----- input -----------------------------------------------------------
 
+    void blurAddress()
+    {
+        addressFocused = false;
+        addressSelectAll = false;
+        addressText = "";
+        addressCaret = 0;
+        suggestOpen = false;
+    }
+
+    void focusAddress()
+    {
+        menuOpen = false;
+        aboutOpen = false;
+        addressFocused = true;
+        addressSelectAll = true;
+        suggestOpen = true;
+        addressText = currentURL();
+        addressCaret = cast(int) addressText.length;
+    }
+
+    void submitAddress()
+    {
+        auto query = strip(addressText);
+        navigateAddress(query);
+        blurAddress();
+    }
+
+    void navigateAddress(string input)
+    {
+        auto q = strip(input).toLower;
+        if (q.length == 0)
+        {
+            navigate(Page.start);
+            return;
+        }
+        if (q.length >= 9 && q[0 .. 9] == "aurora://")
+            q = q[9 .. $];
+        if (q.indexOf("docs") >= 0 || q.indexOf("surface") >= 0 ||
+            q.indexOf("guide") >= 0)
+        {
+            auto currentTab = tab();
+            if (q.indexOf("input") >= 0 || q.indexOf("pointer") >= 0)
+                currentTab.docSection = 1;
+            else if (q.indexOf("frame") >= 0)
+                currentTab.docSection = 2;
+            else if (q.indexOf("life") >= 0 || q.indexOf("handshake") >= 0)
+                currentTab.docSection = 3;
+            else
+                currentTab.docSection = 0;
+            navigate(Page.docs);
+            return;
+        }
+        if (q.indexOf("design") >= 0 || q.indexOf("focus") >= 0 ||
+            q.indexOf("journal") >= 0)
+        {
+            navigate(Page.design);
+            return;
+        }
+        if (q.indexOf("gallery") >= 0 || q.indexOf("color") >= 0 ||
+            q.indexOf("palette") >= 0)
+        {
+            navigate(Page.gallery);
+            return;
+        }
+        if (q.indexOf("start") >= 0 || q.indexOf("home") >= 0 ||
+            q.indexOf("aurora") >= 0)
+        {
+            navigate(Page.start);
+            return;
+        }
+        tab().query = strip(input);
+        navigate(Page.search);
+    }
+
+    void insertAddress(char ch)
+    {
+        if (addressSelectAll)
+        {
+            addressText = "";
+            addressCaret = 0;
+            addressSelectAll = false;
+        }
+        if (addressCaret < 0) addressCaret = 0;
+        if (addressCaret > cast(int) addressText.length)
+            addressCaret = cast(int) addressText.length;
+        addressText = addressText[0 .. addressCaret] ~ ch ~ addressText[addressCaret .. $];
+        addressCaret++;
+        suggestOpen = true;
+    }
+
+    void backspaceAddress()
+    {
+        if (addressSelectAll)
+        {
+            addressText = "";
+            addressCaret = 0;
+            addressSelectAll = false;
+            return;
+        }
+        if (addressCaret <= 0) return;
+        addressText = addressText[0 .. addressCaret - 1] ~
+            addressText[addressCaret .. $];
+        addressCaret--;
+    }
+
+    void deleteAddress()
+    {
+        if (addressSelectAll)
+        {
+            addressText = "";
+            addressCaret = 0;
+            addressSelectAll = false;
+            return;
+        }
+        if (addressCaret >= addressText.length) return;
+        addressText = addressText[0 .. addressCaret] ~
+            addressText[addressCaret + 1 .. $];
+    }
+
+    char keyCharacter(int key, bool shift)
+    {
+        if (key >= cast(int) Key.a && key <= cast(int) Key.z)
+        {
+            char value = cast(char) ('a' + key - cast(int) Key.a);
+            return shift ? cast(char) (value - 32) : value;
+        }
+        if (key >= cast(int) Key.digit0 && key <= cast(int) Key.digit9)
+            return cast(char) ('0' + key - cast(int) Key.digit0);
+        switch (key)
+        {
+            case cast(int) Key.space: return ' ';
+            case cast(int) Key.minus: return shift ? '_' : '-';
+            case cast(int) Key.equal: return shift ? '+' : '=';
+            case cast(int) Key.leftBracket: return shift ? '{' : '[';
+            case cast(int) Key.rightBracket: return shift ? '}' : ']';
+            case cast(int) Key.backslash: return shift ? '|' : '\\';
+            case cast(int) Key.semicolon: return shift ? ':' : ';';
+            case cast(int) Key.apostrophe: return shift ? '"' : '\'';
+            case cast(int) Key.grave: return shift ? '~' : '`';
+            case cast(int) Key.comma: return shift ? '<' : ',';
+            case cast(int) Key.period: return shift ? '>' : '.';
+            case cast(int) Key.slash: return shift ? '?' : '/';
+            default: return '\0';
+        }
+    }
+
+    void handleKey(InputEvent event)
+    {
+        const control = (event.modifiers & cast(uint) KeyModifier.control) != 0;
+        const shift = (event.modifiers & cast(uint) KeyModifier.shift) != 0;
+        if (control && (event.key == cast(int) Key.l ||
+            event.key == cast(int) Key.k))
+        {
+            focusAddress();
+            return;
+        }
+        if (control && event.key == cast(int) Key.t)
+        {
+            openNewTab();
+            return;
+        }
+        if (control && event.key == cast(int) Key.w)
+        {
+            closeTab(activeTab);
+            return;
+        }
+        if (control && event.key == cast(int) Key.r)
+        {
+            reload();
+            return;
+        }
+        if (control && event.key == cast(int) Key.a && addressFocused)
+        {
+            addressSelectAll = true;
+            return;
+        }
+        if (event.key == cast(int) Key.escape)
+        {
+            if (addressFocused) blurAddress();
+            else
+            {
+                menuOpen = false;
+                suggestOpen = false;
+                aboutOpen = false;
+            }
+            return;
+        }
+        if (!addressFocused) return;
+        if (event.key == cast(int) Key.enter)
+        {
+            submitAddress();
+            return;
+        }
+        if (event.key == cast(int) Key.backspace)
+        {
+            backspaceAddress();
+            return;
+        }
+        if (event.key == cast(int) Key.deleteKey)
+        {
+            deleteAddress();
+            return;
+        }
+        if (event.key == cast(int) Key.left)
+        {
+            if (addressCaret > 0) addressCaret--;
+            addressSelectAll = false;
+            return;
+        }
+        if (event.key == cast(int) Key.right)
+        {
+            if (addressCaret < addressText.length) addressCaret++;
+            addressSelectAll = false;
+            return;
+        }
+        if (event.key == cast(int) Key.home)
+        {
+            addressCaret = 0;
+            addressSelectAll = false;
+            return;
+        }
+        if (event.key == cast(int) Key.end)
+        {
+            addressCaret = cast(int) addressText.length;
+            addressSelectAll = false;
+            return;
+        }
+        if (control || (event.modifiers & cast(uint) KeyModifier.meta) != 0)
+            return;
+        const value = keyCharacter(event.key, shift);
+        if (value != '\0') insertAddress(value);
+    }
+
     void onInput(InputEvent event)
     {
+        if (event.kind == 5)
+        {
+            handleKey(event);
+            return;
+        }
+        if (event.kind == 6) return;
         mouseX = event.x;
         mouseY = event.y;
         if (event.kind == 1 && event.button == 1)
@@ -754,6 +1034,7 @@ struct Browser
         {
             case Action.none:
                 if (aboutOpen) aboutOpen = false;
+                else if (addressFocused) blurAddress();
                 else
                 {
                     if (menuOpen) menuOpen = false;
@@ -787,8 +1068,7 @@ struct Browser
                 home();
                 break;
             case Action.address:
-                menuOpen = false;
-                suggestOpen = true;
+                focusAddress();
                 break;
             case Action.star:
                 toggleStar();
@@ -836,8 +1116,12 @@ struct Browser
                 if (hit.data >= 0 && hit.data < 4)
                 {
                     navigate(cast(Page) hit.data);
-                    suggestOpen = false;
                 }
+                break;
+            case Action.searchResult:
+                if (hit.data == 0) navigate(Page.design);
+                else if (hit.data == 1) navigate(Page.docs);
+                else if (hit.data == 2) navigate(Page.gallery);
                 break;
             case Action.aboutClose:
                 aboutOpen = false;
@@ -931,6 +1215,11 @@ struct Browser
         return Rect(72 + index * 280, pageTop() + 300, 256, 124);
     }
 
+    Rect searchResultRect(int index) const
+    {
+        return Rect(64, pageTop() + 182 + index * 100, Width - 128, 88);
+    }
+
     Rect articleNextRect() const
     {
         return Rect(64, pageTop() + 388, 250, 28);
@@ -1002,6 +1291,7 @@ struct Browser
         }
         if (suggestOpen)
         {
+            if (addressRect().has(x, y)) return Hit(Action.address, 0);
             foreach (i; 0 .. 4)
                 if (suggestRowRect(i).has(x, y))
                     return Hit(Action.suggestion, i);
@@ -1053,6 +1343,11 @@ struct Browser
                 if (copyHexRect().has(x, y))
                     return Hit(Action.copyHex, 0);
                 break;
+            case Page.search:
+                foreach (i; 0 .. 3)
+                    if (searchResultRect(i).has(x, y))
+                        return Hit(Action.searchResult, i);
+                break;
             default:
                 break;
         }
@@ -1077,6 +1372,11 @@ struct Browser
         add(menuOpen ? 1 : 0);
         add(suggestOpen ? 1 : 0);
         add(aboutOpen ? 1 : 0);
+        add(addressFocused ? 1 : 0);
+        add(addressSelectAll ? 1 : 0);
+        add(cast(ulong) addressCaret);
+        foreach (ch; addressText) add(ch);
+        if (addressFocused) add(cast(ulong) (frame / 30));
         add(cast(ulong) hover.action);
         add(cast(ulong) hover.data);
         add(loadingTicks > 0 ? cast(ulong) loadingTicks : 0);
@@ -1089,6 +1389,7 @@ struct Browser
         add(tabs[activeTab].starred ? 1 : 0);
         add(cast(ulong) tabs[activeTab].docSection);
         add(cast(ulong) tabs[activeTab].galleryIndex);
+        foreach (ch; tabs[activeTab].query) add(ch);
         return hash;
     }
 }
@@ -1245,6 +1546,17 @@ private struct Renderer
         return layout.measuredSize.height;
     }
 
+    private void textInRect(int encodedScale, string value, int x, int y,
+        int w, int h, Color color)
+    {
+        if (value.length == 0 || w <= 0 || h <= 0) return;
+        const scale = encodedScale < 0 ? -encodedScale : encodedScale;
+        const role = encodedScale < 0 ? FontRole.monospace : FontRole.ui;
+        auto layout = canvas.inner.layoutText(dtext(value), scale, role);
+        auto child = canvas.inner.clipped(ar(x, y, w, h));
+        child.drawLayout(Point(x, y), layout, color);
+    }
+
     // ----- common icons ----------------------------------------------------
 
     private void chevron(int x, int y, int direction, Color color)
@@ -1290,8 +1602,21 @@ private struct Renderer
     private void starIcon(float x, float y, float size, Color color,
         bool filled)
     {
-        if (filled) canvas.star(x, y, size, size * 0.45f, color);
-        else canvas.star(x, y, size, size * 0.45f, color);
+        // A small outlined star collapses into overlapping strokes; use a
+        // solid star and distinguish saved/unsaved by color instead.
+        canvas.star(x, y, size, size * 0.45f, color);
+    }
+
+    private Color pageAccent(Page page) const
+    {
+        final switch (page)
+        {
+            case Page.start: return green();
+            case Page.design: return warm();
+            case Page.docs: return violet();
+            case Page.gallery: return danger();
+            case Page.search: return accent();
+        }
     }
 
     private void menuIcon(float x, float y, Color color)
@@ -1376,6 +1701,8 @@ private struct Renderer
             }
             else if (b.hovered(Action.tab, i) || b.hovered(Action.tabClose, i))
                 canvas.roundRect(area.x, area.y, area.w, area.h, 9, C(0x202a37));
+            canvas.circle(area.x + 16, area.y + 17, 3.2f,
+                pageAccent(b.tabs[i].page()).withAlpha(active ? 255 : 155));
             if (active || b.hovered(Action.tab, i))
                 closeIcon(area.x + area.w - 18, area.y + 17,
                     active ? ink() : muted());
@@ -1409,6 +1736,14 @@ private struct Renderer
         canvas.roundOutline(address.x, address.y, address.w, address.h,
             19, addressHot ? 1.6f : 1.0f,
             addressHot ? accent() : C(0x2b3747));
+        if (b.addressFocused && b.addressSelectAll && b.addressText.length > 0)
+        {
+            auto selectionWidth = measure(fonts.monoSmall, b.addressText);
+            const maxWidth = address.w - 56;
+            if (selectionWidth > maxWidth) selectionWidth = maxWidth;
+            canvas.roundRect(address.x + 40, address.y + 9,
+                selectionWidth + 4, 20, 4, C(0x38bdf8, 55));
+        }
 
         if (b.hovered(Action.star))
             canvas.circle(b.starRect().x + 17, b.starRect().y + 17,
@@ -1464,6 +1799,7 @@ private struct Renderer
             case Page.design: drawDesignShapes(); break;
             case Page.docs: drawDocsShapes(); break;
             case Page.gallery: drawGalleryShapes(); break;
+            case Page.search: drawSearchShapes(); break;
             default: break;
         }
     }
@@ -1667,6 +2003,36 @@ private struct Renderer
             C(0x2b3a4b));
     }
 
+    private void drawSearchShapes()
+    {
+        auto b = browser;
+        canvas.gradient(0, top, Width, bottom - top,
+            C(0xf4f8fb), C(0xe7eef5));
+        canvas.ring(844, top + 132, 176, 1.0f, C(0x38bdf8, 24));
+        canvas.ring(92, top + 430, 218, 1.0f, C(0x818cf8, 15));
+        canvas.fill(64, top + 150, Width - 128, 1, C(0xd2dee9));
+
+        immutable uint[3] tints = [0xf59e0b, 0x818cf8, 0xf25f4d];
+        foreach (i; 0 .. 3)
+        {
+            auto card = b.searchResultRect(i);
+            const hot = b.hovered(Action.searchResult, i);
+            canvas.roundRect(card.x, card.y + 4, card.w, card.h, 12,
+                C(0x1b3040, 18));
+            canvas.roundRect(card.x, card.y, card.w, card.h, 12,
+                hot ? C(0xffffff) : C(0xfbfdfe));
+            canvas.roundOutline(card.x, card.y, card.w, card.h, 12, 1.0f,
+                hot ? C(0x8db8cf) : C(0xd3dfe9));
+            canvas.fill(card.x + 14, card.y + 18, 3, card.h - 36,
+                C(tints[i]));
+            canvas.circle(card.x + 30, card.y + 44, 8.0f,
+                C(tints[i], hot ? 80 : 48));
+            canvas.circle(card.x + 30, card.y + 44, 3.0f, C(tints[i]));
+            arrowRight(card.x + card.w - 30, card.y + 44,
+                hot ? C(0x315f77) : C(0x8aa0b2));
+        }
+    }
+
     // ----- chrome text -----------------------------------------------------
 
     private void drawChromeText()
@@ -1681,7 +2047,7 @@ private struct Renderer
             string label = b.pageTitle(b.tabs[i].page());
             if (label.length > 20) label = label[0 .. 20];
             text(active ? fonts.boldSmall : fonts.boldSmall, label,
-                area.x + 14, area.y + 9, color);
+                area.x + 30, area.y + 9, color);
         }
 
         // Navigation icons.
@@ -1695,14 +2061,39 @@ private struct Renderer
         // Address.
         auto address = b.addressRect();
         lockIcon(address.x + 25, address.y + 20, green());
-        string url = b.pageURL(b.tab().page(), b.tab().docSection);
-        const scheme = "aurora://";
-        text(fonts.monoSmall, scheme, address.x + 42, address.y + 11,
-            dim());
-        const int schemeWidth = measure(fonts.monoSmall, scheme);
-        text(fonts.monoSmall, url[scheme.length .. $],
-            address.x + 42 + schemeWidth, address.y + 11,
-            b.suggestOpen ? ink() : muted());
+        if (b.addressFocused)
+        {
+            if (b.addressText.length == 0)
+                textInRect(fonts.monoSmall, "Type an address or search...",
+                    address.x + 42, address.y + 11, address.w - 58, 20, dim());
+            else
+                textInRect(fonts.monoSmall, b.addressText, address.x + 42,
+                    address.y + 11, address.w - 58, 20, ink());
+            if ((b.frame / 30) % 2 == 0)
+            {
+                auto caret = b.addressCaret;
+                if (caret < 0) caret = 0;
+                if (caret > b.addressText.length)
+                    caret = cast(int) b.addressText.length;
+                int caretX = address.x + 42 +
+                    measure(fonts.monoSmall, b.addressText[0 .. caret]);
+                if (caretX > address.x + address.w - 24)
+                    caretX = address.x + address.w - 24;
+                canvas.fill(caretX, address.y + 11, 2, 17, accent());
+            }
+        }
+        else
+        {
+            string url = b.currentURL();
+            const scheme = "aurora://";
+            text(fonts.monoSmall, scheme, address.x + 42, address.y + 11,
+                dim());
+            const int schemeWidth = measure(fonts.monoSmall, scheme);
+            textInRect(fonts.monoSmall, url[scheme.length .. $],
+                address.x + 42 + schemeWidth, address.y + 11,
+                address.w - 58 - schemeWidth, 20,
+                b.suggestOpen ? ink() : muted());
+        }
 
         // Bookmark chips.
         if (b.bookmarksVisible)
@@ -1718,11 +2109,21 @@ private struct Renderer
                 dim());
         }
 
-        // Status.
-        string statusURL = b.pageURL(b.tab().page(), b.tab().docSection);
-        text(fonts.tiny, "READY  /  " ~ statusURL, 32, Height - 19, dim());
-        textRight(fonts.tiny, "OFFLINE MOCKUP  /  AURORA LIVE APP",
-            Width - 20, Height - 19, dim());
+        // Status. Transient notifications replace the status text instead of
+        // floating over page content or the footer.
+        if (b.toastTicks > 0)
+        {
+            text(fonts.boldSmall, b.toast, 32, Height - 20, ink());
+            textRight(fonts.tiny, "LOCAL MOCKUP", Width - 20,
+                Height - 19, dim());
+        }
+        else
+        {
+            string statusURL = b.currentURL();
+            text(fonts.tiny, "READY  /  " ~ statusURL, 32, Height - 19, dim());
+            textRight(fonts.tiny, "OFFLINE MOCKUP  /  AURORA LIVE APP",
+                Width - 20, Height - 19, dim());
+        }
     }
 
     // ----- page text -------------------------------------------------------
@@ -1735,6 +2136,7 @@ private struct Renderer
             case Page.design: drawDesignText(); break;
             case Page.docs: drawDocsText(); break;
             case Page.gallery: drawGalleryText(); break;
+            case Page.search: drawSearchText(); break;
             default: break;
         }
     }
@@ -2044,6 +2446,52 @@ private struct Renderer
             Width / 2, top + 462, C(0x68788d));
     }
 
+    private void drawSearchText()
+    {
+        auto b = browser;
+        string query = strip(b.tab().query);
+        if (query.length == 0) query = "your local mockup";
+        if (query.length > 58) query = query[0 .. 58] ~ "...";
+
+        text(fonts.boldSmall, "LOCAL SEARCH  /  AURORA INDEX", 64,
+            top + 28, C(0x1d6d8a));
+        text(fonts.boldDisplay, "Search results", 64, top + 48,
+            C(0x182839));
+        text(fonts.body, "Results for \"" ~ query ~ "\"", 64, top + 100,
+            C(0x50687c));
+        text(fonts.tiny,
+            "Three local pages match the mockup index. No network was used.",
+            64, top + 128, C(0x71869a));
+
+        immutable string[3] titles = [
+            "Designing for focus", "Docs & guides", "Color studies"
+        ];
+        immutable string[3] urls = [
+            "aurora://journal/focus", "aurora://docs/overview",
+            "aurora://gallery"
+        ];
+        immutable string[3] snippets = [
+            "A field guide to interfaces that leave room to think.",
+            "The Aurora surface, pointer input, frames, and lifecycle.",
+            "A small palette library for quiet interfaces."
+        ];
+        immutable uint[3] tints = [0xf59e0b, 0x818cf8, 0xf25f4d];
+        foreach (i; 0 .. 3)
+        {
+            auto card = b.searchResultRect(i);
+            text(fonts.boldTitle, titles[i], card.x + 44, card.y + 12,
+                C(0x1c2c3c));
+            text(fonts.monoSmall, urls[i], card.x + 44, card.y + 43,
+                C(0x5d7b90));
+            text(fonts.small, snippets[i], card.x + 44, card.y + 61,
+                C(0x526678));
+            textRight(fonts.tiny, "0" ~ cast(char) ('1' + i),
+                card.x + card.w - 48, card.y + 14,
+                C(tints[i] == 0xf59e0b ? 0xa56a0b :
+                (tints[i] == 0x818cf8 ? 0x6559b8 : 0xb44b3d)));
+        }
+    }
+
     private string swatchRgb(int index)
     {
         const value = swatchColors[index];
@@ -2060,7 +2508,6 @@ private struct Renderer
         if (b.menuOpen) drawMenu();
         if (b.suggestOpen) drawSuggestions();
         if (b.aboutOpen) drawAbout();
-        if (b.toastTicks > 0 && !b.aboutOpen) drawToast();
     }
 
     private void drawMenu()
@@ -2120,8 +2567,8 @@ private struct Renderer
         canvas.roundRect(area.x, area.y, area.w, area.h, 12, C(0x131c27));
         canvas.roundOutline(area.x, area.y, area.w, area.h, 12, 1.0f,
             C(0x334154));
-        text(fonts.boldSmall, "RECENT PAGES", area.x + 18, area.y + 10,
-            dim());
+        text(fonts.boldSmall, "RECENT PAGES  /  TYPE + ENTER TO SEARCH",
+            area.x + 18, area.y + 10, dim());
 
         immutable string[4] titles = [
             "Aurora Start", "Designing for focus",
@@ -2193,18 +2640,6 @@ private struct Renderer
             card.x + 28, card.y + card.h - 24, dim());
     }
 
-    private void drawToast()
-    {
-        auto b = browser;
-        const int width = measure(fonts.boldSmall, b.toast) + 58;
-        const int x = Width / 2 - width / 2;
-        const int y = Height - StatusH - 42;
-        canvas.roundRect(x + 3, y + 4, width, 32, 16, C(0x000000, 90));
-        canvas.roundRect(x, y, width, 32, 16, C(0x1d2a38));
-        canvas.roundOutline(x, y, width, 32, 16, 1.0f, C(0x3d5268));
-        canvas.circle(x + 17, y + 16, 3.0f, accent());
-        text(fonts.boldSmall, b.toast, x + 30, y + 8, ink());
-    }
 }
 
 // ---------------------------------------------------------------------------

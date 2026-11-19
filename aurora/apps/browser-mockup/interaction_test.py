@@ -28,6 +28,12 @@ EVENT = 24
 CAPACITY = 64
 BUFFERS = 2
 SURFACE_SIZE = HEADER + CAPACITY * EVENT + BUFFERS * WIDTH * HEIGHT * 4
+KEY_BACKSPACE = 1
+KEY_ENTER = 3
+KEY_ESCAPE = 4
+KEY_SPACE = 5
+KEY_A = 26
+CONTROL = 2
 
 
 def require(condition: bool, message: str) -> None:
@@ -60,6 +66,16 @@ class LiveSurface:
         offset = HEADER + (tail % CAPACITY) * EVENT
         struct.pack_into("<BBHIiiii", self.map, offset, kind, 1, 0, 0, x, y, 0, 0)
         struct.pack_into("<I", self.map, 52, tail + 1)
+
+    def push_key(self, key: int, modifiers: int = 0) -> None:
+        for kind in (5, 6):
+            head = struct.unpack_from("<I", self.map, 48)[0]
+            tail = struct.unpack_from("<I", self.map, 52)[0]
+            require(tail - head < CAPACITY, "input ring is full")
+            offset = HEADER + (tail % CAPACITY) * EVENT
+            struct.pack_into("<BBHIiiii", self.map, offset, kind, 0,
+                             key, modifiers, 0, 0, 0, 0)
+            struct.pack_into("<I", self.map, 52, tail + 1)
 
     def pump(self, seconds: float) -> None:
         deadline = time.monotonic() + seconds
@@ -110,6 +126,23 @@ def click(surface: LiveSurface, x: int, y: int) -> None:
     surface.push(1, x, y)
     surface.push(3, x, y)
     surface.pump(0.18)
+
+
+def type_text(surface: LiveSurface, text: str) -> None:
+    for character in text:
+        if character == " ":
+            key = KEY_SPACE
+        elif "a" <= character <= "z":
+            key = KEY_A + ord(character) - ord("a")
+        else:
+            raise RuntimeError(f"test cannot type {character!r}")
+        surface.push_key(key)
+        surface.pump(0.03)
+
+
+def press_key(surface: LiveSurface, key: int, modifiers: int = 0) -> None:
+    surface.push_key(key, modifiers)
+    surface.pump(0.12)
 
 
 def main() -> int:
@@ -237,6 +270,48 @@ def main() -> int:
                 surface, state_path,
                 lambda value: value["tabCount"] == 1,
                 "close tab",
+            )
+
+            # Keyboard address flow and the local search results page.
+            press_key(surface, KEY_A + ord("l") - ord("a"), CONTROL)
+            type_text(surface, "gallery")
+            press_key(surface, KEY_ENTER)
+            wait_state(
+                surface, state_path,
+                lambda value: value["tabs"][value["activeTab"]]["page"] == 3,
+                "keyboard gallery",
+            )
+
+            press_key(surface, KEY_A + ord("k") - ord("a"), CONTROL)
+            type_text(surface, "unknown thing")
+            press_key(surface, KEY_ENTER)
+            state = wait_state(
+                surface, state_path,
+                lambda value: value["tabs"][value["activeTab"]]["page"] == 4
+                    and value["tabs"][value["activeTab"]].get("query") ==
+                    "unknown thing",
+                "local search page",
+            )
+            search_frame = surface.frame()
+            require(search_frame != gallery_frame,
+                    "search page did not change pixels")
+
+            # The first local result opens the design article.
+            click(surface, 500, 360)
+            wait_state(
+                surface, state_path,
+                lambda value: value["tabs"][value["activeTab"]]["page"] == 1,
+                "search result",
+            )
+
+            press_key(surface, KEY_A + ord("l") - ord("a"), CONTROL)
+            type_text(surface, "docs input")
+            press_key(surface, KEY_ENTER)
+            state = wait_state(
+                surface, state_path,
+                lambda value: value["tabs"][value["activeTab"]]["page"] == 2
+                    and value["tabs"][value["activeTab"]]["docSection"] == 1,
+                "keyboard docs input",
             )
             print(
                 "PASS browser mockup interaction "

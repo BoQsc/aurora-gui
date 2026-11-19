@@ -550,7 +550,7 @@ private bool isNodeSpecificField(string type, string name)
             return name == "src";
         case "surface":
             return name == "path" || name == "events" ||
-                name == "staleMs";
+                name == "staleMs" || name == "fit";
         case "spacer":
             return false;
         default:
@@ -998,6 +998,9 @@ private SurfaceSpec parseSurface(JSONValue value, string label,
         format("%s surface exceeds max pixel count %d", label,
             MaxSurfacePixels));
     surface.flex = readRange(value, "flex", 0, 0, 1000, label);
+    surface.fit = readString(value, "fit", "stretch", label);
+    enforce(surface.fit == "stretch" || surface.fit == "contain",
+        format("%s.fit must be 'stretch' or 'contain'", label));
     surface.staleMs = cast(uint) readRange(value, "staleMs", 500, 50,
         3600000, label);
     parseBackground(value, label, surface.hasBackground, surface.background);

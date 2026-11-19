@@ -17,14 +17,16 @@ private extern(Windows) uint timeEndPeriod(uint);
 import aurora.vulkan.api;
 import aurora.font : GlyphAdvance, GlyphHeight, GlyphWidth, LineAdvance,
     glyphBits, glyphPixel;
-import engine.lod : chunkLod;
+import engine.atmosphere : clockText, phaseName, sunDirectionAt;
+import engine.lod : MaxLodLevels, chunkLod;
 import engine.runtime : TerrainRuntime, defaultRuntime;
 import engine.player : PlayerInput, PlayerState, updatePlayer;
 import engine.game : GameState, initGame, updateGame;
 import engine.collision : RayHit, raycastSolid, surfaceHeight;
 import engine.world : TerrainMaterial, materialName;
-import mcmesh : MeshData, MeshVertex, TerrainChunk, TerrainChunkRebuild,
-    TerrainChunkCompletion, TerrainChunkStream, buildTerrainChunk;
+import mcmesh : LodRequest, MeshData, MeshVertex, TerrainChunk,
+    TerrainChunkRebuild, TerrainChunkStream, TerrainLodRefresh,
+    planLodRefresh;
 
 import core.stdc.string : memcpy;
 import core.stdc.stdio : snprintf;
@@ -249,7 +251,13 @@ private class SurfacePresenter
 struct PushConstants
 {
     float[16] mvp;
+    float[4] fogColor;
+    float[4] fogParams;
+    float[4] tint;
+    float[4] camera;
 }
+
+private enum int PushConstantBytes = 128;
 
 struct VkDescriptorBufferInfo
 {
@@ -390,8 +398,11 @@ private final class App
     ChunkGpu[][] chunkLods;
     TerrainChunk[] chunkData;
     TerrainChunkStream chunkStream;
-    TerrainChunkCompletion lodCompletion;
+    TerrainLodRefresh lodRefresh;
     TerrainChunkRebuild rebuildJob;
+    double lodRefreshTimer;
+    double skyRefreshTimer;
+    bool skyMeshReady;
     TerrainRuntime runtime;
     GameState game;
     SurfacePresenter presenter;
@@ -464,7 +475,7 @@ private final class App
     double velocityX = 0;
     double velocityZ = 0;
     PlayerState player;
-    string mouseTitle = "Large Marching Cubes Terrain";
+    string mouseTitle = "Large Marching Cubes Terrain V2";
     HWND mouseWindow;
     bool mouseCaptured;
     bool cursorHidden;
@@ -473,6 +484,10 @@ private final class App
     bool pitchTest;
     bool inputTrace;
     bool propsTraceOnce;
+    string windowShotPath;
+    uint windowShotFrame = 20;
+    bool windowShotSaved;
+    uint presentFrameCount;
 
     this(string surfacePath = null)
     {
@@ -488,7 +503,7 @@ private final class App
         VkApplicationInfo application;
         application.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         application.pApplicationName = "Aurora Vulkan 3D".ptr;
-        application.applicationVersion = 1;
+        application.applicationVersion = 2;
         application.pEngineName = "Aurora".ptr;
         application.engineVersion = 2;
         application.apiVersion = VK_API_VERSION_1_0;
@@ -613,9 +628,6 @@ private final class App
         if (gChildWindow !is null) { stdout.writeln("vulkan3d: hud pipeline"); stdout.flush(); }
         auto terrainChunks = chunkStream.wait();
         createBuffers(terrainChunks);
-        lodCompletion = new TerrainChunkCompletion(chunkData, runtime.world,
-            runtime.lights);
-        lodCompletion.start();
         createHudBuffers();
         createSkyBuffers();
         camY = surfaceHeight(runtime.world, camX, camZ) + 2.26;
@@ -995,8 +1007,8 @@ private final class App
         depth.depthWriteEnable = 1;
         depth.depthCompareOp = 1; // LESS
         PushRange push;
-        push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        push.size = 64;
+        push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | 0x10; // FRAGMENT
+        push.size = PushConstantBytes;
         VkPipelineLayoutCreateInfo layoutInfo;
         layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         layoutInfo.pushConstantRangeCount = 1;
@@ -1368,8 +1380,8 @@ private final class App
         depth.depthWriteEnable = 1;
         depth.depthCompareOp = 1;
         PushRange push;
-        push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        push.size = 64;
+        push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | 0x10; // FRAGMENT
+        push.size = PushConstantBytes;
         VkPipelineLayoutCreateInfo layoutInfo;
         layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         layoutInfo.setLayoutCount = 1;
@@ -1560,10 +1572,15 @@ private final class App
             upload(hudIndexMemory, indices);
     }
 
-    private void createSkyBuffers()
+    private struct SkyMeshData
     {
         MeshVertex[] vertices;
         uint[] indices;
+    }
+
+    private SkyMeshData buildSkyMesh()
+    {
+        SkyMeshData mesh;
         const auto zenith = runtime.sky.zenith;
         const auto horizon = runtime.sky.horizon;
         const auto ground = runtime.sky.ground;
@@ -1596,7 +1613,7 @@ private final class App
             {
                 const double phi = 2.0 * 3.14159265358979323846 *
                     segment / Segments;
-                vertices ~= MeshVertex(
+                mesh.vertices ~= MeshVertex(
                     cast(float) (r * cos(phi) * radius),
                     cast(float) (y * radius),
                     cast(float) (r * sin(phi) * radius),
@@ -1610,15 +1627,23 @@ private final class App
                 const uint next = row + Segments + 1;
                 const uint a = row + segment;
                 const uint b = next + segment;
-                indices ~= [a, b, a + 1, b, b + 1, a + 1];
+                mesh.indices ~= [a, b, a + 1, b, b + 1, a + 1];
             }
 
-        const double sunLength = sqrt(0.55 * 0.55 + 0.35 * 0.35 +
-            0.75 * 0.75);
-        const double sunX = 0.55 / sunLength * 3700;
-        const double sunY = 0.35 / sunLength * 3700;
-        const double sunZ = -0.75 / sunLength * 3700;
-        const uint sunBase = cast(uint) vertices.length;
+        // The same disc is the sun by day and the moon at night. At night the
+        // palette sun color is already the cooler moon tone and the disc sits
+        // opposite the (below-horizon) solar direction.
+        auto light = sunDirectionAt(runtime.timeOfDay);
+        double sunX = light[0];
+        double sunY = light[1];
+        double sunZ = light[2];
+        if (sunY < 0.0)
+        {
+            sunX = -sunX;
+            sunY = -sunY;
+            sunZ = -sunZ;
+        }
+        const uint sunBase = cast(uint) mesh.vertices.length;
         enum int SunRings = 8;
         enum int SunSegments = 16;
         foreach (ring; 0 .. SunRings + 1)
@@ -1630,10 +1655,10 @@ private final class App
             {
                 const double phi = 2.0 * 3.14159265358979323846 *
                     segment / SunSegments;
-                vertices ~= MeshVertex(
-                    cast(float) (sunX + r * cos(phi) * 260),
-                    cast(float) (sunY + y * 260),
-                    cast(float) (sunZ + r * sin(phi) * 260),
+                mesh.vertices ~= MeshVertex(
+                    cast(float) (sunX * 3700 + r * cos(phi) * 260),
+                    cast(float) (sunY * 3700 + y * 260),
+                    cast(float) (sunZ * 3700 + r * sin(phi) * 260),
                     sun[0], sun[1], sun[2]);
             }
         }
@@ -1644,18 +1669,137 @@ private final class App
                 const uint next = row + SunSegments + 1;
                 const uint a = row + segment;
                 const uint b = next + segment;
-                indices ~= [a, b, a + 1, b, b + 1, a + 1];
+                mesh.indices ~= [a, b, a + 1, b, b + 1, a + 1];
             }
 
-        skyIndexCount = cast(uint) indices.length;
+        // A fixed star field fades in through dusk and out at dawn. During the
+        // day each star takes the local sky color so it disappears cleanly.
+        float day = cast(float) ((light[1] + 0.35) / 0.55);
+        if (day < 0) day = 0;
+        if (day > 1) day = 1;
+        day = day * day * (3.0f - 2.0f * day);
+        float twilight = cast(float) ((-light[1] - 0.02) / 0.24);
+        if (twilight < 0) twilight = 0;
+        if (twilight > 1) twilight = 1;
+        twilight = twilight * twilight * (3.0f - 2.0f * twilight);
+        const float night = twilight * twilight;
+        {
+            // Keep the star quads in the mesh at all times so the index buffer
+            // stays fixed while only the vertex colors change.
+            enum int StarCount = 240;
+            uint seed = 0x9E3779B9;
+            foreach (star; 0 .. StarCount)
+            {
+                seed = seed * 1664525u + 1013904223u;
+                const double u = cast(double) (seed >> 8) / 16777216.0;
+                seed = seed * 1664525u + 1013904223u;
+                const double v = cast(double) (seed >> 8) / 16777216.0;
+                seed = seed * 1664525u + 1013904223u;
+                const double w = cast(double) (seed >> 8) / 16777216.0;
+                const double y = 0.06 + 0.94 * u;
+                const double r = sqrt(1.0 - y * y);
+                const double phi = 2.0 * 3.14159265358979323846 * v;
+                const double dx = r * cos(phi);
+                const double dz = r * sin(phi);
+                // Tangent basis around the star direction.
+                double tx = -dz;
+                double tz = dx;
+                const double tangentLength = sqrt(tx * tx + tz * tz);
+                if (tangentLength > 1e-9)
+                {
+                    tx /= tangentLength;
+                    tz /= tangentLength;
+                }
+                const double ux = y * tz;
+                const double uy = dz * tx - dx * tz;
+                const double uz = -y * tx;
+                const double size = 2.5 + 4.5 * w;
+                const double cx = dx * 3880.0;
+                const double cy = y * 3880.0;
+                const double cz = dz * 3880.0;
+                const float t = cast(float) y;
+                float[3] skyColor;
+                skyColor[0] = horizon[0] + (zenith[0] - horizon[0]) * t;
+                skyColor[1] = horizon[1] + (zenith[1] - horizon[1]) * t;
+                skyColor[2] = horizon[2] + (zenith[2] - horizon[2]) * t;
+                const float brightness = night * cast(float) (0.35 + 0.65 * w);
+                const float[3] starColor = [
+                    skyColor[0] + (0.86f - skyColor[0]) * brightness,
+                    skyColor[1] + (0.90f - skyColor[1]) * brightness,
+                    skyColor[2] + (1.00f - skyColor[2]) * brightness,
+                ];
+                const uint base = cast(uint) mesh.vertices.length;
+                mesh.vertices ~= MeshVertex(
+                    cast(float) (cx - tx * size - ux * size),
+                    cast(float) (cy - uy * size),
+                    cast(float) (cz - tz * size - uz * size),
+                    starColor[0], starColor[1], starColor[2]);
+                mesh.vertices ~= MeshVertex(
+                    cast(float) (cx + tx * size - ux * size),
+                    cast(float) (cy - uy * size),
+                    cast(float) (cz + tz * size - uz * size),
+                    starColor[0], starColor[1], starColor[2]);
+                mesh.vertices ~= MeshVertex(
+                    cast(float) (cx + tx * size + ux * size),
+                    cast(float) (cy + uy * size),
+                    cast(float) (cz + tz * size + uz * size),
+                    starColor[0], starColor[1], starColor[2]);
+                mesh.vertices ~= MeshVertex(
+                    cast(float) (cx - tx * size + ux * size),
+                    cast(float) (cy + uy * size),
+                    cast(float) (cz - tz * size + uz * size),
+                    starColor[0], starColor[1], starColor[2]);
+                mesh.indices ~= [base, base + 1, base + 2,
+                    base, base + 2, base + 3];
+            }
+        }
+        return mesh;
+    }
+
+    private void createSkyBuffers()
+    {
+        auto mesh = buildSkyMesh();
+        skyIndexCount = cast(uint) mesh.indices.length;
         createBuffer(skyVertexBuffer, skyVertexMemory,
-            cast(VkDeviceSize) vertices.length * MeshVertex.sizeof,
+            cast(VkDeviceSize) mesh.vertices.length * MeshVertex.sizeof,
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-        upload(skyVertexMemory, vertices);
+        upload(skyVertexMemory, mesh.vertices);
         createBuffer(skyIndexBuffer, skyIndexMemory,
-            cast(VkDeviceSize) indices.length * uint.sizeof,
+            cast(VkDeviceSize) mesh.indices.length * uint.sizeof,
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-        upload(skyIndexMemory, indices);
+        upload(skyIndexMemory, mesh.indices);
+        skyMeshReady = true;
+    }
+
+    private void refreshSkyMesh()
+    {
+        if (!skyMeshReady) return;
+        auto mesh = buildSkyMesh();
+        upload(skyVertexMemory, mesh.vertices);
+    }
+
+    private PushConstants sceneConstants(float[16] mvp, bool fog = true)
+    {
+        PushConstants constants;
+        constants.mvp = mvp;
+        constants.fogColor = [runtime.sky.fog[0], runtime.sky.fog[1],
+            runtime.sky.fog[2], 1.0f];
+        constants.fogParams = fog
+            ? [0.00062f, 180.0f, 0.0f, 1.0f]
+            : [0.0f, 0.0f, 0.0f, 0.0f];
+        constants.tint = fog
+            ? [runtime.sky.tint[0], runtime.sky.tint[1],
+                runtime.sky.tint[2], 1.0f]
+            : [1.0f, 1.0f, 1.0f, 1.0f];
+        constants.camera = [cast(float) camX, cast(float) camY,
+            cast(float) camZ, cast(float) runtime.timeOfDay];
+        return constants;
+    }
+
+    private PushConstants sceneConstants(double seconds, uint width,
+        uint height, bool fog = true)
+    {
+        return sceneConstants(matrix(seconds, width, height), fog);
     }
 
     private void drawSky(VkCommandBuffer commandBuffer, uint width, uint height)
@@ -1672,9 +1816,11 @@ private final class App
             &skyVertexBuffer, &offset);
         vk.vkCmdBindIndexBuffer(commandBuffer, skyIndexBuffer, 0,
             VK_INDEX_TYPE_UINT32);
-        auto mvp = matrix(0, width, height, false);
+        auto constants = sceneConstants(matrix(0, width, height, false),
+            false);
         pushConstants(commandBuffer, pipelineLayout,
-            VK_SHADER_STAGE_VERTEX_BIT, 0, 64, &mvp);
+            VK_SHADER_STAGE_VERTEX_BIT | 0x10, 0, PushConstantBytes,
+            &constants);
         vk.vkCmdDrawIndexed(commandBuffer, skyIndexCount, 1, 0, 0, 0);
     }
 
@@ -1814,17 +1960,6 @@ private final class App
             addBox(actorVertexCache, actorIndexCache, actor.x + 0.2,
                 actor.y + 0.25, actor.z, 0.22, 0.75, 0.28, br, bg, bb);
         }
-        const float cp = cast(float) cos(camPitch);
-        const float fx = cast(float) (sin(camYaw) * cp);
-        const float fy = cast(float) sin(camPitch);
-        const float fz = cast(float) (-cos(camYaw) * cp);
-        const float rx = cast(float) cos(camYaw);
-        const float rz = cast(float) sin(camYaw);
-        addBox(actorVertexCache, actorIndexCache,
-            camX + fx * 1.0 + rx * 0.28,
-            camY + fy * 1.0 - 0.25,
-            camZ + fz * 1.0 + rz * 0.28,
-            0.10, 0.10, 0.28, 0.10f, 0.12f, 0.16f);
         actorIndexCount = cast(uint) actorIndexCache.length;
         if (actorIndexCount == 0) return;
         upload(actorVertexMemory, actorVertexCache);
@@ -1848,8 +1983,10 @@ private final class App
         vk.vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
         vk.vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
         vk.vkCmdBindPipeline(commandBuffer, 0, pipeline);
+        auto constants = sceneConstants(mvp);
         pushConstants(commandBuffer, pipelineLayout,
-            VK_SHADER_STAGE_VERTEX_BIT, 0, 64, &mvp);
+            VK_SHADER_STAGE_VERTEX_BIT | 0x10, 0, PushConstantBytes,
+            &constants);
         VkDeviceSize offset = 0;
         if (vegetationIndexCount != 0)
         {
@@ -1959,8 +2096,22 @@ private final class App
         char[64] positionBuffer;
         char[64] yawBuffer;
         char[64] materialBuffer;
+        char[64] timeBuffer;
+        char[96] lodBuffer;
         const fpsLength = snprintf(fpsBuffer.ptr, fpsBuffer.length,
             "FPS %.0f", hudFps);
+        const timeText = clockText(runtime.timeOfDay);
+        const phaseText = phaseName(runtime.timeOfDay);
+        const timeLength = snprintf(timeBuffer.ptr, timeBuffer.length,
+            "TIME %.*s  %.*s", cast(int) timeText.length, timeText.ptr,
+            cast(int) phaseText.length, phaseText.ptr);
+        int[MaxLodLevels] lodCounts;
+        foreach (chunk; chunkData)
+            foreach (lod; 0 .. chunk.lods.length)
+                if (chunk.lodReady[lod]) ++lodCounts[lod];
+        const lodLength = snprintf(lodBuffer.ptr, lodBuffer.length,
+            "CHUNKS %d  LOD %d/%d/%d", cast(int) chunkData.length,
+            lodCounts[0], lodCounts[1], lodCounts[2]);
         const positionLength = snprintf(positionBuffer.ptr,
             positionBuffer.length, "X %.1f  Z %.1f", camX, camZ);
         const yawLength = snprintf(yawBuffer.ptr, yawBuffer.length,
@@ -1970,16 +2121,18 @@ private final class App
         const materialLength = snprintf(materialBuffer.ptr,
             materialBuffer.length, "MATERIAL %.*s",
             cast(int) materialNameText.length, materialNameText.ptr);
-        string[9] lines = [
-            "TERRAIN INFO",
+        string[11] lines = [
+            "TERRAIN V2",
             cast(string) fpsBuffer[0 .. fpsLength],
+            cast(string) timeBuffer[0 .. timeLength],
+            cast(string) lodBuffer[0 .. lodLength],
             cast(string) positionBuffer[0 .. positionLength],
             cast(string) yawBuffer[0 .. yawLength],
             cast(string) materialBuffer[0 .. materialLength],
             "WASD MOVE  SHIFT SPRINT  SPACE JUMP",
             "LMB FIRE  RMB DIG  B BUILD",
-            "1-4 MATERIAL  ESC RELEASE",
-            "F1 HIDE INFO"
+            "1-4 MATERIAL  T FAST TIME",
+            "ESC RELEASE  F1 HIDE INFO"
         ];
         size_t maxLine;
         foreach (line; lines)
@@ -2012,7 +2165,7 @@ private final class App
         {
             float x = panelX + padding;
             const bool title = lineIndex == 0;
-            const bool hint = lineIndex >= 4;
+            const bool hint = lineIndex >= 7;
             const float r = title ? 0.35f : hint ? 0.62f : 0.86f;
             const float g = title ? 0.85f : hint ? 0.78f : 0.94f;
             const float b = title ? 1.0f : hint ? 0.88f : 1.0f;
@@ -2020,38 +2173,55 @@ private final class App
             y += lineStep;
         }
 
-        const float compassWidth = 470;
-        const float compassHeight = 38;
-        const float compassX = (cast(float) width - compassWidth) / 2;
-        const float compassY = 8;
-        hudQuad(vertices, indices, compassX, compassY,
-            compassX + compassWidth, compassY + compassHeight,
-            0.015f, 0.035f, 0.060f);
-        hudQuad(vertices, indices, compassX, compassY,
-            compassX + compassWidth, compassY + 2,
-            0.20f, 0.55f, 0.75f);
-        foreach (tick; 0 .. 9)
+        float compassWidth = 470;
+        float compassX = (cast(float) width - compassWidth) / 2;
+        bool showCompass = true;
+        const float panelGap = 8;
+        if (compassX + compassWidth > panelX - panelGap)
         {
-            const float tickX = compassX + compassWidth / 2 +
-                (tick - 4) * 52;
-            hudQuad(vertices, indices, tickX, compassY + 25,
-                tickX + 2, compassY + 33, 0.35f, 0.72f, 0.88f);
+            const float room = panelX - panelGap - margin;
+            if (room >= 240)
+            {
+                if (compassWidth > room) compassWidth = room;
+                compassX = margin + (room - compassWidth) / 2;
+            }
+            else
+                showCompass = false;
         }
-        double degrees = camYaw * 180.0 /
-            3.14159265358979323846;
-        degrees = degrees % 360.0;
-        if (degrees < 0) degrees += 360.0;
-        char[32] compassBuffer;
-        const compassDirection = cardinal(camYaw);
-        const compassLength = snprintf(compassBuffer.ptr,
-            compassBuffer.length, "%03d  %.*s",
-            cast(int) degrees, cast(int) compassDirection.length,
-            compassDirection.ptr);
-        const string compass =
-            cast(string) compassBuffer[0 .. compassLength];
-        hudText(vertices, indices, compassX + compassWidth / 2 -
-            cast(float) compass.length * GlyphAdvance * HudScale / 2,
-            compassY + 7, compass, 0.75f, 0.93f, 1.0f);
+        if (showCompass)
+        {
+            const float compassHeight = 38;
+            const float compassY = 8;
+            hudQuad(vertices, indices, compassX, compassY,
+                compassX + compassWidth, compassY + compassHeight,
+                0.015f, 0.035f, 0.060f);
+            hudQuad(vertices, indices, compassX, compassY,
+                compassX + compassWidth, compassY + 2,
+                0.20f, 0.55f, 0.75f);
+            const float tickSpacing = compassWidth / 9.2f;
+            foreach (tick; 0 .. 9)
+            {
+                const float tickX = compassX + compassWidth / 2 +
+                    (tick - 4) * tickSpacing;
+                hudQuad(vertices, indices, tickX, compassY + 25,
+                    tickX + 2, compassY + 33, 0.35f, 0.72f, 0.88f);
+            }
+            double degrees = camYaw * 180.0 /
+                3.14159265358979323846;
+            degrees = degrees % 360.0;
+            if (degrees < 0) degrees += 360.0;
+            char[32] compassBuffer;
+            const compassDirection = cardinal(camYaw);
+            const compassLength = snprintf(compassBuffer.ptr,
+                compassBuffer.length, "%03d  %.*s",
+                cast(int) degrees, cast(int) compassDirection.length,
+                compassDirection.ptr);
+            const string compass =
+                cast(string) compassBuffer[0 .. compassLength];
+            hudText(vertices, indices, compassX + compassWidth / 2 -
+                cast(float) compass.length * GlyphAdvance * HudScale / 2,
+                compassY + 7, compass, 0.75f, 0.93f, 1.0f);
+        }
 
         const float slotWidth = 118;
         const float slotHeight = 76;
@@ -2298,19 +2468,50 @@ private final class App
     private void uploadChunkGpu(int index, TerrainChunk chunk,
         bool waitForDevice = true)
     {
-        chunkData[index] = chunk;
+        const desired = chunkLod(runtime.world, camX, camZ, chunk.centerX,
+            chunk.centerZ);
+        int chosen = desired;
+        if (!chunk.lodReady[chosen])
+        {
+            chosen = -1;
+            foreach (candidate; 0 .. chunk.lods.length)
+                if (chunk.lodReady[candidate])
+                {
+                    chosen = cast(int) candidate;
+                    break;
+                }
+            if (chosen < 0) return;
+        }
         if (waitForDevice)
             vk.vkDeviceWaitIdle(device);
         foreach (lod; 0 .. chunk.lods.length)
         {
-            if (!chunk.lodReady[lod]) continue;
-            uploadLodGpu(index, cast(int) lod);
+            if (lod == chosen) continue;
+            freeLodGpu(index, cast(int) lod);
+            chunk.lods[lod] = MeshData.init;
+            chunk.lodReady[lod] = false;
         }
+        chunkData[index] = chunk;
+        uploadLodGpu(index, chosen);
+    }
+
+    private void freeLodGpu(int index, int lod)
+    {
+        auto previous = chunkLods[index][lod];
+        if (previous.vertexBuffer != VkBuffer.init)
+            vk.vkDestroyBuffer(device, previous.vertexBuffer, null);
+        if (previous.vertexMemory != VkDeviceMemory.init)
+            vk.vkFreeMemory(device, previous.vertexMemory, null);
+        if (previous.indexBuffer != VkBuffer.init)
+            vk.vkDestroyBuffer(device, previous.indexBuffer, null);
+        if (previous.indexMemory != VkDeviceMemory.init)
+            vk.vkFreeMemory(device, previous.indexMemory, null);
+        chunkLods[index][lod] = ChunkGpu();
     }
 
     private void rebuildTerrainAround(double x, double z, double radius)
     {
-        finishLodCompletion();
+        discardLodRefresh();
         const config = runtime.world;
         int cx0 = cast(int) floor((x - radius - config.minX) /
             config.chunkSizeX);
@@ -2397,50 +2598,76 @@ private final class App
         }
     }
 
-    private void applyCompletedLods(TerrainChunk[] completed)
+    private void discardLodRefresh()
     {
-        bool changed;
-        foreach (index, chunk; completed)
-            foreach (lod; 0 .. chunk.lods.length)
-                if (chunk.lodReady[lod] && !chunkData[index].lodReady[lod])
-                    changed = true;
-        if (!changed)
-            return;
+        if (lodRefresh is null) return;
+        auto job = lodRefresh;
+        lodRefresh = null;
+        job.take();
+    }
+
+    private void applyLodRefresh()
+    {
+        auto job = lodRefresh;
+        lodRefresh = null;
+        job.take();
+        if (job.indices.length == 0) return;
         vk.vkDeviceWaitIdle(device);
         const uploadStart = MonoTime.currTime;
         uint uploaded;
-        foreach (index, chunk; completed)
-            foreach (lod; 0 .. chunk.lods.length)
-                if (chunk.lodReady[lod] && !chunkData[index].lodReady[lod])
-                {
-                    chunkData[index].lods[lod] = chunk.lods[lod];
-                    chunkData[index].lodReady[lod] = true;
-                    uploadLodGpu(cast(int) index, cast(int) lod);
-                    ++uploaded;
-                }
-        stdout.writeln("vulkan3d: deferred LODs uploaded=", uploaded, " in ",
-            (MonoTime.currTime - uploadStart).total!"msecs", " ms");
+        foreach (slot, index; job.indices)
+        {
+            const lod = job.lods[slot];
+            auto built = job.chunks[slot];
+            if (!built.lodReady[lod]) continue;
+            auto target = chunkData[index];
+            foreach (other; 0 .. target.lods.length)
+            {
+                if (other == lod) continue;
+                freeLodGpu(index, cast(int) other);
+                target.lods[other] = MeshData.init;
+                target.lodReady[other] = false;
+            }
+            target.lods[lod] = built.lods[lod];
+            target.lodReady[lod] = true;
+            chunkData[index] = target;
+            uploadLodGpu(index, lod);
+            ++uploaded;
+        }
+        stdout.writeln("vulkan3d: streamed LODs uploaded=", uploaded, " in ",
+            (MonoTime.currTime - uploadStart).total!"msecs", " ms (build ",
+            job.elapsedMs(), " ms)");
         stdout.flush();
+        hudDirty = true;
     }
 
-    private void finishLodCompletion()
+    private void queueLodRefresh()
     {
-        if (lodCompletion is null)
-            return;
-        auto completed = lodCompletion.take();
-        const completionMs = lodCompletion.elapsedMs();
-        lodCompletion = null;
-        applyCompletedLods(completed);
-        stdout.writeln("vulkan3d: background LODs completed in ",
-            completionMs, " ms");
-        stdout.flush();
+        if (lodRefresh !is null || rebuildJob !is null) return;
+        auto requests = planLodRefresh(runtime.world, chunkData, camX, camZ,
+            16);
+        if (requests.length == 0) return;
+        int[] indices;
+        int[] lods;
+        foreach (request; requests)
+        {
+            indices ~= request.index;
+            lods ~= request.lod;
+        }
+        lodRefresh = new TerrainLodRefresh(runtime.world, runtime.lights,
+            indices, lods);
+        lodRefresh.start();
     }
 
-    private void pollLodCompletion()
+    private void updateLodStreaming(double dt)
     {
-        if (lodCompletion is null || !lodCompletion.finished())
-            return;
-        finishLodCompletion();
+        lodRefreshTimer += dt;
+        if (lodRefreshTimer < 0.25) return;
+        lodRefreshTimer = 0;
+        if (lodRefresh !is null && lodRefresh.finished)
+            applyLodRefresh();
+        if (lodRefresh is null)
+            queueLodRefresh();
     }
 
     private void updateTerrainTools()
@@ -2560,9 +2787,10 @@ private final class App
             &hudVertexBuffer, &offset);
         vk.vkCmdBindIndexBuffer(commandBuffer, hudIndexBuffer, 0,
             VK_INDEX_TYPE_UINT32);
-        auto mvp = hudMatrix(width, height);
+        auto constants = sceneConstants(hudMatrix(width, height), false);
         pushConstants(commandBuffer, pipelineLayout,
-            VK_SHADER_STAGE_VERTEX_BIT, 0, 64, &mvp);
+            VK_SHADER_STAGE_VERTEX_BIT | 0x10, 0, PushConstantBytes,
+            &constants);
         vk.vkCmdDrawIndexed(commandBuffer, hudIndexCount, 1, 0, 0, 0);
     }
 
@@ -2590,6 +2818,18 @@ private final class App
     private bool keyDown(int key)
     {
         return (cast(int) GetAsyncKeyState(key) & 0x8000) != 0;
+    }
+
+    private void updateAtmosphere(double dt)
+    {
+        if (dt <= 0) return;
+        const double timeScale = keyDown(0x54) ? 45.0 : 1.0; // T
+        runtime.advanceTime(dt * timeScale);
+        skyRefreshTimer += dt;
+        if (skyRefreshTimer < 0.2) return;
+        skyRefreshTimer = 0;
+        refreshSkyMesh();
+        hudDirty = true;
     }
 
     private void updateCamera(double seconds, double dt)
@@ -2635,7 +2875,8 @@ private final class App
             stamina = stamina + 12.0 * dt > 100 ? 100 :
                 stamina + 12.0 * dt;
         pollTerrainRebuild();
-        pollLodCompletion();
+        updateLodStreaming(dt);
+        updateAtmosphere(dt);
         updateTerrainTools();
         bool didFire;
         updateGame(game, runtime.world, camX, camZ, camY, camYaw, dt,
@@ -2871,12 +3112,12 @@ private final class App
             camYaw = 0;
             camPitch = seconds;
         }
-        auto matrix = this.matrix(seconds, Width, Height);
+        auto constants = sceneConstants(seconds, Width, Height);
         pushConstants(commands, terrainPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
-            0, 64, &matrix);
+            0, PushConstantBytes, &constants);
         drawTerrain(commands);
         updateActorMesh();
-        drawWorldProps(commands, Width, Height, matrix);
+        drawWorldProps(commands, Width, Height, constants.mvp);
         vk.vkCmdEndRenderPass(commands);
 
         VkImageMemoryBarrier barrier;
@@ -3076,12 +3317,12 @@ private final class App
                 hudDirty = false;
             }
 
-            auto matrix = this.matrix(frame / 60.0, Width, Height);
+            auto constants = sceneConstants(frame / 60.0, Width, Height);
             pushConstants(commands, terrainPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
-                0, 64, &matrix);
+                0, PushConstantBytes, &constants);
             drawTerrain(commands);
             updateActorMesh();
-            drawWorldProps(commands, Width, Height, matrix);
+            drawWorldProps(commands, Width, Height, constants.mvp);
             drawHud(commands, Width, Height);
             vk.vkCmdEndRenderPass(commands);
 
@@ -3159,6 +3400,9 @@ private final class App
     private void presentFrame(double seconds)
     {
         const target = targetExtent();
+        const bool shotThisFrame = windowShotPath.length != 0 &&
+            !windowShotSaved && presentFrameCount >= windowShotFrame;
+        ++presentFrameCount;
         updateHudToggle();
         const now = MonoTime.currTime;
         if (!hudClockStarted)
@@ -3227,14 +3471,24 @@ private final class App
             VkExtent2D(target.width, target.height));
         vk.vkCmdSetViewport(commands, 0, 1, &viewport);
         vk.vkCmdSetScissor(commands, 0, 1, &scissor);
-        updateMouse();
+        if (testMotion)
+        {
+            const t = seconds;
+            mouseCaptured = false;
+            camYaw += (1.0 / 60.0) * 0.9;
+            camX = 12.0 * sin(t * 0.6);
+            camZ = 40.0 + 8.0 * cos(t * 0.4);
+            camPitch = 0.2 * sin(t * 0.5);
+        }
+        else
+            updateMouse();
         updateCamera(seconds, 1.0 / 60.0);
-        auto matrix = this.matrix(seconds, target.width, target.height);
+        auto constants = sceneConstants(seconds, target.width, target.height);
         pushConstants(commands, terrainPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
-            0, 64, &matrix);
+            0, PushConstantBytes, &constants);
         drawTerrain(commands);
         updateActorMesh();
-        drawWorldProps(commands, target.width, target.height, matrix);
+        drawWorldProps(commands, target.width, target.height, constants.mvp);
         if (hudVisible && hudIndexCount != 0)
         {
             VkViewport hudViewport = VkViewport(0, 0, target.width,
@@ -3249,9 +3503,11 @@ private final class App
                 &hudOffset);
             vk.vkCmdBindIndexBuffer(commands, hudIndexBuffer, 0,
                 VK_INDEX_TYPE_UINT32);
-            auto hudMvp = hudMatrix(target.width, target.height);
-            pushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
-                0, 64, &hudMvp);
+            auto hudConstants = sceneConstants(hudMatrix(target.width,
+                target.height), false);
+            pushConstants(commands, pipelineLayout,
+                VK_SHADER_STAGE_VERTEX_BIT | 0x10, 0, PushConstantBytes,
+                &hudConstants);
             vk.vkCmdDrawIndexed(commands, hudIndexCount, 1, 0, 0, 0);
         }
         vk.vkCmdEndRenderPass(commands);
@@ -3271,6 +3527,17 @@ private final class App
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, null, 0, null, 1,
             &colorBarrier);
+        if (shotThisFrame)
+        {
+            VkBufferImageCopy shotRegion;
+            shotRegion.imageSubresource = VkImageSubresourceLayers(
+                VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1);
+            shotRegion.imageOffset = VkOffset3D(0, 0, 0);
+            shotRegion.imageExtent = VkExtent3D(target.width, target.height,
+                1);
+            copyImageToBuffer(commands, colorImage, 6, readBuffer, 1,
+                &shotRegion);
+        }
         VkImageMemoryBarrier swapBarrier;
         swapBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         swapBarrier.srcAccessMask = 0;
@@ -3330,6 +3597,29 @@ private final class App
         check(presented, "presenting child frame");
         check(vk.vkWaitForFences(device, 1, &fence, 1, ulong.max),
             "waiting for child frame");
+        if (shotThisFrame)
+        {
+            const size_t bytes = cast(size_t) target.width * target.height * 4;
+            void* pixels;
+            check(vk.vkMapMemory(device, readMemory, 0, bytes, 0, &pixels),
+                "mapping the standalone shot");
+            auto data = cast(ubyte[]) pixels[0 .. bytes];
+            ubyte[] ppm;
+            ppm ~= cast(ubyte[]) ("P6\n" ~ to!string(target.width) ~ " " ~
+                to!string(target.height) ~ "\n255\n");
+            foreach (index; 0 .. cast(size_t) target.width * target.height)
+            {
+                ppm ~= data[index * 4];
+                ppm ~= data[index * 4 + 1];
+                ppm ~= data[index * 4 + 2];
+            }
+            vk.vkUnmapMemory(device, readMemory);
+            write(windowShotPath, ppm);
+            windowShotSaved = true;
+            stdout.writeln("vulkan3d: standalone shot ", target.width, "x",
+                target.height, " -> ", windowShotPath);
+            stdout.flush();
+        }
         pumpMessages();
     }
 
@@ -3348,6 +3638,15 @@ private final class App
         stdout.writeln("PASS Vulkan 3D child swapchain hostPid=",
             GetCurrentProcessId(), " frames=", frames);
         stdout.flush();
+    }
+
+    void setTimeOfDay(double hours)
+    {
+        runtime.timeOfDay = hours;
+        runtime.applyTime();
+        if (skyMeshReady)
+            refreshSkyMesh();
+        hudDirty = true;
     }
 
     void presentStandalone()
@@ -3442,6 +3741,7 @@ void main(string[] args)
     string surfaceOutput;
     string hostTitle;
     double seconds = 0.7;
+    double startTime = -1.0;
     bool animate;
     bool offscreen;
     bool testMotion;
@@ -3449,6 +3749,8 @@ void main(string[] args)
     bool pitchTest;
     bool inputTrace;
     bool hudTrace;
+    bool topmost;
+    string windowShot;
     for (size_t i = 0; i < args.length; ++i)
     {
         if (args[i] == "--shaders" && i + 1 < args.length)
@@ -3461,6 +3763,8 @@ void main(string[] args)
             hostTitle = args[++i];
         else if (args[i] == "--time" && i + 1 < args.length)
             seconds = to!double(args[++i]);
+        else if (args[i] == "--time-of-day" && i + 1 < args.length)
+            startTime = to!double(args[++i]);
         else if (args[i] == "--animate")
             animate = true;
         else if (args[i] == "--render")
@@ -3475,6 +3779,10 @@ void main(string[] args)
             extremeMotion = true;
         else if (args[i] == "--trace-hud")
             hudTrace = true;
+        else if (args[i] == "--topmost")
+            topmost = true;
+        else if (args[i] == "--window-shot" && i + 1 < args.length)
+            windowShot = args[++i];
     }
     const exeDir = dirName(absolutePath(args[0]));
     if (shaderDir.length != 0)
@@ -3546,13 +3854,16 @@ void main(string[] args)
         RegisterClassA(&windowClass);
         gStandaloneWindow = true;
         gChildWindow = CreateWindowExA(0, toStringz("AuroraVk3DStandalone"),
-            toStringz("Large Marching Cubes Terrain"),
+            toStringz("Large Marching Cubes Terrain V2"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE, 80, 80, 1280, 720,
             null, null, instanceHandle, null);
         if (gChildWindow is null)
             throw new Exception("cannot create the standalone window");
         ShowWindow(gChildWindow, SW_SHOW);
         SetForegroundWindow(gChildWindow);
+        if (topmost)
+            SetWindowPos(gChildWindow, cast(HWND) cast(intptr_t) -1, 0, 0, 0, 0,
+                0x0001 | 0x0002); // SWP_NOSIZE | SWP_NOMOVE
     }
     auto app = new App(animate && surfaceOutput.length != 0
         ? surfaceOutput : null);
@@ -3567,7 +3878,10 @@ void main(string[] args)
     app.pitchTest = pitchTest;
     app.inputTrace = inputTrace;
     app.hudTrace = hudTrace;
-    app.mouseTitle = "Large Marching Cubes Terrain";
+    app.windowShotPath = windowShot;
+    app.mouseTitle = "Large Marching Cubes Terrain V2";
+    if (startTime >= 0.0)
+        app.setTimeOfDay(startTime);
     if (hostTitle.length != 0)
         app.present(cast(int) seconds);
     else if (animate && surfaceOutput.length != 0)

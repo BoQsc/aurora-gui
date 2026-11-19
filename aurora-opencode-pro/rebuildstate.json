@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Ship the provider-key resolution fix (OPENCODE_API_KEY and CLI OAuth credentials) to the running app and the update channel.",
+  "reason": "Final source commit 0cacffd is on the maintainer branch. Rebuilding from it so provenance matches and the corrected goal evidence gate is published.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-19 14:07:38.8303418 UTC",
-  "finishedAt": "2026-11-19 14:09:10.549553 UTC",
-  "durationMs": 91719,
+  "startedAt": "2026-11-19 20:14:21.9948649 UTC",
+  "finishedAt": "2026-11-19 20:15:23.3971656 UTC",
+  "durationMs": 61402,
   "exitCode": 0,
   "errors": [],
   "publishStatus": "published",
-  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (f0fda56e37dc).",
+  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (82d0b7c91097).",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }
