@@ -347,6 +347,8 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "`window`/`title` - which keeps unrelated content out of the frame. " ~
             "Choosing that window, a different one, or `full_screen:true` is " ~
             "yours to decide from what the task needs; every choice is valid. " ~
+            "`list_windows:true` returns every visible window with its size so " ~
+            "you can pick one; a default `screen` lists them after the frame. " ~
             "`click`, `double_click`, `right_click`, " ~
             "`mouse_move`, `drag`, `type`, `key`, `key_down`, `key_up`, " ~
             "`scroll` and `wait_for_change` act on it. Coordinates are in the " ~
@@ -401,7 +403,7 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "not an application response. Set `input_mode` to `native` for games or " ~
             "shell controls that ignore virtual input. Verify progress in the latest " ~
             "screenshot; never treat an attempted action as proof of success. Windows only.",
-            `{"type":"object","properties":{"input_mode":{"type":"string","enum":["native","virtual"],"description":"Input mode for this call and its batch/nested actions. Native sends real OS input and is needed by games/shell controls that ignore posted messages. Virtual queues window messages with a ghost cursor; application response must be verified. Omit to use Settings. The streaming loop (action: \"subagent\") defaults to native; all its nested calls inherit the loop mode."},"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change","wait"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up (e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\"; key_down key_up hold it until the matching key_up) OR the macro name for macro"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"wait: full dwell 1..10000 ms (default 1000); drag: movement duration (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"click/double_click/drag: mouse button (default left); right_click always uses right"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\"; screen: same as window"},"window":{"type":"string","description":"Target window title substring: input (type/key/click/drag) is focused there; screen suggests that window (default: the committed target, else the foreground window), but you may choose another window or the full screen; subagent binds the loop to it"},"full_screen":{"type":"boolean","description":"screen: capture the whole desktop instead of one window. Window capture is only the default suggestion; choose the full screen whenever the task needs multiple windows or the desktop as a whole"},"repeat":{"type":"integer","description":"macro: how many times to run the sequence (default 1, max 64)"},"delay_ms":{"type":"integer","description":"macro: pause between repeats, in ms"},"seconds":{"type":"integer","description":"loop/subagent: time budget in seconds (loop default 10; subagent default 60)"},"task":{"type":"string","description":"subagent: the goal for the nested computer-use loop"},"max_steps":{"type":"integer","description":"subagent: how many model steps the nested loop may take (default 4, max 16)"},"frame":{"type":"string","enum":["full","half","quarter","tiny","diff"],"description":"subagent: per-step view - full/half/quarter (downscaled) or diff (only changed tiles at native scale with origins, fastest + most accurate coordinates; default half)"},"model":{"type":"string","description":"subagent: explicit model override; omission uses the selected application model"},"reasoning":{"type":"string","enum":["none","default"],"description":"subagent: hidden thinking - none (fast, default) or default (slower, better spatial judgement)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in desktop pixels for a zoomed detail view of one area; add the reported frame offset to a point read in the crop","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change","wait"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string","enum":["left","right","middle"],"description":"Mouse button for click/double_click/drag (default left); right_click uses right"},"title":{"type":"string"},"window":{"type":"string"},"repeat":{"type":"integer"},"delay_ms":{"type":"integer"},"seconds":{"type":"integer"},"task":{"type":"string"},"max_steps":{"type":"integer"},"frame":{"type":"string"},"model":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
+            `{"type":"object","properties":{"input_mode":{"type":"string","enum":["native","virtual"],"description":"Input mode for this call and its batch/nested actions. Native sends real OS input and is needed by games/shell controls that ignore posted messages. Virtual queues window messages with a ghost cursor; application response must be verified. Omit to use Settings. The streaming loop (action: \"subagent\") defaults to native; all its nested calls inherit the loop mode."},"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change","wait"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up (e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\"; key_down key_up hold it until the matching key_up) OR the macro name for macro"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"wait: full dwell 1..10000 ms (default 1000); drag: movement duration (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"click/double_click/drag: mouse button (default left); right_click always uses right"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\"; screen: same as window"},"window":{"type":"string","description":"Target window title substring: input (type/key/click/drag) is focused there; screen captures that window (use list_windows to see the candidates); subagent binds the loop to it"},"full_screen":{"type":"boolean","description":"screen: capture the whole desktop instead of one window. Window capture is only the default suggestion; choose the full screen whenever the task needs multiple windows or the desktop as a whole"},"list_windows":{"type":"boolean","description":"screen: return every visible window (title, size, minimized state) so you can choose one with window, without capturing an image"},"repeat":{"type":"integer","description":"macro: how many times to run the sequence (default 1, max 64)"},"delay_ms":{"type":"integer","description":"macro: pause between repeats, in ms"},"seconds":{"type":"integer","description":"loop/subagent: time budget in seconds (loop default 10; subagent default 60)"},"task":{"type":"string","description":"subagent: the goal for the nested computer-use loop"},"max_steps":{"type":"integer","description":"subagent: how many model steps the nested loop may take (default 4, max 16)"},"frame":{"type":"string","enum":["full","half","quarter","tiny","diff"],"description":"subagent: per-step view - full/half/quarter (downscaled) or diff (only changed tiles at native scale with origins, fastest + most accurate coordinates; default half)"},"model":{"type":"string","description":"subagent: explicit model override; omission uses the selected application model"},"reasoning":{"type":"string","enum":["none","default"],"description":"subagent: hidden thinking - none (fast, default) or default (slower, better spatial judgement)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in desktop pixels for a zoomed detail view of one area; add the reported frame offset to a point read in the crop","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change","wait"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string","enum":["left","right","middle"],"description":"Mouse button for click/double_click/drag (default left); right_click uses right"},"title":{"type":"string"},"window":{"type":"string"},"repeat":{"type":"integer"},"delay_ms":{"type":"integer"},"seconds":{"type":"integer"},"task":{"type":"string"},"max_steps":{"type":"integer"},"frame":{"type":"string"},"model":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
         ),
     ];
 }
@@ -2181,6 +2183,71 @@ version (Windows)
         return defaultCaptureWindowResult;
     }
 
+    /// One top-level window the model can name when it asks for a capture.
+    private struct VisibleWindow
+    {
+        void* hwnd;
+        string title;
+        int width;
+        int height;
+        bool minimized;
+        bool own;
+    }
+
+    private __gshared VisibleWindow[] visibleWindows;
+
+    private extern (Windows) int collectVisibleWindowProc(void* hwnd, LPARAM)
+    {
+        try
+        {
+            if (!IsWindowVisible(hwnd)) return 1;
+            if (visibleWindows.length >= 24) return 0;
+            const title = windowTitleOf(hwnd);
+            if (title.length == 0) return 1;
+            VisibleWindow entry;
+            entry.hwnd = hwnd;
+            entry.title = title;
+            entry.minimized = IsIconic(hwnd) != 0;
+            entry.own = isOwnProcessWindow(hwnd);
+            RECT rect;
+            if (GetWindowRect(hwnd, &rect) != 0)
+            {
+                entry.width = cast(int) (rect.right - rect.left);
+                entry.height = cast(int) (rect.bottom - rect.top);
+            }
+            visibleWindows ~= entry;
+        }
+        catch (Throwable) {}
+        return 1;
+    }
+
+    /// The visible top-level windows, topmost first, so the agent chooses the
+    /// capture target from the actual candidates instead of a hidden pick.
+    private string windowListText(void* suggested = null)
+    {
+        visibleWindows.length = 0;
+        EnumWindows(cast(void*) &collectVisibleWindowProc, 0);
+        if (visibleWindows.length == 0)
+            return "No visible titled windows; capture everything with " ~
+                "`full_screen:true`.";
+        auto text = appender!string();
+        text.put("Visible windows (topmost first): ");
+        foreach (index, entry; visibleWindows)
+        {
+            if (index > 0) text.put("; ");
+            text.put(to!string(index + 1) ~ ". \"" ~ entry.title ~ "\"");
+            if (entry.minimized) text.put(" (minimized)");
+            else if (entry.width > 0 && entry.height > 0)
+                text.put(" " ~ to!string(entry.width) ~ "x" ~
+                    to!string(entry.height));
+            if (entry.hwnd is suggested) text.put(" (suggested)");
+            else if (entry.own) text.put(" (this app)");
+        }
+        text.put(". Name one with `window`, or capture everything with " ~
+            "`full_screen:true`.");
+        return text.data;
+    }
+
     /// What a delivered frame depicts. `window` null means the whole desktop.
     private struct FrameView
     {
@@ -3154,6 +3221,8 @@ version (Windows)
         {
             case "screen":
             {
+                if (jsonBoolFlag(value, "list_windows") == 1)
+                    return succeededResult(windowListText());
                 const fullScreen = jsonBoolFlag(value, "full_screen") == 1;
                 auto windowTitle = jsonString(value, "window");
                 if (!windowTitle.length) windowTitle = jsonString(value, "title");
@@ -3178,13 +3247,10 @@ version (Windows)
                         : "Captured window \"" ~ view.windowLabel ~ "\"";
                 auto result = screenshotResult(prefix, view, fullScreen, rx,
                     ry, rw, rh);
-                // The default is a suggestion, not a constraint: say so once
-                // here, where the model is deciding what to look at next.
-                if (!fullScreen && !windowTitle.length && rw == 0 && rh == 0 &&
-                    view.window !is null)
-                    result.output ~= " This window is only the default " ~
-                        "suggestion; name another with `window`, or pass " ~
-                        "`full_screen:true`, whenever that fits the task.";
+                // The default is a suggestion, not a constraint: show every
+                // candidate once here, where the model decides what to look at.
+                if (!fullScreen && !windowTitle.length && rw == 0 && rh == 0)
+                    result.output ~= " " ~ windowListText(view.window);
                 return result;
             }
             case "macro":

@@ -77,6 +77,7 @@ with tempfile.TemporaryDirectory(prefix='aurora-capture-test-') as temporary:
             {'action': 'screen'},
             {'action': 'screen', 'full_screen': True},
             {'action': 'screen', 'window': b_title},
+            {'action': 'screen', 'list_windows': True},
         ]
         scenario = directory / 'cases.json'
         scenario.write_text(json.dumps(cases), encoding='utf-8')
@@ -94,6 +95,8 @@ with tempfile.TemporaryDirectory(prefix='aurora-capture-test-') as temporary:
         assert not rows[1]['failed'], rows[1]
         assert frame(rows[1]) == (aw, ah), (frame(rows[1]), (aw, ah))
         assert a_title in rows[1]['output'] and 'window' in rows[1]['output'], rows[1]
+        assert b_title in rows[1]['output'] and '(suggested)' in rows[1]['output'], \
+            'A default screen did not list the window candidates'
         assert rows[1]['foreground_unchanged'], 'A window screenshot stole focus'
 
         assert not rows[2]['failed'], rows[2]
@@ -109,11 +112,17 @@ with tempfile.TemporaryDirectory(prefix='aurora-capture-test-') as temporary:
         assert frame(rows[5]) == (bw, bh), (frame(rows[5]), (bw, bh))
         assert b_title in rows[5]['output'], rows[5]
 
+        assert not rows[6]['failed'], rows[6]
+        assert rows[6]['images'] == 0, 'Listing windows captured an image'
+        assert 'Visible windows' in rows[6]['output'], rows[6]
+        assert a_title in rows[6]['output'] and b_title in rows[6]['output'], rows[6]
+
         time.sleep(0.2)
         state = json.loads((directory / 'state.json').read_text(encoding='utf-8'))
         assert state['A']['clicks'] == 1, state
         print('PASS: default screen is the target window, full_screen is opt-in, '
-              'named window capture works, and a frame-relative click lands')
+              'named window capture works, the window list lets the agent choose, '
+              'and a frame-relative click lands')
     finally:
         (directory / 'stop').touch()
         try:
