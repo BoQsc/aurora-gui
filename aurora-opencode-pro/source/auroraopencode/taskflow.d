@@ -1078,8 +1078,10 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
         const(TaskStep)[] steps = previous;
         if (auto plan = "plan" in root.object)
         {
-            if (plan.type != JSONType.array || !plan.array.length)
-                return "Error: plan must be a non-empty array.";
+            // An empty array clears the ordinary plan. Only the tracked mode
+            // requires at least one outcome.
+            if (plan.type != JSONType.array)
+                return "Error: plan must be an array.";
             foreach (row; plan.array)
                 if (auto id = "id" in row.object)
                     foreach (item; session.contract.workItems)
