@@ -7696,6 +7696,23 @@ public string previewToolDiffText(string toolName, string argsJson)
     return "";
 }
 
+/// Number of body lines a file-mutating tool's streamed arguments already
+/// carry. The live row refreshes when this grows, so each line that arrives
+/// becomes visible instead of waiting for the next 512-byte argument bucket:
+/// an `apply_patch` can stream many context lines whose `+N -M` counters never
+/// change, yet the reader should still see the body advance line by line.
+/// Zero for tools that do not stream a body.
+public int previewToolLineCount(string toolName, string argsJson)
+{
+    if (toolName == "write")
+        return countBodyLines(partialStringArg(argsJson, "content"));
+    if (toolName == "edit")
+        return countBodyLines(partialStringArg(argsJson, "newString"));
+    if (toolName == "apply_patch")
+        return countBodyLines(applyPatchBody(argsJson));
+    return 0;
+}
+
 /// The D-native `dshell` tool: a tiny shell implemented in D that covers the
 /// commands the model most often reaches for (pwd, ls/dir, stat) so it never
 /// needs to invoke bash/cmd/powershell for plain directory introspection.

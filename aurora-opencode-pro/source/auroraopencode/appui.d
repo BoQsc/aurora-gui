@@ -65,7 +65,7 @@ import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     listChangeRecords, listSupervisedProcesses, stopAppBoundSupervisedProcesses,
     nativeOnlyToolDefinitions, partialStringArg, patchDiffSection,
     previewToolDiff,
-    previewToolDiffText, removeSupervisedProcess,
+    previewToolDiffText, previewToolLineCount, removeSupervisedProcess,
     requestAllSupervisedProcessKills, requestSupervisedProcessKill,
     SupervisedProcessInfo,
     rebuildRequestHandler, rebuildSourceCheckHandler, syncRequestHandler, revertChangeRecord,
@@ -5837,8 +5837,12 @@ private final class LiveToolRow : Widget
         import std.string : splitLines;
         const lines = splitLines(_detail);
         const lineLimit = _hasSearchProgress || _hasReadProgress ? 24 : _outputPreview ? 8 : maxDetailLines;
-        const first = _outputPreview && !_hasSearchProgress && !_hasReadProgress && lines.length > lineLimit
-            ? lines.length - lineLimit : 0;
+        // A body that is still being produced keeps its newest lines visible.
+        // Anchoring the block at its first line froze the preview the moment it
+        // filled the cap, so a large streamed edit looked stalled and then
+        // appeared in one piece when the tool settled; following the tail makes
+        // every new line show up as it arrives.
+        const first = lines.length > lineLimit ? lines.length - lineLimit : 0;
         _detailTruncated = first > 0;
         foreach (index, raw; lines)
         {
@@ -5862,6 +5866,10 @@ private final class LiveToolRow : Widget
     int diffAdditionsForTesting() const { return _additions; }
     int diffDeletionsForTesting() const { return _deletions; }
     string previewForTesting() const { return _detail; }
+    /// The preview rows actually painted under the header, so a contract can
+    /// prove the newest streamed line is visible instead of an earlier block.
+    string[] visibleDetailLinesForTesting() const { return _detailLines.dup; }
+    bool detailTruncatedForTesting() const { return _detailTruncated; }
     bool hasTransferProgressForTesting() const { return _hasTransferProgress; }
     double transferFractionForTesting() const { return _transferProgress.fraction(); }
     bool hasSearchProgressForTesting() const { return _hasSearchProgress; }
@@ -6007,7 +6015,9 @@ private final class LiveToolRow : Widget
         const bodyWidth = maxInt(1, bounds().width - bodyX - padH - 8);
         // An editing tool previews a diff, so tint its rows the way the settled
         // tool body does; other previews (a shell command) stay muted.
-        const diffPreview = !_outputPreview && (_toolName == "edit" || _toolName == "write");
+        const diffPreview = !_outputPreview &&
+            (_toolName == "edit" || _toolName == "write" ||
+             _toolName == "apply_patch");
         foreach (line; _detailLines)
         {
             auto bodyLayout = canvas.layoutText(toUTF32(line), 1,
@@ -6020,7 +6030,11 @@ private final class LiveToolRow : Widget
         {
             auto moreLayout = canvas.layoutText(
                 toUTF32(_outputPreview ? "Latest output · earlier lines omitted"
-                    : "… " ~ to!string(_detail.length) ~ " bytes"),
+                    : diffPreview
+                        ? "Latest changes · earlier lines omitted · " ~
+                            to!string(_detail.length) ~ " bytes"
+                        : "… earlier lines omitted · " ~
+                            to!string(_detail.length) ~ " bytes"),
                 1, FontRole.monospace, null, bodyWidth, false);
             canvas.drawLayout(Point(bodyX, y), moreLayout, opencodeMuted);
         }
@@ -23572,9 +23586,15 @@ private void pollButtonSuggestionRequest()
         {
             int additions, deletions;
             previewToolDiff(call.name, call.arguments, additions, deletions);
+            // The streamed line count is part of the shape so each arriving
+            // line refreshes the row. Without it an `apply_patch` that streams
+            // context lines (no `+`/`-`, so no counter change) only refreshed
+            // every 512 bytes of arguments, which reads as a stalled edit that
+            // then appears in one piece.
             shape.put(call.id ~ ":" ~ call.name ~ ":" ~
                 humanToolSubtitle(call.name, call.arguments) ~ ":" ~
                 to!string(call.arguments.length / 512) ~ ":" ~
+                to!string(previewToolLineCount(call.name, call.arguments)) ~ ":" ~
                 to!string(additions) ~ ":" ~ to!string(deletions) ~ ";");
         }
         return shape.data;
@@ -38482,6 +38502,27 @@ private void pollButtonSuggestionRequest()
                 previews ~= row.previewForTesting();
         }
         return previews;
+    }
+
+    /// Test-only: the preview rows an in-flight tool row actually paints, in
+    /// column order. Distinguishes the newest streamed lines (which must stay
+    /// visible) from the full streamed body.
+    public string[][] liveToolRowVisibleLinesForTesting()
+    {
+        string[][] visible;
+        foreach (child; messageColumnVisuals())
+        {
+            if (auto group = cast(ToolGroupBubble) child)
+            {
+                foreach (part; group._parts)
+                    if (auto row = cast(LiveToolRow) part)
+                        visible ~= row.visibleDetailLinesForTesting();
+                continue;
+            }
+            if (auto row = cast(LiveToolRow) child)
+                visible ~= row.visibleDetailLinesForTesting();
+        }
+        return visible;
     }
 
     public double[] liveTransferFractionsForTesting()

@@ -26,9 +26,8 @@ PATCH = "\n".join([
     "+alpha",
     "+beta",
     "+gamma",
-    "+extra line",
-    "+another added line",
-    "+a third added line",
+    *[f"+filler line {i}" for i in range(1, 56)],
+    "+omega",
     "*** End Patch",
 ])
 CALL_ID = "call_patch_1"

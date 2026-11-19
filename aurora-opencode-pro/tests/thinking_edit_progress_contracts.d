@@ -4,9 +4,11 @@ import aurora;
 import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : Settings, saveSettings,
     sandboxFolderPath, setOpencodeStateDirectoryForTesting, opencodeTheme;
-import auroraopencode.tools : previewToolDiff, previewToolDiffText;
+import auroraopencode.tools : previewToolDiff, previewToolDiffText,
+    previewToolLineCount;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
+import std.array : join;
 import std.conv : to;
 import std.file : exists, mkdirRecurse, remove, tempDir;
 import std.path : buildPath;
@@ -77,11 +79,14 @@ int main()
     bool sawApplyingRow;
     bool quietWhileApplying;
     bool bodyStreamed;
+    bool newestLineVisible;
+    string[] distinctPreviews;
     int maxAdds;
     int maxDels;
     string lastRow;
     string lastDiff;
     string lastPreview;
+    string[] lastVisibleLines;
     string lastHeaderWhileApplying;
     string lastActivity;
     auto nextSample = MonoTime.currTime;
@@ -94,6 +99,7 @@ int main()
         auto rows = root.liveToolRowTextsForTesting();
         auto diffs = root.liveToolRowDiffTextsForTesting();
         auto previews = root.liveToolRowPreviewsForTesting();
+        auto visibleRows = root.liveToolRowVisibleLinesForTesting();
         bool applying;
         foreach (i, row; rows)
         {
@@ -116,6 +122,17 @@ int main()
             {
                 lastPreview = previews[i];
                 if (lastPreview.indexOf("+gamma") >= 0) bodyStreamed = true;
+                if (distinctPreviews.length == 0 ||
+                    distinctPreviews[$ - 1] != lastPreview)
+                    distinctPreviews ~= lastPreview;
+            }
+            if (i < visibleRows.length)
+            {
+                lastVisibleLines = visibleRows[i];
+                // The patch has more added lines than the preview can show, so
+                // a frozen first-line block would never reach its last line.
+                foreach (line; lastVisibleLines)
+                    if (line.indexOf("+omega") >= 0) newestLineVisible = true;
             }
             if (header.indexOf("no new output") >= 0) quietWhileApplying = true;
         }
@@ -141,6 +158,8 @@ int main()
     writeln("observed: thinkingHeader=", sawThinkingHeader,
         " quietBeforeEdit=", sawQuietBeforeEdit,
         " applyingRow=", sawApplyingRow, " bodyStreamed=", bodyStreamed,
+        " newestLineVisible=", newestLineVisible,
+        " previewUpdates=", distinctPreviews.length,
         " maxAdds=", maxAdds, " maxDels=", maxDels);
     writeln("during edit: row=[", lastRow, "] diff=[", lastDiff, "] header=[",
         lastHeaderWhileApplying, "] activity=[", lastActivity, "]");
@@ -165,6 +184,13 @@ int main()
     assert(bodyStreamed,
         "the live patch row never previewed the patch body while it streamed: [" ~
         lastPreview ~ "]");
+    assert(newestLineVisible,
+        "the live patch row froze on its first lines instead of showing the " ~
+        "newest streamed line: visible=[" ~
+        (lastVisibleLines.length ? lastVisibleLines.join(" | ") : "(none)") ~ "]");
+    assert(distinctPreviews.length >= 5,
+        "the live patch preview did not advance line by line while it streamed " ~
+        "(" ~ to!string(distinctPreviews.length) ~ " updates)");
     assert(!quietWhileApplying,
         "the Thinking header claimed 'no new output' while the live edit row was " ~
         "streaming: [" ~ lastHeaderWhileApplying ~ "]");
@@ -254,6 +280,21 @@ private void verifyApplyPatchPreview()
     assert(adds == 1 && dels == 1,
         "partial apply_patch counters wrong: +" ~ to!string(adds) ~
         " -" ~ to!string(dels));
+    // The live row refreshes per streamed line, so the line count must grow
+    // even for a context line that changes no counter.
+    const contextFree = `{"patch":"*** Begin Patch\n*** Update File: a.txt\n@@\n-one\n+two`;
+    const withContext = `{"patch":"*** Begin Patch\n*** Update File: a.txt\n@@\n-one\n+two\n unchanged`;
+    assert(previewToolLineCount("apply_patch", withContext) >
+        previewToolLineCount("apply_patch", contextFree),
+        "a streamed apply_patch context line did not grow the preview line count");
+    assert(previewToolLineCount("write",
+        `{"filePath":"a.txt","content":"one\ntwo\nthree"}`) == 3,
+        "the streamed write body did not report its line count");
+    assert(previewToolLineCount("edit",
+        `{"filePath":"a.txt","oldString":"x","newString":"one\ntwo"}`) == 2,
+        "the streamed edit replacement did not report its line count");
+    assert(previewToolLineCount("read", `{"filePath":"a.txt"}`) == 0,
+        "a read call must not report a streamed body line count");
 
     const full = `{"patch":"*** Begin Patch\n*** Update File: a.txt\n@@\n alpha\n-beta\n+BETA\n*** Add File: b.txt\n+one\n+two\n*** End Patch"}`;
     assert(previewToolDiff("apply_patch", full, adds, dels),

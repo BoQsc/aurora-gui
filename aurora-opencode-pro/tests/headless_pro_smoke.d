@@ -5178,6 +5178,69 @@ int main(string[] args)
         writeln("Live tool rows show a running elapsed time");
     }
 
+    // A large streamed body keeps its newest lines visible. The preview used to
+    // anchor at its first line, so once the 40-line cap filled it froze and the
+    // whole change appeared only when the tool settled - the "editing stopped
+    // and then produced one large edit" report. It must follow the tail, and a
+    // newly arrived line must refresh the row even when the byte bucket and the
+    // `+N -M` counters did not change (an `apply_patch` context line).
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Rewrite the large file"]);
+        root.addConversationForTesting(["assistant"], [""]);
+        string body;
+        foreach (i; 0 .. 60)
+            body ~= "line " ~ to!string(i) ~ "\\n";
+        OpenCodeToolCall bigWrite;
+        bigWrite.id = "call-big-write";
+        bigWrite.name = "write";
+        bigWrite.arguments =
+            `{"filePath":"big.txt","content":"` ~ body ~ `"}`;
+        root.injectToolProgressForTesting([bigWrite]);
+        root.tickTree(0.02);
+        auto visible = root.liveToolRowVisibleLinesForTesting();
+        assert(visible.length == 1, "the large write has no live preview row");
+        assert(visible[0].length == 40,
+            "the live preview did not cap its rows: " ~ to!string(visible[0].length));
+        assert(visible[0][$ - 1].indexOf("line 59") >= 0,
+            "the live preview froze on its first lines instead of the newest: [" ~
+            visible[0][$ - 1] ~ "]");
+        assert(visible[0][0].indexOf("line 0") < 0,
+            "the live preview kept the oldest line above the newest ones: [" ~
+            visible[0][0] ~ "]");
+
+        // `apply_patch`: append one context line, inside the same 512-byte
+        // argument bucket and without changing `+N -M`.
+        string added;
+        foreach (i; 0 .. 50)
+            added ~= "+added " ~ to!string(i) ~ "\\n";
+        auto prefix = `{"patch":"*** Begin Patch\n*** Update File: a.txt\n@@\n`;
+        OpenCodeToolCall streamingPatch;
+        streamingPatch.id = "call-streaming-patch";
+        streamingPatch.name = "apply_patch";
+        const beforeContextArgs = prefix ~ added ~ `"}`;
+        streamingPatch.arguments = beforeContextArgs;
+        root.injectToolProgressForTesting([streamingPatch]);
+        root.tickTree(0.02);
+        const beforeContext = root.liveToolRowVisibleLinesForTesting()[0][$ - 1];
+        streamingPatch.arguments = prefix ~ added ~ " context line\\n" ~ `"}`;
+        assert(streamingPatch.arguments.length / 512 ==
+            beforeContextArgs.length / 512,
+            "the per-line refresh case crossed a 512-byte bucket");
+        root.injectToolProgressForTesting([streamingPatch]);
+        root.tickTree(0.02);
+        auto patchLines = root.liveToolRowVisibleLinesForTesting()[0];
+        assert(patchLines[$ - 1].indexOf("context line") >= 0 &&
+            patchLines[$ - 1] != beforeContext,
+            "a streamed patch line did not refresh the live preview: [" ~
+            patchLines[$ - 1] ~ "]");
+        assert(root.liveToolRowDiffTextsForTesting()[0] == "+50 -0",
+            "the context line changed the patch counters: " ~
+            root.liveToolRowDiffTextsForTesting()[0]);
+        assert(paintProjection(root, driver), "the tail preview did not paint");
+        writeln("Large streamed edits keep their newest lines visible");
+    }
+
     // Live phase indicator: the generic activity row covers the gaps where no
     // live tool row exists (before the first token, between tool rounds). While
     // tool rows are streaming or running it is intentionally suppressed — those
