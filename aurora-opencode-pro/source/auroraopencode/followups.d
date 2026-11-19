@@ -4,7 +4,8 @@ module auroraopencode.followups;
 // Suggested follow-ups: 2 clickable next messages shown at the end of a
 // settled conversation. Unlike the composer suggestion (one line inserted with
 // Tab), these are deliberately different directions the user could take, so
-// the list reads as options rather than a single guess.
+// the list reads as options rather than a single guess. When the model does not
+// supply enough imperative directions, two generic imperatives fill the row.
 //
 // The instruction and the reply cleaning are pure and GUI-free so they can be
 // unit-tested directly; the request itself lives in appui.d next to the
@@ -131,6 +132,43 @@ private bool isQuestionFollowUp(string value)
     return false;
 }
 
+/// The two imperative messages offered when the model's reply does not supply
+/// enough usable instructions. They stay deliberately generic but actionable.
+public string[] defaultFollowUps()
+{
+    return ["Continue the unfinished work", "Summarize what changed"];
+}
+
+/// Ensure the follow-up row has two imperative messages. The model's own
+/// non-question items are kept (up to `target`); questions and direct
+/// verification prompts are dropped, and missing slots are filled from
+/// `defaultFollowUps`. `target` is the row size, normally two.
+public string[] withImperativeDefaults(const(string)[] items, size_t target = 2)
+{
+    if (target == 0) return null;
+    string[] result;
+    if (items !is null)
+        foreach (item; items)
+        {
+            if (result.length >= target) break;
+            if (item.length == 0 || isQuestionFollowUp(item) ||
+                isDirectVerification(item)) continue;
+            bool duplicate;
+            foreach (existing; result)
+                if (existing == item) duplicate = true;
+            if (!duplicate) result ~= item;
+        }
+    const defaults = defaultFollowUps();
+    foreach (fallback; defaults)
+    {
+        if (result.length >= target) break;
+        bool present;
+        foreach (existing; result) if (existing == fallback) present = true;
+        if (!present) result ~= fallback;
+    }
+    return result;
+}
+
 /// Accept a model reply as up to `maxItems` distinct follow-up messages.
 /// Handles the requested JSON array of strings (or objects with a text-like
 /// field), and falls back to one item per line. Fenced code, labels, duplicate
@@ -220,6 +258,23 @@ public string[] cleanFollowUps(string raw, size_t maxItems = 2,
 
 unittest
 {
+    // The row falls back to two imperatives when the model hesitates.
+    auto defaults = defaultFollowUps();
+    assert(defaults.length == 2);
+    assert(withImperativeDefaults(null) == defaults);
+    assert(withImperativeDefaults(["Why is it hidden?"]) == defaults);
+    auto one = withImperativeDefaults(["Add a shortcut"]);
+    assert(one.length == 2 && one[0] == "Add a shortcut");
+    assert(one[1] == defaults[0] || one[1] == defaults[1]);
+    auto mixedForms = withImperativeDefaults(
+        ["Why is it hidden?", "Add a shortcut"]);
+    assert(mixedForms.length == 2 && mixedForms[0] == "Add a shortcut");
+    assert(withImperativeDefaults(
+        ["Add a shortcut", "Explain the trade-off"]) ==
+        ["Add a shortcut", "Explain the trade-off"]);
+    assert(withImperativeDefaults([defaults[0]]) == defaults);
+    assert(withImperativeDefaults(["Run the tests"]) == defaults);
+
     // A mixed pair is fine, but two questions collapse to one. A later
     // imperative still fills the second slot.
     auto mixed = cleanFollowUps(

@@ -149,7 +149,8 @@ import auroraopencode.buttonsuggest : ButtonSuggestion,
 import auroraopencode.composersuggestion : cleanComposerSuggestion,
     composerSuggestionCanRequest, composerSuggestionInstruction,
     composerSuggestionTriggerReady;
-import auroraopencode.followups : cleanFollowUps, followUpInstruction;
+import auroraopencode.followups : cleanFollowUps, followUpInstruction,
+    withImperativeDefaults;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision, invalidateToolWorkspace;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
 import auroraopencode.preferencewriter : PreferenceWriter;
@@ -26941,8 +26942,8 @@ private void pollButtonSuggestionRequest()
         runtime.followUpClient = null;
         runtime.followUpPending = false;
         auto candidate = succeeded
-            ? cleanFollowUps(runtime.followUpOutput, followUpMaxItems,
-                followUpMaxChars) : null;
+            ? withImperativeDefaults(cleanFollowUps(runtime.followUpOutput,
+                followUpMaxItems, followUpMaxChars)) : null;
         runtime.followUpOutput = "";
         const sessionId = runtime.followUpSessionId;
         runtime.followUpSessionId = "";
