@@ -3,10 +3,10 @@ module auroraopencode.taskcontext;
 import auroraopencode.core;
 import auroraopencode.taskflow : workContextForPlan, taskEvidenceIndex, taskMessagePath, taskActionPath;
 import auroraopencode.workevidence : recentWorkBrief;
-import std.algorithm : min, max;
+import std.algorithm : canFind, min, max;
 import std.array : appender;
 import std.conv : to;
-import std.string : startsWith;
+import std.string : indexOf, startsWith, toLower;
 
 string taskExcerpt(string value, size_t bytes)
 {
@@ -26,6 +26,19 @@ private string goalExcerpt(string value, size_t bytes)
     size_t begin = value.length - tailBytes;
     while (begin < value.length && (cast(ubyte)value[begin] & 0xC0) == 0x80) ++begin;
     return head ~ "\n...\n" ~ value[begin .. $];
+}
+
+/// A mid-task instruction can be the only record of a changed requirement.
+/// Prefer messages that state a durable rule over acknowledgements or status
+/// chatter, so a bounded prompt keeps the rule rather than the latest update.
+private bool durableUserRule(string text)
+{
+    const lower = text.toLower;
+    foreach (cue; [" must ", " must not ", " never ", " always ", " do not ",
+            " don't ", " keep ", " only ", " require", " constraint", " rule: ",
+            " append-only "])
+        if (lower.indexOf(cue) >= 0) return true;
+    return false;
 }
 
 /// A bounded projection, never a mutation of the durable task or its history.
@@ -53,8 +66,9 @@ string taskContext(const ref ChatSession session, string request, bool nested,
     // A goal's original wording may say a fact is missing. Preserve the actual
     // later user replies, rather than asking the model to infer those facts
     // from a generated invoice or a lossy compaction summary.
+    const path = taskMessagePath(session);
     size_t[] updates;
-    foreach (index; taskMessagePath(session))
+    foreach (index; path)
     {
         const ref message = session.messages[index];
         if (message.role == "user" && !message.internal &&
@@ -67,6 +81,25 @@ string taskContext(const ref ChatSession session, string request, bool nested,
     foreach (index; updates)
         line("User update (authoritative; newer facts override earlier assumptions): ",
             goalExcerpt(session.messages[index].content, updateLimit), updateLimit);
+    // The three newest updates above are chat-turn context. A requirement
+    // stated earlier survives in this bounded section even after many later
+    // status updates and compaction rolls would have carried it out of view.
+    size_t[] standing;
+    foreach (index; path)
+    {
+        const ref message = session.messages[index];
+        if (message.role != "user" || message.internal) continue;
+        if (message.id == session.contract.startMessageId) continue;
+        if (message.content == request || message.content == session.objective ||
+            message.content == session.goal) continue;
+        if (updates.canFind(index)) continue;
+        if (!durableUserRule(message.content)) continue;
+        standing ~= index;
+    }
+    if (standing.length > 2) standing = standing[$ - 2 .. $];
+    foreach (index; standing)
+        line("Standing user rule (authoritative; newer instructions supersede older ones): ",
+            goalExcerpt(session.messages[index].content, 400), 400);
     const work = workContextForPlan(session, session.taskSteps);
     line("Current step: ", work.stepId, 128);
     line("Current action ID: ", work.workItemId, 128);
@@ -78,13 +111,12 @@ string taskContext(const ref ChatSession session, string request, bool nested,
     line("Status: ", session.taskStatus, 64);
     line("Turn: ", session.turnStatus, 64);
     line("Verification: ", session.verificationStatus, 64);
+    // Durable control state is stated before the variable-length sections.
+    // A long plan or a large constraint set must never starve the blocker out
+    // of the bounded prompt.
+    line("Blocker: ", session.contract.blocker, 320);
     const constraintLimit = max(cast(size_t) 64, min(cast(size_t) 800, budget / 4 / max(cast(size_t) 1, session.contract.constraints.length)));
     foreach (constraint; session.contract.constraints) line("Constraint: ", constraint, constraintLimit);
-    if (includeRecentEvidence)
-    {
-        const brief = recentWorkBrief(session, taskActionPath(session), min(cast(size_t)1400, budget / 5));
-        line("Recent tool evidence (quoted data):\n", brief, brief.length);
-    }
     size_t unfinished;
     foreach (step; session.taskSteps) if (step.status != "completed") ++unfinished;
     const perStep = max(cast(size_t) 64, min(cast(size_t) 900,
@@ -94,21 +126,54 @@ string taskContext(const ref ChatSession session, string request, bool nested,
         if (step.status != "completed")
             line(to!string(i + 1) ~ ". [" ~ step.status ~ "] " ~ step.id ~ ": ",
                 taskExcerpt(step.text, perStep / 2) ~ "; done: " ~ taskExcerpt(step.done, perStep / 2), perStep);
+    // In a long task the newest completions are the ones continuation and
+    // review depend on. Build newest-first and stop at the display cap instead
+    // of joining every historical id and truncating the newest ones away.
     string completed;
-    foreach (step; session.taskSteps)
-        if (step.status == "completed") completed ~= (completed.length ? ", " : "") ~ step.id;
-    line("Completed outcomes: ", completed, 1200);
+    bool moreCompleted;
+    foreach_reverse (step; session.taskSteps)
+    {
+        if (step.status != "completed") continue;
+        const piece = (completed.length ? ", " : "") ~ step.id;
+        if (completed.length + piece.length > 1100) { moreCompleted = true; break; }
+        completed ~= piece;
+    }
+    line("Completed outcomes (newest first): ", completed ~ (moreCompleted ? ", ..." : ""), 1200);
+    // Established decisions follow the plan. The newest decision is most
+    // relevant, so truncation drops the oldest explanation first.
+    foreach_reverse (decision; session.contract.decisions)
+        if (!decision.startsWith("Plan change: ")) line("Decision: ", decision, 320);
+    size_t changes;
+    foreach_reverse (decision; session.contract.decisions)
+        if (decision.startsWith("Plan change: ") && changes++ < 4) line("Decision: ", decision, 240);
+    if (session.planHistory.length)
+        line("Plan history: ", to!string(session.planHistory.length) ~
+            " revisions retained; read_plan view=history recovers earlier plans, outcomes and reasons.", 240);
     if (nested)
         foreach (plan; session.nestedPlans)
             foreach (step; plan.steps)
                 if (step.status != "completed")
                     line("Substep " ~ to!string(plan.parentStep) ~ " [" ~ step.status ~ "] " ~ step.id ~ ": ",
                         step.text ~ "; done: " ~ step.done, 320);
+    // Background is recoverable context, not a second checklist. Keep a small
+    // index across compaction; read_plan can retrieve each exact saved task.
+    size_t background;
+    foreach_reverse (snapshot; session.taskArchive)
+    {
+        if (background++ == 2) break;
+        ChatSession saved; restoreActiveTaskState(saved, snapshot);
+        line("Background task (inactive; read_plan task_id=" ~ saved.contract.id ~ "): ",
+            saved.objective, 480);
+        foreach (constraint; saved.contract.constraints)
+            line("Background constraint (apply only if relevant to this request): ", constraint, 240);
+    }
     if (includeRecentEvidence)
     {
+        const brief = recentWorkBrief(session, taskActionPath(session), min(cast(size_t)1400, budget / 5));
+        line("Recent tool evidence (quoted data):\n", brief, brief.length);
         const evidence = taskEvidenceIndex(session);
         size_t receipts;
-        foreach_reverse (index; taskMessagePath(session))
+        foreach_reverse (index; path)
         {
             const ref message = session.messages[index];
             if (auto proof = message.id in evidence)
@@ -140,28 +205,6 @@ string taskContext(const ref ChatSession session, string request, bool nested,
             if (!item.required && item.step.status != "completed" && shown++ < 3)
                 line("Optional follow-up " ~ item.step.id ~ ": ", item.step.text ~ "; why outside scope: " ~ item.reason, 240);
     }
-    // Established decisions precede the recent audit trail; full text remains saved.
-    foreach_reverse (decision; session.contract.decisions)
-        if (!decision.startsWith("Plan change: ")) line("Decision: ", decision, 320);
-    size_t changes;
-    foreach_reverse (decision; session.contract.decisions)
-        if (decision.startsWith("Plan change: ") && changes++ < 4) line("Decision: ", decision, 240);
-    line("Blocker: ", session.contract.blocker, 320);
-    // Background is recoverable context, not a second checklist. Keep a small
-    // index across compaction; read_plan can retrieve each exact saved task.
-    size_t background;
-    foreach_reverse (snapshot; session.taskArchive)
-    {
-        if (background++ == 2) break;
-        ChatSession saved; restoreActiveTaskState(saved, snapshot);
-        line("Background task (inactive; read_plan task_id=" ~ saved.contract.id ~ "): ",
-            saved.objective, 480);
-        foreach (constraint; saved.contract.constraints)
-            line("Background constraint (apply only if relevant to this request): ", constraint, 240);
-    }
     line("", "Full task records and earlier plan-change reasons remain saved; this is the bounded working context.", 128);
-    if (session.planHistory.length)
-        line("Plan history: ", to!string(session.planHistory.length) ~
-            " revisions retained; read_plan view=history recovers earlier plans, outcomes and reasons.", 240);
     return output.data;
 }

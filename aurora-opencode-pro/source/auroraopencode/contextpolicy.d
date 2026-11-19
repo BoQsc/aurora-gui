@@ -157,6 +157,20 @@ public string checkpointEdges(string value, size_t limit)
         value[tail .. $].replace("\r", " ").replace("\n", " ");
 }
 
+/// Carry the most recent retired entries forward. The checkpoint header is
+/// rebuilt in full on every roll, so keeping its head only duplicates durable
+/// state and drops the near-term facts the next roll still needs.
+private string checkpointTail(string value, size_t limit)
+{
+    if (value.length <= limit) return value;
+    if (limit < 4) return "";
+    size_t begin = value.length - (limit - 3);
+    while (begin < value.length &&
+        (cast(ubyte) value[begin] & cast(ubyte) 0xC0) ==
+            cast(ubyte) 0x80) ++begin;
+    return "..." ~ value[begin .. $];
+}
+
 /// Keep both the opening and the outcome of an old tool result. A bare
 /// "output shortened" marker erased the only record of what a read,
 /// build, or test returned when a local model first hit its context cap.
@@ -693,11 +707,16 @@ public bool rollCompactionCheckpoint(ref ChatSession session,
     if (header.data.length + 128 >= summaryBudget) return false;
     string previous;
     if (start > 0)
-        previous = checkpointSnippet(session.compactionSummary,
+        previous = checkpointTail(session.compactionSummary,
             (summaryBudget - header.data.length) / 3);
     string[] entries;
     size_t entryBytes;
-    foreach (i; start .. boundary + 1)
+    const size_t entryBudget = summaryBudget > header.data.length + previous.length + 100
+        ? summaryBudget - header.data.length - previous.length - 100 : 0;
+    // Accumulate from the newest retired message backward, then emit
+    // chronologically. A long idle stretch can retire thousands of messages;
+    // building every entry first spent memory only to discard the oldest.
+    foreach_reverse (i; start .. boundary + 1)
     {
         const message = session.messages[path[i]];
         if (message.internal) continue;
@@ -713,21 +732,18 @@ public bool rollCompactionCheckpoint(ref ChatSession session,
                 entry ~= " [called " ~ call.name ~ " id=" ~ call.id ~ ": " ~
                     checkpointSnippet(call.arguments, 240) ~ "]";
         entry ~= "\n";
+        const size_t remaining = entryBudget > entryBytes ? entryBudget - entryBytes : 0;
+        if (remaining < 64) break;
+        if (entry.length > remaining) entry = checkpointSnippet(entry, remaining);
         entries ~= entry;
         entryBytes += entry.length;
-    }
-    const size_t entryBudget = summaryBudget - header.data.length -
-        previous.length - 100;
-    while (entries.length > 1 && entryBytes > entryBudget)
-    {
-        entryBytes -= entries[0].length;
-        entries = entries[1 .. $];
+        if (entryBytes >= entryBudget) break;
     }
     auto checkpoint = appender!string();
     checkpoint.put(header.data);
     if (previous.length > 0)
         checkpoint.put("Previous checkpoint excerpt:\n" ~ previous ~ "\n");
-    foreach (entry; entries) checkpoint.put(checkpointSnippet(entry, entryBudget));
+    foreach_reverse (entry; entries) checkpoint.put(entry);
     session.compactionSummary = checkpoint.data;
     session.compactedThroughMessageId = session.messages[path[boundary]].id;
     return true;
