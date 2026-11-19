@@ -31,13 +31,23 @@ public bool automaticGoalRequest(string text)
     return text.strip().length > 0;
 }
 
-/// True when a goal asks for an answer or acknowledgement rather than an
-/// artifact, so completion does not need a tool receipt.
+/// A goal is proved by its reply only when it asks a question or records a
+/// note. A goal phrased as an outcome ("Let's ensure 60 fps", "Perfectly
+/// placed elements") is conversation-shaped prose, not an answer: treating it
+/// as answer-only let goal_complete accept a bare summary with no evidence and
+/// close the goal before any work, while the turn policy still treated the
+/// same goal as action work.
 public bool goalIsAnswerOnly(string goal)
 {
     const intent = requestIntent(goal);
-    return answerOnlyRequest(goal) || intent == RequestIntent.conversation ||
-        intent == RequestIntent.analysis || intent == RequestIntent.diagnosis;
+    if (answerOnlyRequest(goal) || intent == RequestIntent.analysis ||
+        intent == RequestIntent.diagnosis) return true;
+    const text = goal.strip.toLower;
+    foreach (prefix; ["remember ", "note ", "keep in mind ", "bear in mind ",
+            "keep this ", "acknowledge ", "reply with ", "just say ", "just reply ",
+            "confirm "])
+        if (text.startsWith(prefix)) return true;
+    return false;
 }
 
 /// The reply the user asked for is already delivered on the active branch, so an
@@ -58,13 +68,11 @@ public bool goalAnswerDelivered(const ref ChatSession session)
 }
 
 /// Goals whose completion is the reply itself must not acquire automatic work
-/// turns. A conversation-shaped action goal ("deliver the requested files")
-/// still continues while tools are available.
+/// turns. The continuation and completion rules must use the same set: a goal
+/// that is not answer-only keeps working until goal_complete proves the result.
 public bool goalIsAnswerTurn(string goal)
 {
-    return answerOnlyRequest(goal) ||
-        requestIntent(goal) == RequestIntent.analysis ||
-        requestIntent(goal) == RequestIntent.diagnosis;
+    return goalIsAnswerOnly(goal);
 }
 
 /// Bound the goal by characters without splitting a UTF-8 sequence.
@@ -429,6 +437,26 @@ private string currentAnswerProse(const ref ChatSession session)
 /// Validate a model's `goal_complete` request. Completion is refused while the
 /// user's goal is paused/completed, while verification is outstanding, or while
 /// the durable checklist still has unfinished outcomes.
+/// Evidence that only records inspection or planning does not prove an outcome
+/// goal. A goal phrased as a result ("ensure", "bring", "perfectly placed")
+/// needs a change, an action or a passing check; otherwise the model can close
+/// it after reading a file and the goal bar reports completion before any work.
+private bool goalWorkProven(const ref ChatSession session, const string[] ids)
+{
+    import auroraopencode.taskflow : taskEvidenceIndex;
+    const index = taskEvidenceIndex(session);
+    foreach (id; ids)
+    {
+        auto proof = id in index;
+        if (proof is null) continue;
+        const kind = *proof;
+        if (kind == "edit" || kind == "action" ||
+            kind.startsWith("verify|") || kind.startsWith("verify-current|"))
+            return true;
+    }
+    return false;
+}
+
 public string goalCompletionError(const ref ChatSession session, string arguments)
 {
     if (session.goal.length == 0) return "There is no persistent goal to complete.";
@@ -476,6 +504,7 @@ public string goalCompletionError(const ref ChatSession session, string argument
         import auroraopencode.taskflow : taskEvidenceIndex;
         const recorded = taskEvidenceIndex(session, false);
         size_t usable;
+        string[] cited;
         foreach (entry; evidence.array)
         {
             if (entry.type != JSONType.string || !entry.str.strip().length)
@@ -485,8 +514,13 @@ public string goalCompletionError(const ref ChatSession session, string argument
                 return "goal_complete evidence '" ~ id ~ "' is not a successful recorded result on the active task. " ~
                     "Use the toolCallId from the actual result; do not invent a receipt.";
             ++usable;
+            cited ~= id;
         }
         if (!usable) return "goal_complete evidence must contain non-empty tool-call IDs or check receipts.";
+        if (!goalWorkProven(session, cited))
+            return "goal_complete evidence only records inspection or planning, not the goal's deliverable. " ~
+                "This goal asks for an outcome, so make the change, take the action or run the check it requires " ~
+                "and cite that result. A summary of intended work does not complete it.";
     }
     else if (auto evidence = "evidence" in value.object)
         if (evidence.type != JSONType.array)

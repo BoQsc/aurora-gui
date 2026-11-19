@@ -27,6 +27,12 @@ owners. It is not a complete actor-engine rewrite or a guarantee of model qualit
   goal. A continuation answered with prose only keeps spending recovery turns on
   a concrete action instead of settling silently; exhaustion never ends a goal
   chat. A queued follow-up keeps the goal active for its own turn.
+- A goal's reply completes it only when the goal asks a question or records a
+  note. An outcome-shaped goal ("ensure 60 fps", "bring the terrain to 60 fps",
+  "perfectly placed elements") is action work even when its prose is
+  conversation-shaped: `goal_complete` requires a change, an action or a passing
+  check, and inspection or plan-only receipts do not count. This prevents the
+  goal bar from reporting completion after a bare summary.
 - `request_input` is recorded at the same validated boundary used by task
   continuation, but it does not stop a goal chat. The request stays in context,
   the goal continues with the best supported default, and only a genuinely

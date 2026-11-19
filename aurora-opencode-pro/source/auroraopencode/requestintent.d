@@ -23,6 +23,11 @@ private bool leadingQuestion(const(string)[] words)
         ["so", "now", "then", "please", "instead", "just"].canFind(words[i])) ++i;
     return i < words.length &&
         ["what", "how", "why", "when", "where", "who", "which", "is", "are",
+         // Contracted questions are still questions. Without these a goal like
+         // "What's your opinion on this?" looked like a conversation-shaped
+         // action goal and demanded work receipts for an answer.
+         "what's", "whats", "where's", "wheres", "who's", "whos", "how's", "hows",
+         "when's", "whens",
          "does", "did", "do", "can", "could", "would", "should", "shall", "will",
          "may", "might", "explain", "describe", "summarize", "summarise",
          "status", "recap", "hello", "hi", "thanks"].canFind(words[i]);

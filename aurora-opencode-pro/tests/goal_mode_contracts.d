@@ -275,6 +275,49 @@ int main()
         "a conversational goal was blocked for lacking a tool receipt");
     writeln("PASS answer-only goals complete from their answer");
 
+    // Reported regression: a goal phrased as a result rather than a recognized
+    // action ("Let's ensure 60 fps") was classified as conversation, so
+    // goalIsAnswerOnly was true while the turn policy still forced work turns.
+    // goal_complete then accepted a bare summary and closed the goal before
+    // anything was done. An outcome-shaped goal must prove substantive work.
+    {
+        ChatSession outcome;
+        outcome.goal = "Let's ensure 100% stable 60 fps.";
+        outcome.goalStatus = "active";
+        outcome.verificationStatus = "not_required";
+        require(!goalIsAnswerOnly(outcome.goal),
+            "an outcome-shaped goal was still treated as answer-only");
+        require(!goalIsAnswerTurn(outcome.goal),
+            "an outcome-shaped goal stopped acquiring work turns");
+        require(goalCompletionError(outcome,
+            `{"summary":"Done. All complete."}`).indexOf("concrete evidence") >= 0,
+            "an outcome-shaped goal completed from prose alone");
+        OpenCodeEvent premature;
+        premature.toolName = "goal_complete";
+        premature.toolCallId = "call-summary";
+        ToolResultPolicy outcomePolicy;
+        const settled = settleToolResult(outcome, premature,
+            `{"summary":"Done. All complete."}`, outcomePolicy);
+        require(settled.message.failed &&
+            settled.message.content.indexOf("concrete evidence") >= 0,
+            "the goal_complete tool accepted a bare summary for an outcome goal");
+        ChatMessage inspected = msg("tool", "Read the renderer");
+        inspected.toolName = "read"; inspected.toolCallId = "call-read";
+        appendLinked(outcome, inspected);
+        const inspection = goalCompletionError(outcome,
+            `{"summary":"Inspected the renderer.","evidence":["call-read"]}`);
+        require(inspection.indexOf("inspection or planning") >= 0,
+            "reading a file counted as the goal's delivered outcome: " ~ inspection);
+        ChatMessage changed = msg("tool", "Changed the frame pacing");
+        changed.toolName = "apply_patch"; changed.toolCallId = "call-edit";
+        appendLinked(outcome, changed);
+        require(goalCompletionError(outcome,
+            `{"summary":"Changed the frame pacing and reran the check.",` ~
+            `"evidence":["call-edit"]}`).length == 0,
+            "an evidence-backed outcome completion was rejected");
+    }
+    writeln("PASS outcome-shaped goals require work evidence");
+
     ChatSession history;
     history.goal = "first durable goal";
     history.goalStatus = "paused";
