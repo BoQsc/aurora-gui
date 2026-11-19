@@ -259,7 +259,11 @@ int main()
     root.streamContentForTesting(streamBody.data);
     root.tickTree(0.02);
     assert(driver.paint(), "the live stream fixture did not paint");
-    root.scrollTranscriptUpForTesting(300);
+    // Drive the real wheel path through the window and scrollbar, not the
+    // test-only setter: seven notches move the reader about 294 px up.
+    const wheelPoint = view.localToGlobal(Point(
+        view.bounds().width / 2, view.bounds().height / 2));
+    foreach (_; 0 .. 7) driver.wheel(wheelPoint, 3);
     root.tickTree(0.02);
     assert(driver.paint(), "the active scrolled-up frame did not paint");
     assert(!root.followForTesting(),
