@@ -361,6 +361,16 @@ private bool isWebUrl(string target)
     return lower.startsWith("http://") || lower.startsWith("https://");
 }
 
+/// An app action the reader can run straight from a reply. Unlike a file or
+/// web link (which stays selectable text so a drag can copy a path), an action
+/// link is a control: one click runs it.
+private enum string enableToolsLinkTarget = "aurora:enable-tools";
+
+private bool isActionLinkTarget(string target)
+{
+    return target.startsWith("aurora:");
+}
+
 /// Directory that holds every persisted chat (sessions, pins, runtime
 /// journal). Shared by the "Chats" button in the Settings dialog.
 private string chatsDirectory()
@@ -1057,6 +1067,9 @@ private final class MessageBubble : Widget
     private string[] _copyLabels;
     private Rect[] _linkRects;
     private string[] _linkUrls;
+    // An in-app action link inside the reply text (e.g. the disabled-tools
+    // notice's "Enable tools"). Returns true when the target was consumed.
+    bool delegate(string target) onActionLink;
     private bool _markdownTargetsCurrent;
     private ulong _markdownTargetsGeneration;
     private int _markdownTargetsWidth, _markdownTargetsY;
@@ -1385,6 +1398,16 @@ private final class MessageBubble : Widget
     {
         const full = to!string(_content);
         return full.length <= 40 ? full : full[0 .. 40] ~ "…";
+    }
+
+    /// Test-only: center of the rendered link pointing at `target`, in bubble
+    /// coordinates; (-1, -1) when the reply carries no such link.
+    public Point linkPointForTesting(string target) const
+    {
+        foreach (index, rect; _linkRects)
+            if (index < _linkUrls.length && _linkUrls[index] == target)
+                return Point(rect.x + rect.width / 2, rect.y + rect.height / 2);
+        return Point(-1, -1);
     }
 
     void setToolName(string name)
@@ -3693,7 +3716,8 @@ private final class MessageBubble : Widget
                     maxInt(1, cast(int) item.w), maxInt(1, cast(int) item.h));
                 auto target = to!string(item.target);
                 // >>> filecontext:begin
-                if (_fileContextTarget !is null && !isWebUrl(target))
+                if (_fileContextTarget !is null && !isWebUrl(target) &&
+                    !isActionLinkTarget(target))
                 {
                     const absolute = _fileContextTarget(target);
                     if (absolute.length) target = absolute;
@@ -4266,6 +4290,9 @@ private final class MessageBubble : Widget
                 break;
             }
         }
+        const overActionLink = nextLink >= 0 &&
+            cast(size_t) nextLink < _linkUrls.length &&
+            isActionLinkTarget(_linkUrls[cast(size_t) nextLink]);
         const overAction = _actionLabel.length > 0 && _actionCallback !is null &&
             _actionRect.contains(event.position);
         const overSecondaryAction = _secondaryActionLabel.length > 0 &&
@@ -4330,7 +4357,8 @@ private final class MessageBubble : Widget
             setCursor(nextCopy >= 0 || overAction ||
                 overSecondaryAction || overTertiaryAction ||
                 overCopyAction || overEditAction ||
-                overCollapse || overToolCopy || overThinking || overVersion != 0
+                overCollapse || overToolCopy || overThinking || overVersion != 0 ||
+                overActionLink
                 ? CursorKind.hand :
                 (overText || nextLink >= 0 ? CursorKind.text : CursorKind.arrow));
             invalidate();
@@ -4347,7 +4375,8 @@ private final class MessageBubble : Widget
                 string linkTarget;
                 foreach (index, rect; _linkRects)
                     if (rect.contains(event.position) &&
-                        index < _linkUrls.length)
+                        index < _linkUrls.length &&
+                        !isActionLinkTarget(_linkUrls[index]))
                     {
                         linkTarget = _linkUrls[index];
                         break;
@@ -4448,6 +4477,16 @@ private final class MessageBubble : Widget
                 return true;
             }
         }
+        // An action link is a control the reply itself offers, so a plain click
+        // runs it instead of starting a selection.
+        foreach (index, rect; _linkRects)
+            if (rect.contains(event.position) && index < _linkUrls.length &&
+                isActionLinkTarget(_linkUrls[index]) && onActionLink !is null)
+            {
+                if (!onActionLink(_linkUrls[index])) break;
+                setCursor(CursorKind.arrow);
+                return true;
+            }
         // A link (web URL or local file/folder path) is not consumed here: the
         // left button always starts a text selection, so the reader can drag
         // across a path like any other text. Opening a link is the job of the
@@ -22340,6 +22379,7 @@ private void pollButtonSuggestionRequest()
                 versionAction(index, -1), versionAction(index, +1));
         }
         bubble.setContent(message.content);
+        bubble.onActionLink = &handleActionLink;
         // Local file/folder paths in the message open against the workspace the
         // message was written in.
         bubble.setWorkspace(workspaceForSession(_current));
@@ -23992,7 +24032,8 @@ private void pollButtonSuggestionRequest()
         if (!toolsEnabledForSession(*session) || calls.length == 0)
         {
             message.content ~= (message.content.length == 0 ? "" : "\n\n") ~
-                "⚠ The model requested tools, but tools are disabled.";
+                "⚠ The model requested tools, but tools are disabled. " ~
+                "[Enable tools](" ~ enableToolsLinkTarget ~ ")";
             message.failed = true;
             finishAssistantMessage(false);
             return;
@@ -27117,6 +27158,46 @@ private void pollButtonSuggestionRequest()
     {
         return session.toolsMode >= 0 ? session.toolsMode != 0
             : _settings.toolsEnabled;
+    }
+
+    /// Run an in-app action link from a reply. Only registered `aurora:`
+    /// actions are consumed here; every other link keeps its usual behavior.
+    private bool handleActionLink(string target)
+    {
+        if (target != enableToolsLinkTarget) return false;
+        enableToolsFromReply(_current);
+        return true;
+    }
+
+    /// Re-enable tools for the conversation that showed the disabled-tools
+    /// notice: drop a per-chat "off" override and turn the app setting on, so
+    /// the notice's Retry can actually run the refused call.
+    private void enableToolsFromReply(int sessionIndex)
+    {
+        bool changed;
+        if (sessionIndex >= 0 && sessionIndex < cast(int) _sessions.length)
+        {
+            auto session = &_sessions[sessionIndex];
+            if (session.toolsMode == 0)
+            {
+                session.toolsMode = -1;
+                changed = true;
+            }
+        }
+        if (!_settings.toolsEnabled)
+        {
+            _settings.toolsEnabled = true;
+            changed = true;
+        }
+        if (_toolsBox !is null) _toolsBox.setChecked(_settings.toolsEnabled, false);
+        if (!changed)
+        {
+            updateStatus("Tools are already enabled.");
+            return;
+        }
+        saveSettingsNow();
+        markDirty();
+        updateStatus("Tools enabled. Retry the reply so its tool call can run.");
     }
 
 
@@ -37377,6 +37458,29 @@ private void pollButtonSuggestionRequest()
     {
         auto bubble = messageBubbleForTesting(index);
         return bubble is null ? Point(-1, -1) : bubble.selectionRunPointForTesting(run, end);
+    }
+
+    /// Test-only: screen point of the action link `target` in the reply at
+    /// `messageIndex`; (-1, -1) when that reply carries no such link.
+    public Point actionLinkPointForTesting(int messageIndex, string target)
+    {
+        auto bubble = bubbleForMessageIndex(messageIndex);
+        if (bubble is null) return Point(-1, -1);
+        const local = bubble.linkPointForTesting(target);
+        return local.x < 0 ? local : bubble.localToGlobal(local);
+    }
+
+    /// Test-only: the app-wide Tools setting.
+    public bool toolsEnabledForTesting() const
+    {
+        return _settings.toolsEnabled;
+    }
+
+    /// Test-only: one conversation's Tools override (-1 inherits the setting).
+    public int sessionToolsModeForTesting(int index) const
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return -1;
+        return _sessions[cast(size_t) index].toolsMode;
     }
 
     /// Test-only: the text the message bubble at `index` last copied via Ctrl+C.
