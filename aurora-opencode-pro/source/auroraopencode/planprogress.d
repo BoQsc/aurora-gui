@@ -11,6 +11,10 @@ enum planProgressMarker = "Plan review reminder: ";
 enum initialPlanSuggestion = "For multi-step work, prefer a short, provisional plan in the first response. " ~
     "Keep it brief and adapt it when progress or new discoveries change the work. Simple tasks do not need a plan.";
 enum planProgressWindow = 5;
+// An unplanned run is worth a suggestion as soon as it stops looking like a
+// quick lookup, not only after a full upkeep window. Repeated suggestions use
+// the normal window so an ignored first reminder cannot become chatter.
+enum planCreationWindow = 3;
 
 struct PlanProgress
 {
@@ -96,7 +100,10 @@ bool planNeedsRefresh(const ref ChatSession session)
     if (!session.taskSteps.length || !hasIncompleteTaskSteps(session) ||
         session.taskStatus == "waiting_input") return false;
     const progress = planProgress(session);
-    return progress.results >= planProgressWindow;
+    // The visible checklist is stale as soon as work moves past the phase its
+    // in-progress outcome describes, not only when a tool-result window ends.
+    return progress.results >= planProgressWindow ||
+        (progress.phase > 0 && planPositionMissing(session, progress.phase));
 }
 
 /// Advisory only: never cancel useful tools, manufacture completion, or add a
@@ -110,14 +117,29 @@ string planProgressGuidance(const ref ChatSession session)
         taskInvestigation(session) || answerOnlyRequest(latestActualUserRequest(session)) ||
         (session.verificationStatus == "passed" && !hasIncompleteTaskSteps(session))) return "";
     const progress = planProgress(session);
-    if (progress.results - progress.nudgedAt < planProgressWindow) return "";
+    const hasPlan = session.taskSteps.length > 0;
+    // A first suggestion for unplanned work arrives early; later suggestions
+    // keep the normal cadence.
+    const window = !progress.nudged && !hasPlan ? planCreationWindow : planProgressWindow;
+    // A phase transition is the moment an existing plan most needs an update:
+    // editing or verification started while the in-progress outcome still
+    // describes the previous phase. Recheck the plan now instead of waiting for
+    // the next tool-result window.
+    const phaseShift = hasPlan && hasIncompleteTaskSteps(session) &&
+        progress.phase > progress.nudgedPhase && planPositionMissing(session, progress.phase);
+    if (!phaseShift && progress.results - progress.nudgedAt < window) return "";
     JSONValue checkpoint;
     checkpoint["results"] = progress.results;
     checkpoint["phase"] = progress.phase;
+    const opening = !hasPlan
+        ? "This work has several steps now; consider recording a short plan. "
+        : phaseShift
+        ? (progress.phase >= 2
+            ? "Verification has started while the in-progress outcome still describes earlier work. "
+            : "Editing has started while the in-progress outcome still describes investigation. ")
+        : "Check whether the plan still matches the work and new discoveries. ";
     return planProgressMarker ~ checkpoint.toString() ~ "\n" ~
-        (session.taskSteps.length ?
-            "Check whether the plan still matches the work and new discoveries. " :
-            "This work has several steps now; consider recording a short plan. ") ~
+        opening ~
         "If useful, use update_plan to reflect completed work, the current step and changed direction, and explain any unfinished outcome you drop. " ~
         "If the plan still fits, continue working. This reminder does not require a plan update or extra checks.";
 }

@@ -65,11 +65,15 @@ int main()
     root.injectToolResultForTesting("read", "source evidence", false, `{"filePath":"source.d"}`);
     assert(root.queueStalePlanGuidanceForTesting(), "An ignored advisory disabled later plan reviews");
     root.injectToolResultForTesting("edit", "Edited source", false, `{"filePath":"source.d"}`, 1, 1, "@@ -1 +1 @@\n-old\n+new\n");
-    assert(!root.queueStalePlanGuidanceForTesting(), "A phase change forced another plan review");
+    assert(root.queueStalePlanGuidanceForTesting(),
+        "The first edit did not review a research-phase plan");
+    assert(root.lastUserMessageForTesting().indexOf("Editing has started") >= 0,
+        "The phase review did not name the stale in-progress outcome: " ~
+        root.lastUserMessageForTesting());
     root.injectToolResultForTesting("update_plan", "Plan updated", false,
         `{"plan":[{"step":"Investigate","status":"completed"},{"step":"Implement","status":"in_progress"},{"step":"Verify","status":"pending"}]}`);
     pump(); assert(!root.planNeedsUpdateForTesting() && root.toolResultsSincePlanUpdateForTesting() == 0);
-    writeln("PASS optional five-result reviews persist in the actual UI; ignoring them permits work and later review; updating resets cadence");
+    writeln("PASS optional five-result reviews persist in the actual UI; the first edit and ignored reminders get timely reviews; updating resets cadence");
 
     const logs = buildPath(state, "quiet-logs"); mkdirRecurse(logs); setLogDirectory(logs);
     setDebugLogging(false); noteActivity("rebuild quiet-marker");

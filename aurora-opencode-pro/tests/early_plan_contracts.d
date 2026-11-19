@@ -265,11 +265,16 @@ int main(string[] args)
     const phaseFile = buildPath(state, "phase.md");
     const beforeEdit = root.userMessageCountForTesting();
     run([OpenCodeToolCall("phase_write", "write", `{"filePath":` ~ JSONValue(phaseFile).toString ~ `,"content":"phase complete"}`)]);
-    assert(root.userMessageCountForTesting() == beforeEdit,
-        "An edit injected unrelated phase guidance");
+    assert(root.queueStalePlanGuidanceForTesting(),
+        "The first edit did not review a research-phase plan");
+    assert(root.userMessageCountForTesting() == beforeEdit + 1,
+        "The first edit did not review a research-phase plan");
+    assert(root.lastUserMessageForTesting().indexOf("Editing has started") >= 0,
+        "The edit phase review did not name the stale in-progress outcome: " ~
+        root.lastUserMessageForTesting());
     assert(root.taskStepStatusForTesting(0) == "in_progress", "A phase reminder fabricated completion");
     run([readCall(), readCall()]);
-    assert(root.userMessageCountForTesting() == beforeEdit,
+    assert(root.userMessageCountForTesting() == beforeEdit + 1,
         "Phase guidance repeated without a phase change");
     auto phaseAdvanced = parseJSON(phasePlan);
     phaseAdvanced["plan"][0]["status"] = "completed";
@@ -284,12 +289,16 @@ int main(string[] args)
         `{"program":"python","args":["-u","-B","-m","unittest","test_phase"]}`,
         0, 0, "", null, "unittest");
     assert(root.verificationStatusForTesting() == "passed", "An accepted optional check could not satisfy a recorded verification outcome");
-    assert(root.userMessageCountForTesting() == beforeCheck,
-        "An accepted check injected unrelated phase guidance");
+    assert(root.queueStalePlanGuidanceForTesting(),
+        "The first accepted check did not review an edit-phase plan");
+    assert(root.userMessageCountForTesting() == beforeCheck + 1 &&
+        root.lastUserMessageForTesting().indexOf("Verification has started") >= 0,
+        "The first accepted check did not review an edit-phase plan: " ~
+        root.lastUserMessageForTesting());
     foreach (ref step; phaseAdvanced["plan"].array) step["status"] = "completed";
     record(phaseAdvanced.toString());
     foreach (i; 0 .. 3) assert(root.taskStepStatusForTesting(i) == "completed");
-    writeln("PASS editing and accepted verification do not delay tools or fabricate plan progress");
+    writeln("PASS first edit and verification review a stale in-progress phase without fabricating plan progress");
 
     fresh();
     record(`{"plan":[{"id":"project","step":"Deliver the document","kind":"edit","status":"in_progress"}]}`);
