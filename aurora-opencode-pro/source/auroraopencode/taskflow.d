@@ -1075,15 +1075,29 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
     {
         if (auto explanation = "explanation" in root.object)
             if (explanation.type != JSONType.string) return "Error: explanation must be a string.";
+        const(TaskStep)[] steps = previous;
         if (auto plan = "plan" in root.object)
         {
-            const steps = normalizedPlan(session, *plan, previous, false, incrementalPlan(root));
+            if (plan.type != JSONType.array || !plan.array.length)
+                return "Error: plan must be a non-empty array.";
+            foreach (row; plan.array)
+                if (auto id = "id" in row.object)
+                    foreach (item; session.contract.workItems)
+                        if (item.step.id == id.str)
+                            return "Error: '" ~ id.str ~ "' is an action ID. Update it in work_items, not plan. " ~
+                                "read_plan view=details collection=outcomes returns outcome IDs; collection=actions returns action IDs.";
+            steps = normalizedPlan(session, *plan, previous, false, incrementalPlan(root));
             int active;
             foreach (step; steps)
                 if (step.status == "in_progress" && ++active > 1)
                     return "Error: at most one plan outcome may be in_progress.";
         }
-        return "";
+        // Ordinary mode does not enforce the tracked-plan upkeep cycle, but
+        // work items still record real outcomes. Completing one with invented
+        // evidence, an invalid status or an unfinished required child is a
+        // state error in either mode.
+        import auroraopencode.worktracking : workItemsError;
+        return workItemsError(session, root, steps);
     }
     if (auto rows = "plan" in root.object)
         foreach (row; rows.array)
