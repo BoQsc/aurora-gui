@@ -263,7 +263,7 @@ private string toolPolicySection(in SystemPromptContext ctx)
         "Use checksum for streamed hashes and process to inspect the same running command.\n";
     if (experimentalWebSearchEnabled()) text ~= "Use websearch to discover sources and webfetch to read them.\n";
     if (experimentalComputerUseEnabled()) text ~= "Use computer tools when pixels, native interaction or a GUI-only workflow are required. " ~
-        "Screenshots show the target window by default; request the full screen only when the whole desktop genuinely matters. " ~
+        "Screenshots suggest the target window by default; choose that window, another one, or the full screen according to what the task needs. " ~
         "Ground actions in current screenshots, verify the application's response, and batch actions whose controls are established. " ~
         "Change the approach after repeated ineffective input. Chat text is not evidence that another application's UI changed.\n";
     else text ~= "Computer use is disabled in Settings. Do not create or run custom Python scripts, " ~
