@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Rebuild from committed source 1bfdbed so the plan-timing fix can publish to the update channel.",
+  "reason": "Ship the provider-key resolution fix (OPENCODE_API_KEY and CLI OAuth credentials) to the running app and the update channel.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-19 12:48:30.8229489 UTC",
-  "finishedAt": "2026-11-19 12:49:29.5388424 UTC",
-  "durationMs": 58716,
+  "startedAt": "2026-11-19 14:07:38.8303418 UTC",
+  "finishedAt": "2026-11-19 14:09:10.549553 UTC",
+  "durationMs": 91719,
   "exitCode": 0,
   "errors": [],
   "publishStatus": "published",
-  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (64962c07de58).",
+  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (f0fda56e37dc).",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }
