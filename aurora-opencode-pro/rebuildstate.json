@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy and publish the window-list screenshot choice (list_windows:true and candidates on a default screen) from commit fef568b.",
+  "reason": "Rebuild from committed source 1bfdbed so the plan-timing fix can publish to the update channel.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-19 11:59:10.9793894 UTC",
-  "finishedAt": "2026-11-19 12:00:12.6982619 UTC",
-  "durationMs": 61718,
+  "startedAt": "2026-11-19 12:48:30.8229489 UTC",
+  "finishedAt": "2026-11-19 12:49:29.5388424 UTC",
+  "durationMs": 58716,
   "exitCode": 0,
   "errors": [],
   "publishStatus": "published",
-  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (f8dff3275d64).",
+  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (64962c07de58).",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

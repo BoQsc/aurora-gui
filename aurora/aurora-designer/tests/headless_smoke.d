@@ -159,6 +159,28 @@ int main()
         "children 0 1\nchildren 1 0\n");
     assert(cyclic.root == -1, "A cyclic hierarchy was accepted");
 
+    // --- Deleting one child keeps its siblings and ancestors connected. ---
+    DesignDocument deleteDocument;
+    deleteDocument.root = deleteDocument.addNode(NodeKind.window, 0, 0);
+    const hostPanel = deleteDocument.addChild(NodeKind.panel,
+        deleteDocument.root, 10, 10);
+    const doomedButton = deleteDocument.addChild(NodeKind.button,
+        hostPanel, 10, 10);
+    const siblingLabel = deleteDocument.addChild(NodeKind.label,
+        deleteDocument.root, 20, 20);
+    const nodesBeforeDelete = deleteDocument.nodes.length;
+    deleteDocument.removeNode(doomedButton);
+    assert(deleteDocument.nodes.length == nodesBeforeDelete - 1,
+        "Deleting a child removed more than the child");
+    assert(deleteDocument.parentOf(siblingLabel - 1) == deleteDocument.root,
+        "Deleting a child detached its sibling from the root");
+    assert(deleteDocument.parentOf(hostPanel) == deleteDocument.root &&
+        deleteDocument.nodes[hostPanel].children.length == 0,
+        "Deleting a nested child detached its parent");
+    assert(deleteDocument.paintOrder().length ==
+        deleteDocument.nodes.length,
+        "Deleting a child disconnected the surviving tree");
+
     // --- Unique ids after deleting and re-adding a sibling. ---
     DesignDocument idDocument;
     idDocument.root = idDocument.addNode(NodeKind.window, 0, 0);
@@ -237,10 +259,15 @@ int main()
     assert(undoButton.enabled(), "Undo is disabled after a redo");
     assert(!redoButton.enabled(), "Redo stayed enabled after redo");
 
-    // --- Select the re-added node, then delete it. ---
+    // --- Select the re-added node, then delete it with the toolbar button. ---
     root.selectNodeForTesting(added);
     assert(root.selectedIndex() == added, "Re-selection did not stick");
-    root.deleteSelectedForTesting();
+    auto deleteButton = findById(root, "designer-delete");
+    assert(deleteButton !is null && deleteButton.enabled(),
+        "Delete button is missing or disabled");
+    driver.click(deleteButton.localToGlobal(Point(
+        deleteButton.bounds().width / 2, deleteButton.bounds().height / 2)));
+    assert(driver.paint(), "Paint after clicking Delete failed");
     assert(root.document().nodes.length == before,
         "Delete did not remove the node");
 
@@ -746,6 +773,27 @@ int main()
         "Dragging the window lost its selection");
     assert(root.document().nodes[finalRoot].x == windowX + 20,
         "The window could not be dragged after children were added");
+
+    // --- Deleting a nested child with the toolbar keeps the rest visible. ---
+    ref DesignDocument survivors = root.designDocument();
+    const survivorRoot = survivors.root;
+    const survivorPanel = root.addNodeForTesting(NodeKind.panel);
+    const doomedLabel = root.addNodeForTesting(NodeKind.label);
+    const survivorLabel = root.addNodeForTesting(NodeKind.label);
+    root.selectNodeForTesting(doomedLabel);
+    const survivorCount = survivors.nodes.length;
+    driver.click(deleteButton.localToGlobal(Point(
+        deleteButton.bounds().width / 2, deleteButton.bounds().height / 2)));
+    assert(driver.paint(), "Paint after nested toolbar delete failed");
+    assert(survivors.nodes.length == survivorCount - 1,
+        "Deleting a nested child removed the wrong number of nodes");
+    assert(survivors.parentOf(survivorPanel) == survivorRoot,
+        "Deleting a nested child detached its container from the root");
+    assert(survivors.nodes[survivorPanel].children == [survivorLabel - 1],
+        "Deleting a nested child detached its surviving sibling");
+    assert(survivors.paintOrder().length == survivors.nodes.length,
+        "Deleting a nested child disconnected the visible tree");
+    window.saveScreenshot("build/headless-smoke/designer-after-child-delete.ppm");
 
     writeln("Aurora Designer headless smoke passed.");
     return 0;

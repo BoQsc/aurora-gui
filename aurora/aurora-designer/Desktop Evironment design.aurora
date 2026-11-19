@@ -1,0 +1,15 @@
+canvas 900 560
+root 0
+node 0 0 window1 0 0 896 564 name=window
+children 0 4 5
+node 1 4 button2 -55 4 56 37 name=button
+node 2 2 hbox3 133 5 519 35 name=hbox
+node 3 2 hbox4 654 1 184 37 name=hbox
+node 4 1 panel5 56 522 839 44 name=panel
+children 4 3 1 2 6 7
+node 5 1 panel6 3 25 895 497 name=panel
+children 5 8 9
+node 6 4 button7 2 9 132 27 name=button
+node 7 4 button8 371 10 96 24 name=button
+node 8 4 button9 28 39 52 37 name=button
+node 9 4 button10 27 85 50 39 name=button

@@ -305,19 +305,29 @@ struct DesignDocument
 
         bool[] removed = new bool[nodes.length];
         markRemoved(index, removed);
-        Node[] kept;
+
+        // Assign every surviving node its new index before rebuilding child
+        // lists: a parent's children generally have higher indices than the
+        // parent itself, so remapping children while filling `kept` in one
+        // pass would read -1 for them and disconnect the surviving tree.
         int[] remap = new int[nodes.length];
         remap[] = -1;
+        int keptCount;
+        foreach (i; 0 .. nodes.length)
+            if (!removed[i]) remap[i] = keptCount++;
+
+        Node[] kept = new Node[keptCount];
         foreach (i, node; nodes)
         {
             if (removed[i]) continue;
-            remap[i] = cast(int) kept.length;
             auto copy = node;
             int[] keptChildren;
             foreach (child; node.children)
-                if (!removed[child]) keptChildren ~= remap[child];
+                if (child >= 0 && child < cast(int) nodes.length &&
+                    !removed[child])
+                    keptChildren ~= remap[child];
             copy.children = keptChildren;
-            kept ~= copy;
+            kept[remap[i]] = copy;
         }
         if (root >= 0) root = remap[root];
         nodes = kept;
