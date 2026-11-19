@@ -11053,11 +11053,6 @@ private final class ChatScrollView : ScrollView
     private static immutable int topLoadThreshold = 24;
     // Invoked when the reader reaches the top of the transcript.
     void delegate() onReachedTop;
-    // True while the assistant is still working on the selected conversation.
-    // A user scroll may not hand auto-follow over during that time: the live
-    // answer must stay in view instead of finishing off-screen. Once the turn
-    // settles the reader can scroll history freely again.
-    bool delegate() fixateToNewest;
 
     this(Widget content)
     {
@@ -11081,11 +11076,6 @@ private final class ChatScrollView : ScrollView
             }
     }
 
-    private bool fixedToNewest()
-    {
-        return fixateToNewest !is null && fixateToNewest();
-    }
-
     protected override void onLayout()
     {
         const previousY = scrollY();
@@ -11095,13 +11085,6 @@ private final class ChatScrollView : ScrollView
         _layoutScrollChange = true;
         scope (exit) _layoutScrollChange = false;
         super.onLayout();
-        if (fixedToNewest())
-        {
-            follow = true;
-            _anchorGrow = 0;
-            setScrollY(maxScroll());
-            return;
-        }
         if (_anchorGrow != 0)
         {
             setScrollY(previousY + _anchorGrow);
@@ -11125,20 +11108,10 @@ private final class ChatScrollView : ScrollView
     {
         if (_layoutScrollChange) return;
         _holdPending = false;
-        if (fixedToNewest())
-        {
-            follow = true;
-            _anchorGrow = 0;
-            _layoutScrollChange = true;
-            setScrollY(maxScroll());
-            _layoutScrollChange = false;
-            if (scrollY() > topLoadThreshold) _topNotified = false;
-            return;
-        }
-        // With no active turn, any user scroll (thumb drag, track click, wheel,
-        // keys) moves away from the auto-follow position. Re-engage follow only
-        // once the view is back at the bottom; otherwise onLayout keeps snapping
-        // the scrollbar back down and the user cannot scroll up at all.
+        // Any user scroll (thumb drag, track click, wheel, keys) moves away
+        // from the auto-follow position. Re-engage follow only once the view
+        // is back at the bottom; otherwise onLayout keeps snapping the
+        // scrollbar back down and the user cannot scroll up at all.
         follow = scrollY() >= maxScroll() - 4;
         // Reaching the top uncollapses the older messages: load the next page
         // automatically instead of waiting for the loader button to be clicked.
@@ -18058,11 +18031,6 @@ private string _suggestExcludeId;
         messageCenter.setId("oc-message-center");
         _messagesScroll = new ChatScrollView(messageCenter);
         _messageColumn.following = delegate() { return _messagesScroll.follow; };
-        _messagesScroll.fixateToNewest = delegate()
-        {
-            return _streamBubble !is null ||
-                (turnIsBusy() && viewingTurnOwner());
-        };
         _messageColumn.onAnchorCorrection = delegate(int delta) { _messagesScroll._anchorGrow += delta; };
         _messagesScroll.setId("oc-scroll");
         _messagesScroll.layoutHints().flex = 1.0;
@@ -20595,11 +20563,11 @@ private string _suggestExcludeId;
                 _messageColumn.add(queuedBubble);
             }
         addFollowUpSuggestions(*session, path);
-        // Deliberately do NOT set `_messagesScroll.follow = true` here. While a
-        // turn is active ChatScrollView keeps the transcript fixed to the
-        // newest content; once it settles, a rebuild must not yank a reader who
-        // scrolled up back to the bottom. Callers that append a new message
-        // already turn follow on when a jump is actually wanted.
+        // Deliberately do NOT set `_messagesScroll.follow = true` here. A rebuild
+        // happens many times while a reply and its tools stream (e.g. every
+        // throttled tool-argument delta), and forcing follow each time yanked a
+        // reader who had scrolled up back to the bottom. Callers that append a
+        // new message already turn follow on when a jump is actually wanted.
         // Carry the selection captured before the rebuild onto the freshly
         // built bubble for the same message, so a live turn's frequent rebuilds
         // no longer clear the reader's highlight.
@@ -21632,9 +21600,9 @@ private void pollButtonSuggestionRequest()
     {
         if (message.role == "tool")
         {
-            const diffText = message.toolDiff.length > 0
-                ? message.toolDiff
-                : previewToolDiffText(message.toolName, message.toolArgs);
+            int additions, deletions;
+            string diffText;
+            settledToolDiff(message, additions, deletions, diffText);
             return diffText.length > 0 ? diffText : message.content;
         }
         return message.content;
@@ -22232,6 +22200,32 @@ private void pollButtonSuggestionRequest()
         }
     }
 
+    /// The diff a settled tool row renders and the counters it advertises.
+    ///
+    /// A result that stored its own diff is used verbatim. A row whose diff is
+    /// missing - a restored message, an interrupted call, or a result that
+    /// carried no change metadata - falls back to the preview its arguments
+    /// imply, which is exactly what the in-flight row streamed, so the settled
+    /// row keeps the change body *and* its `+N -M` instead of only the header
+    /// counters. A failed call is left alone: its result text is the reason it
+    /// failed.
+    private void settledToolDiff(const ref ChatMessage message,
+        out int additions, out int deletions, out string diffText)
+    {
+        additions = message.diffAdditions;
+        deletions = message.diffDeletions;
+        diffText = message.toolDiff;
+        if (message.failed || diffText.length > 0) return;
+        diffText = previewToolDiffText(message.toolName, message.toolArgs);
+        if (diffText.length == 0) return;
+        int previewAdds, previewDels;
+        if (!previewToolDiff(message.toolName, message.toolArgs, previewAdds,
+            previewDels))
+            return;
+        if (additions == 0) additions = previewAdds;
+        if (deletions == 0) deletions = previewDels;
+    }
+
     private DeferredTranscriptRow buildDeferredMessage(size_t index,
         ref const ChatMessage message, int latest, size_t[] positions,
         size_t[] totals, string thinking = "")
@@ -22243,8 +22237,8 @@ private void pollButtonSuggestionRequest()
         row.messageIndex = cast(long) index;
         row.toolName = message.toolName;
         row.toolFailed = message.failed;
-        row.additions = message.diffAdditions;
-        row.deletions = message.diffDeletions;
+        string deferredDiff;
+        settledToolDiff(message, row.additions, row.deletions, deferredDiff);
         row.elapsedMs = message.toolElapsedMs;
         row.allowRelease = &factory.allowRelease;
         _deferredRows.remember(message.id, presentation, row);
@@ -22299,13 +22293,13 @@ private void pollButtonSuggestionRequest()
         if (message.role == "tool")
         {
             // An editing row always renders a diff: when a restored message lost
-            // its stored diff, derive it from the tool arguments so the row
-            // still reads as the change it made.
-            const diffText = message.toolDiff.length > 0
-                ? message.toolDiff
-                : previewToolDiffText(message.toolName, message.toolArgs);
-            bubble.setDiff(message.diffAdditions, message.diffDeletions,
-                diffText);
+            // its stored diff, derive it (and its counters) from the tool
+            // arguments so the settled row keeps the change the in-flight row
+            // streamed instead of only its header.
+            int additions, deletions;
+            string diffText;
+            settledToolDiff(message, additions, deletions, diffText);
+            bubble.setDiff(additions, deletions, diffText);
             // A patch that changes several files lists them once per file, so
             // open it instead of leaving one aggregate header that never says
             // what happened to each file.
@@ -22791,15 +22785,15 @@ private void pollButtonSuggestionRequest()
         // otherwise stay ABOVE the reply it describes. rebuildMessageColumn
         // nests the live reply before its phase row.
         rebuildMessageColumn();
-        // An active turn fixes the transcript to the newest content, so this
-        // path does not need its own forced jump. A turn can contain several
+        // Respect the reader's scroll position. A turn can contain several
         // assistant rounds (the tool loop begins one per round, and retries and
-        // continuations begin more), and every round reaches here. The reader's
-        // intent lives in `follow`: sending a message engages it via
-        // addUserBubble, an active turn keeps it engaged (see
-        // ChatScrollView.fixateToNewest), and a settled chat hands it back to
-        // the reader. The jump-to-latest pill is the explicit way back after
-        // they scroll away.
+        // continuations begin more), and every round reaches here. Forcing
+        // auto-follow on each round yanked a reader who had scrolled up back to
+        // the bottom as new content arrived, so a live chat could never be read
+        // from a stable offset. The reader's intent already lives in `follow`:
+        // sending a message engages it via addUserBubble, and a reader who stays
+        // at the bottom keeps it engaged (see onScrollChanged). The jump-to-
+        // latest pill is the explicit way back to automatic scrolling.
         _messagesScroll.invalidate();
         refreshBubbleActions();
     }
@@ -40074,7 +40068,7 @@ private void pollButtonSuggestionRequest()
     /// Test-only: every `tool` result bubble in visual order, recursing into
     /// context groups so a test can address a tool part by ordinal even after
     /// folding.
-    private MessageBubble[] toolBubblesForTesting()
+    public MessageBubble[] toolBubblesForTesting()
     {
         MessageBubble[] result;
         foreach (child; messageColumnVisuals())

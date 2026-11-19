@@ -170,8 +170,55 @@ int main()
         "streaming: [" ~ lastHeaderWhileApplying ~ "]");
     assert(root.totalToolGroupAdditionsForTesting() >= 3,
         "the settled patch row lost the change the streamed patch carried");
+    verifySettledPatchRow(root);
     writeln("PASS thinking followed by editing keeps the live edit visible");
     return 0;
+}
+
+/// The settled `apply_patch` result row shows the same preview the in-flight
+/// row streamed. A result that carried no change metadata (a restored message,
+/// an interrupted patch) must still render the change body *and* its `+N -M`,
+/// while a failed patch keeps the text that says why it failed.
+private void verifySettledPatchRow(OpenCodeRoot root)
+{
+    const args = `{"patch":"*** Begin Patch\n*** Update File: notes.txt\n@@\n alpha\n-beta\n+BETA\n*** End Patch"}`;
+    root.newChatForTesting();
+    root.appendToolRequestTurnForTesting("Patching the file.", "call_row",
+        "apply_patch", args);
+    root.appendOwnedToolResultForTesting("call_row", "apply_patch",
+        "Applied patch to 1 path (+1 -1).", args, 0, 0, "");
+    root.tickTree(0.02);
+    auto bubbles = root.toolBubblesForTesting();
+    assert(bubbles.length == 1,
+        "expected one settled apply_patch row, got " ~ to!string(bubbles.length));
+    assert(bubbles[0].hasDiffForTesting(),
+        "the settled apply_patch row dropped the streamed change body");
+    assert(bubbles[0].diffAdditionsForTesting() == 1 &&
+        bubbles[0].diffDeletionsForTesting() == 1,
+        "the settled apply_patch row lost its streamed +N -M: +" ~
+        to!string(bubbles[0].diffAdditionsForTesting()) ~ " -" ~
+        to!string(bubbles[0].diffDeletionsForTesting()));
+    auto sections = bubbles[0].patchSectionRowsForTesting();
+    assert(sections.length == 1 && sections[0].indexOf("notes.txt") >= 0,
+        "the settled apply_patch row did not list its patched file: " ~
+        to!string(sections));
+
+    // A rejected patch reports why it failed; the attempted change must not
+    // replace that reason.
+    root.appendToolRequestTurnForTesting("Patching again.", "call_row_fail",
+        "apply_patch", args);
+    root.appendOwnedToolResultForTesting("call_row_fail", "apply_patch",
+        "Patch not applied; validation failed: context not found.", args, 0, 0,
+        "", 0, true);
+    root.tickTree(0.02);
+    auto rows = root.toolBubblesForTesting();
+    assert(rows.length == 2, "expected two settled rows, got " ~
+        to!string(rows.length));
+    assert(!rows[1].hasDiffForTesting(),
+        "a failed apply_patch row replaced its reason with the attempted change");
+    assert(rows[1].contentSnippetForTesting().indexOf("validation failed") >= 0,
+        "a failed apply_patch row lost its failure text: [" ~
+        rows[1].contentSnippetForTesting() ~ "]");
 }
 
 /// Read a `+N -M` label into its two counters (0 when a side is absent).

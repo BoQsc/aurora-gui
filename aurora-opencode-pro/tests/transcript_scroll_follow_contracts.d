@@ -247,39 +247,62 @@ int main()
         "jump to latest did not restore the newest content view: " ~ regionWhy);
     writeln("Jump to latest lands on the newest content in one frame");
 
-    // While a turn is active the transcript stays fixed to the newest content.
-    // A scroll-up during generation must not hand auto-follow over, or the
-    // answer finishes off-screen and the reader silently loses the live tail.
+    // An active answer must not make a scrolled-up reader drift. Record a
+    // visible row, keep streaming into the reply, and prove the row stays at
+    // the same screen position while auto-follow remains released.
     root.startTurnClockForTesting();
     root.beginStreamForTesting();
-    root.streamContentForTesting("Streaming answer first paragraph.\n\n");
+    auto streamBody = appender!string();
+    foreach (i; 0 .. 12)
+        streamBody.put("Streamed answer line " ~ to!string(i) ~
+            " with enough text to wrap across the chat column.\n\n");
+    root.streamContentForTesting(streamBody.data);
     root.tickTree(0.02);
-    assert(driver.paint(), "the live stream did not paint");
-    assert(root.followForTesting() && view.scrollY() == view.maxScroll(),
-        "a live turn did not fixate the transcript to the newest content");
+    assert(driver.paint(), "the live stream fixture did not paint");
     root.scrollTranscriptUpForTesting(300);
-    assert(root.followForTesting() && view.scrollY() == view.maxScroll(),
-        "scrolling up detached an active answer from the newest content");
-    root.streamContentForTesting(
-        "More answer text while the turn is still active.\n\n");
     root.tickTree(0.02);
-    assert(driver.paint(), "the continued live stream did not paint");
-    assert(root.followForTesting() && view.scrollY() == view.maxScroll(),
-        "the active answer was allowed to finish off-screen");
-    assert(!root.followPillShownForTesting(),
-        "the jump-to-latest pill appeared while the active turn fixed the tail");
+    assert(driver.paint(), "the active scrolled-up frame did not paint");
+    assert(!root.followForTesting(),
+        "scrolling up did not hand auto-follow over during the active turn");
+    int stableRow = -1;
+    foreach (i; 0 .. root.messageColumnVisualCountForTesting())
+    {
+        const rect = root.bubbleBoundsForTesting(i);
+        if (rect.height <= 0) continue;
+        if (rect.y < view.scrollY() ||
+            rect.y >= view.scrollY() + view.bounds().height) continue;
+        stableRow = cast(int) i;
+        break;
+    }
+    assert(stableRow >= 0, "the active scrolled-up view has no visible row");
+    const stableScreenY = screenY(root, view, stableRow);
+    const stableOffset = view.scrollY();
+    foreach (i; 0 .. 6)
+    {
+        root.streamContentForTesting("More streamed text " ~ to!string(i) ~
+            " arriving below the reader.\n\n");
+        root.tickTree(0.02);
+        assert(driver.paint(), "a live frame while scrolled up did not paint");
+        assert(!root.followForTesting(),
+            "streaming re-engaged auto-follow after the reader scrolled up");
+        assert(root.followPillShownForTesting(),
+            "the jump-to-latest pill disappeared while the reader stayed up");
+        assert(screenY(root, view, stableRow) == stableScreenY,
+            "streaming moved the reader's visible row from " ~
+            to!string(stableScreenY) ~ " to " ~
+            to!string(screenY(root, view, stableRow)));
+    }
     root.finishStreamForTesting();
     root.tickTree(0.02);
-    assert(root.followForTesting() && view.scrollY() == view.maxScroll(),
-        "settling the turn moved the transcript away from the newest content");
-    // After the turn settles, scrolling up is the reader's choice again.
-    root.scrollTranscriptUpForTesting(300);
-    root.tickTree(0.02);
+    assert(driver.paint(), "the settled scrolled-up frame did not paint");
     assert(!root.followForTesting(),
-        "an idle transcript still refused to hand auto-follow over");
-    assert(root.followPillShownForTesting(),
-        "the jump-to-latest pill did not return after an idle scroll-up");
-    writeln("An active turn fixes the newest content, then releases it when settled");
+        "settling the turn re-engaged auto-follow after a scroll-up");
+    assert(screenY(root, view, stableRow) == stableScreenY,
+        "settling the turn moved the reader's visible row");
+    assert(view.scrollY() == stableOffset,
+        "settling the turn moved the reader's offset from " ~
+        to!string(stableOffset) ~ " to " ~ to!string(view.scrollY()));
+    writeln("An active answer streams without moving a scrolled-up reader");
 
     root.shutdownClient();
     return 0;

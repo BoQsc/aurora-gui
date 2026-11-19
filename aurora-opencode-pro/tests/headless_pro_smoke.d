@@ -6820,13 +6820,12 @@ int main(string[] args)
     }
     writeln("Opening a conversation shows its newest message");
 
-    // Regression: while an assistant turn is active, the transcript stays fixed
-    // to the newest content. New content arrives from two sources during a live
+    // Regression: while the agent is still working, a reader who scrolls up must
+    // keep a stable offset. New content arrives from two sources during a live
     // turn — the streamed reply deltas and the start of each assistant round (a
-    // tool loop begins one per round). A wheel-up during either must not leave
-    // the live answer to finish off-screen. Once the turn settles, scrolling up
-    // hands auto-follow over normally. Build a tall transcript, scroll to the
-    // top, then start a round and stream into it.
+    // tool loop begins one per round). Neither may re-engage auto-follow and drag
+    // the reader to the bottom. Build a tall transcript, scroll to the top, then
+    // start a round and stream into it.
     {
         root.newChatForTesting();
         import std.array : appender;
@@ -6849,16 +6848,15 @@ int main(string[] args)
         root.scrollToForTesting(0);
         root.tickTree(0.02);
         assert(!root.followForTesting(),
-            "scrolling up should have disengaged auto-follow before the turn");
+            "scrolling up should have disengaged auto-follow");
         // A new assistant round begins, exactly as a tool-loop continuation does.
-        root.startTurnClockForTesting();
         root.beginStreamForTesting();
         root.tickTree(0.02);
-        assert(paintProjection(root, driver), "Active round did not paint");
-        assert(root.followForTesting(),
-            "starting an active round did not fixate the newest content");
-        assert(root.scrollYForTesting() > 4,
-            "starting an active round left the transcript above the newest content");
+        assert(!root.followForTesting(),
+            "starting an assistant round re-engaged auto-follow while scrolled up");
+        assert(root.scrollYForTesting() <= 4,
+            "starting an assistant round dragged a scrolled-up reader to " ~
+            to!string(root.scrollYForTesting()));
         // Stream a growing reply into that round.
         foreach (i; 0 .. 6)
         {
@@ -6867,21 +6865,16 @@ int main(string[] args)
             root.tickTree(0.02);
         }
         assert(paintProjection(root, driver), "Streamed transcript did not paint");
-        assert(root.followForTesting(),
-            "streaming released auto-follow while the turn was active");
-        assert(root.scrollYForTesting() > 4,
-            "streaming left the active answer above the newest content");
+        assert(!root.followForTesting(),
+            "streaming re-engaged auto-follow after the user scrolled up");
+        assert(root.scrollYForTesting() <= 4,
+            "streaming dragged a scrolled-up reader to " ~
+            to!string(root.scrollYForTesting()));
         root.finishStreamForTesting();
         root.tickTree(0.02);
-        assert(root.followForTesting(),
-            "settling the turn released the newest content unexpectedly");
-        // Once settled, the reader can scroll away again.
-        root.scrollToForTesting(0);
-        root.tickTree(0.02);
-        assert(!root.followForTesting(),
-            "an idle transcript still refused to hand auto-follow over");
         assert(root.scrollYForTesting() <= 4,
-            "an idle scroll-up did not keep the reader's offset");
+            "finishing the stream dragged a scrolled-up reader to " ~
+            to!string(root.scrollYForTesting()));
 
         // Conversely, a reader at the bottom keeps following new content.
         root.scrollToForTesting(int.max);
@@ -6889,12 +6882,10 @@ int main(string[] args)
         assert(root.followForTesting(),
             "scrolling to the bottom should re-engage auto-follow");
         const bottom = root.scrollYForTesting();
-        root.startTurnClockForTesting();
         root.beginStreamForTesting();
         root.tickTree(0.02);
         root.streamContentForTesting("another growing reply\n");
         root.tickTree(0.02);
-        assert(paintProjection(root, driver), "Active bottom round did not paint");
         assert(root.followForTesting(),
             "a live round at the bottom should keep auto-follow engaged");
         assert(root.scrollYForTesting() >= bottom,
