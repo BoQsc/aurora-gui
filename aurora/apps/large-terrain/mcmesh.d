@@ -3,8 +3,10 @@ module mcmesh;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import engine.lighting : LightingModel;
+import engine.lod : chunkLod, lodHorizontalCells, lodVerticalCells;
 import engine.world : TerrainMaterial, WorldConfig;
 import std.math : cos, sin, sqrt;
+import std.parallelism : totalCPUs;
 
 struct MeshVertex
 {
@@ -38,6 +40,7 @@ struct MeshData
 struct TerrainChunk
 {
     MeshData[2] lods;
+    bool[2] lodReady;
     double centerX;
     double centerZ;
 }
@@ -95,11 +98,16 @@ final class TerrainChunkStream
     private Throwable failure;
     private WorldConfig config;
     private LightingModel lights;
+    private double cameraX;
+    private double cameraZ;
 
-    this(WorldConfig config, LightingModel lights)
+    this(WorldConfig config, LightingModel lights, double cameraX = 0,
+        double cameraZ = 0)
     {
         this.config = config;
         this.lights = lights;
+        this.cameraX = cameraX;
+        this.cameraZ = cameraZ;
     }
 
     void start()
@@ -112,7 +120,7 @@ final class TerrainChunkStream
     private void run()
     {
         try
-            built = buildTerrainChunks(config, lights);
+            built = buildTerrainChunksForCamera(config, lights, cameraX, cameraZ);
         catch (Throwable error)
             failure = error;
     }
@@ -122,6 +130,37 @@ final class TerrainChunkStream
         if (worker !is null) worker.join();
         if (failure !is null) throw failure;
         return built;
+    }
+}
+
+private final class InitialChunkBuildJob
+{
+    TerrainChunk[] chunks;
+    WorldConfig config;
+    LightingModel lights;
+    double cameraX;
+    double cameraZ;
+    int first;
+    int stride;
+
+    this(TerrainChunk[] chunks, WorldConfig config, LightingModel lights,
+        double cameraX, double cameraZ, int first, int stride)
+    {
+        this.chunks = chunks;
+        this.config = config;
+        this.lights = lights;
+        this.cameraX = cameraX;
+        this.cameraZ = cameraZ;
+        this.first = first;
+        this.stride = stride;
+    }
+
+    void run()
+    {
+        foreach (index; first .. chunks.length)
+            if ((index % stride) == first)
+                chunks[index] = buildTerrainChunkForCamera(config, lights,
+                    cast(int) index, cameraX, cameraZ);
     }
 }
 
@@ -263,6 +302,114 @@ private final class RebuildWorker
         }
         catch (Throwable error)
             failure = error;
+    }
+}
+
+final class TerrainChunkCompletion
+{
+    private TerrainChunk[] chunks;
+    private WorldConfig config;
+    private LightingModel lights;
+    private Thread worker;
+    private Mutex mutex;
+    private bool done;
+    private string failureMessage;
+
+    this(TerrainChunk[] chunks, WorldConfig config, LightingModel lights)
+    {
+        this.chunks = chunks.dup;
+        this.config = config;
+        this.lights = lights;
+        mutex = new Mutex();
+    }
+
+    void start()
+    {
+        if (worker !is null) return;
+        worker = new Thread(&run);
+        worker.start();
+    }
+
+    bool finished()
+    {
+        synchronized (mutex)
+            return done;
+    }
+
+    private void run()
+    {
+        try
+        {
+            enum int workerCount = 4;
+            Thread[] workers;
+            CompletionWorker[] jobs;
+            foreach (job; 0 .. workerCount)
+            {
+                jobs ~= new CompletionWorker(chunks, config, lights, job,
+                    workerCount);
+                workers ~= new Thread(&jobs[$ - 1].run);
+                workers[$ - 1].start();
+            }
+            foreach (current; workers)
+                current.join();
+            foreach (job; jobs)
+                if (job.failureMessage.length != 0)
+                    throw new Exception("completion worker: " ~
+                        job.failureMessage);
+        }
+        catch (Throwable error)
+            failureMessage = error.msg;
+        synchronized (mutex)
+            done = true;
+    }
+
+    TerrainChunk[] take()
+    {
+        if (worker !is null) worker.join();
+        if (failureMessage.length != 0)
+            throw new Exception("chunk LOD completion failed: " ~
+                failureMessage);
+        return chunks;
+    }
+}
+
+private final class CompletionWorker
+{
+    private TerrainChunk[] chunks;
+    private WorldConfig config;
+    private LightingModel lights;
+    private int first;
+    private int stride;
+    string failureMessage;
+
+    this(TerrainChunk[] chunks, WorldConfig config, LightingModel lights,
+        int first, int stride)
+    {
+        this.chunks = chunks;
+        this.config = config;
+        this.lights = lights;
+        this.first = first;
+        this.stride = stride;
+    }
+
+    void run()
+    {
+        try
+        {
+            ensureTable();
+            foreach (index; first .. chunks.length)
+                if ((index % stride) == first)
+                    foreach (lod; 0 .. chunks[index].lods.length)
+                        if (!chunks[index].lodReady[lod])
+                        {
+                            chunks[index].lods[lod] = buildChunkLodMesh(
+                                config, lights, cast(int) index,
+                                cast(int) lod);
+                            chunks[index].lodReady[lod] = true;
+                        }
+        }
+        catch (Throwable error)
+            failureMessage = error.msg;
     }
 }
 
@@ -431,10 +578,10 @@ MeshData buildTerrainMesh()
 }
 
 private MeshData buildChunkMesh(WorldConfig config, LightingModel lights,
-    double x0, double z0, double size, int cells)
+    double x0, double z0, double size, int cells, int verticalCells)
 {
     const int NX = cells + 1;
-    const int NY = config.verticalCells;
+    const int NY = verticalCells;
     const int NZ = cells + 1;
     const double y0 = config.minY, y1 = config.maxY;
     const double dx = size / cells;
@@ -551,28 +698,8 @@ private MeshData buildChunkMesh(WorldConfig config, LightingModel lights,
     return data;
 }
 
-TerrainChunk[] buildTerrainChunks(WorldConfig config, LightingModel lights)
+private TerrainChunk makeTerrainChunk(WorldConfig config, int index)
 {
-    ensureTable();
-    auto chunks = new TerrainChunk[config.chunksX * config.chunksZ];
-    enum int workerCount = 8;
-    Thread[] workers;
-    ChunkBuildJob[] jobs;
-    foreach (job; 0 .. workerCount)
-    {
-        jobs ~= new ChunkBuildJob(chunks, config, lights, job, workerCount);
-        workers ~= new Thread(&jobs[$ - 1].run);
-        workers[$ - 1].start();
-    }
-    foreach (worker; workers)
-        worker.join();
-    return chunks;
-}
-
-TerrainChunk buildTerrainChunk(WorldConfig config, LightingModel lights,
-    int index)
-{
-    ensureTable();
     TerrainChunk chunk;
     const cx = index % config.chunksX;
     const cz = index / config.chunksX;
@@ -580,10 +707,90 @@ TerrainChunk buildTerrainChunk(WorldConfig config, LightingModel lights,
     const z0 = config.minZ + cz * config.chunkSizeZ;
     chunk.centerX = x0 + config.chunkSizeX / 2;
     chunk.centerZ = z0 + config.chunkSizeZ / 2;
-    chunk.lods[0] = buildChunkMesh(config, lights, x0, z0,
-        config.chunkSizeX, config.baseCells);
-    chunk.lods[1] = buildChunkMesh(config, lights, x0, z0,
-        config.chunkSizeX, config.baseCells / 2);
+    return chunk;
+}
+
+private MeshData buildChunkLodMesh(WorldConfig config, LightingModel lights,
+    int index, int lod)
+{
+    const cx = index % config.chunksX;
+    const cz = index / config.chunksX;
+    const x0 = config.minX + cx * config.chunkSizeX;
+    const z0 = config.minZ + cz * config.chunkSizeZ;
+    return buildChunkMesh(config, lights, x0, z0, config.chunkSizeX,
+        lodHorizontalCells(config, lod), lodVerticalCells(config, lod));
+}
+
+private TerrainChunk[] buildChunks(WorldConfig config, LightingModel lights,
+    bool cameraAware, double cameraX, double cameraZ)
+{
+    ensureTable();
+    auto chunks = new TerrainChunk[config.chunksX * config.chunksZ];
+    const workerCount = totalCPUs > 8
+        ? (totalCPUs > 16 ? 16 : totalCPUs) : 8;
+    Thread[] workers;
+    if (cameraAware)
+    {
+        InitialChunkBuildJob[] jobs;
+        foreach (job; 0 .. workerCount)
+        {
+            jobs ~= new InitialChunkBuildJob(chunks, config, lights,
+                cameraX, cameraZ, job, workerCount);
+            workers ~= new Thread(&jobs[$ - 1].run);
+            workers[$ - 1].start();
+        }
+        foreach (worker; workers)
+            worker.join();
+    }
+    else
+    {
+        ChunkBuildJob[] jobs;
+        foreach (job; 0 .. workerCount)
+        {
+            jobs ~= new ChunkBuildJob(chunks, config, lights, job, workerCount);
+            workers ~= new Thread(&jobs[$ - 1].run);
+            workers[$ - 1].start();
+        }
+        foreach (worker; workers)
+            worker.join();
+    }
+    return chunks;
+}
+
+TerrainChunk[] buildTerrainChunks(WorldConfig config, LightingModel lights)
+{
+    return buildChunks(config, lights, false, 0, 0);
+}
+
+TerrainChunk[] buildTerrainChunksForCamera(WorldConfig config,
+    LightingModel lights, double cameraX, double cameraZ)
+{
+    return buildChunks(config, lights, true, cameraX, cameraZ);
+}
+
+TerrainChunk buildTerrainChunk(WorldConfig config, LightingModel lights,
+    int index)
+{
+    ensureTable();
+    auto chunk = makeTerrainChunk(config, index);
+    foreach (lod; 0 .. chunk.lods.length)
+    {
+        chunk.lods[lod] = buildChunkLodMesh(config, lights, index,
+            cast(int) lod);
+        chunk.lodReady[lod] = true;
+    }
+    return chunk;
+}
+
+TerrainChunk buildTerrainChunkForCamera(WorldConfig config,
+    LightingModel lights, int index, double cameraX, double cameraZ)
+{
+    ensureTable();
+    auto chunk = makeTerrainChunk(config, index);
+    const lod = chunkLod(config, cameraX, cameraZ, chunk.centerX,
+        chunk.centerZ);
+    chunk.lods[lod] = buildChunkLodMesh(config, lights, index, lod);
+    chunk.lodReady[lod] = true;
     return chunk;
 }
 

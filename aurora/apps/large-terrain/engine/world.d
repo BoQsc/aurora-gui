@@ -39,7 +39,7 @@ struct WorldConfig
     double extentY = 512;
     double extentZ = 2048;
     int lodCount = 2;
-    double lodNearDistance = 600;
+    int lodFullRadiusChunks = 4;
     double farPlane = 5000;
     TerrainEdit[] edits;
     CaveEdit[] caves;

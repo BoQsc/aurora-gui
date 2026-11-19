@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy the cross-surface failed-check comparison so a passing check clears the same obligation; then clear the remaining ledger entries with one accepted recipe.",
+  "reason": "Align the release with the expanded fallback test source at commit be791c7 and republish.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-18 21:00:33.1161372 UTC",
-  "finishedAt": "2026-11-18 21:01:34.9939682 UTC",
-  "durationMs": 61877,
+  "startedAt": "2026-11-19 08:54:56.7390053 UTC",
+  "finishedAt": "2026-11-19 08:55:57.3112346 UTC",
+  "durationMs": 60572,
   "exitCode": 0,
   "errors": [],
   "publishStatus": "published",
-  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (d901ca122de8).",
+  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (a1abf909f0af).",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

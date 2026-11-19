@@ -17,13 +17,14 @@ private extern(Windows) uint timeEndPeriod(uint);
 import aurora.vulkan.api;
 import aurora.font : GlyphAdvance, GlyphHeight, GlyphWidth, LineAdvance,
     glyphBits, glyphPixel;
+import engine.lod : chunkLod;
 import engine.runtime : TerrainRuntime, defaultRuntime;
 import engine.player : PlayerInput, PlayerState, updatePlayer;
 import engine.game : GameState, initGame, updateGame;
 import engine.collision : RayHit, raycastSolid, surfaceHeight;
 import engine.world : TerrainMaterial, materialName;
 import mcmesh : MeshData, MeshVertex, TerrainChunk, TerrainChunkRebuild,
-    TerrainChunkStream, buildTerrainChunk;
+    TerrainChunkCompletion, TerrainChunkStream, buildTerrainChunk;
 
 import core.stdc.string : memcpy;
 import core.stdc.stdio : snprintf;
@@ -46,7 +47,7 @@ import std.file : exists, read, write;
 import std.format : format;
 import std.math : cos, floor, sin, sqrt, tan;
 import std.mmfile : MmFile;
-import std.path : buildPath;
+import std.path : absolutePath, buildNormalizedPath, buildPath, dirName;
 import std.stdio : File, stderr, stdout;
 import std.string : toStringz;
 
@@ -389,6 +390,7 @@ private final class App
     ChunkGpu[][] chunkLods;
     TerrainChunk[] chunkData;
     TerrainChunkStream chunkStream;
+    TerrainChunkCompletion lodCompletion;
     TerrainChunkRebuild rebuildJob;
     TerrainRuntime runtime;
     GameState game;
@@ -474,10 +476,13 @@ private final class App
 
     this(string surfacePath = null)
     {
+        const startupStart = MonoTime.currTime;
         if (surfacePath.length != 0)
             presenter = new SurfacePresenter(surfacePath);
         runtime = defaultRuntime();
-        chunkStream = new TerrainChunkStream(runtime.world, runtime.lights);
+        camZ = 40;
+        chunkStream = new TerrainChunkStream(runtime.world, runtime.lights,
+            camX, camZ);
         chunkStream.start();
         vk = new VulkanApi();
         VkApplicationInfo application;
@@ -608,9 +613,11 @@ private final class App
         if (gChildWindow !is null) { stdout.writeln("vulkan3d: hud pipeline"); stdout.flush(); }
         auto terrainChunks = chunkStream.wait();
         createBuffers(terrainChunks);
+        lodCompletion = new TerrainChunkCompletion(chunkData, runtime.world,
+            runtime.lights);
+        lodCompletion.start();
         createHudBuffers();
         createSkyBuffers();
-        camZ = 40;
         camY = surfaceHeight(runtime.world, camX, camZ) + 2.26;
         player.x = camX;
         player.y = camY;
@@ -632,6 +639,9 @@ private final class App
         stdout.flush();
         GC.minimize();
         if (gChildWindow !is null) { stdout.writeln("vulkan3d: commands"); stdout.flush(); }
+        stdout.writeln("vulkan3d: ready in ",
+            (MonoTime.currTime - startupStart).total!"msecs", " ms");
+        stdout.flush();
     }
 
     private void check(VkResult result, string label)
@@ -1112,9 +1122,7 @@ private final class App
         const(int) textureLayers = 16;
         const(int) textureFormat = 43; // VK_FORMAT_R8G8B8A8_SRGB
         const(string) textureName = "terrain_albedo_1024x16.rgba";
-        const(string) texturePath = gShaderDir.length != 0
-            ? buildPath(gShaderDir, textureName)
-            : buildPath("shaders3d", textureName);
+        const(string) texturePath = buildPath(gShaderDir, textureName);
         auto textureBytes = cast(ubyte[]) read(texturePath);
         if (textureBytes.length != textureWidth * textureHeight * 4 *
             textureLayers)
@@ -2235,34 +2243,56 @@ private final class App
         uint indexTotal;
         foreach (index, chunk; terrainChunks)
         {
-            chunkLods[index].length = 2;
-            foreach (lod; 0 .. 2)
+            chunkLods[index].length = chunk.lods.length;
+            foreach (lod; 0 .. chunk.lods.length)
             {
+                if (!chunk.lodReady[lod]) continue;
                 auto mesh = chunk.lods[lod];
-                auto gpu = ChunkGpu();
-                gpu.centerX = chunk.centerX;
-                gpu.centerZ = chunk.centerZ;
-                gpu.indexCount = cast(uint) mesh.indices.length;
-                if (gpu.indexCount != 0)
-                {
-                    createBuffer(gpu.vertexBuffer, gpu.vertexMemory,
-                        cast(VkDeviceSize) mesh.vertices.length * MeshVertex.sizeof,
-                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-                    upload(gpu.vertexMemory, mesh.vertices);
-                    createBuffer(gpu.indexBuffer, gpu.indexMemory,
-                        cast(VkDeviceSize) mesh.indices.length * uint.sizeof,
-                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-                    upload(gpu.indexMemory, mesh.indices);
-                }
+                uploadLodGpu(cast(int) index, cast(int) lod);
                 vertexTotal += cast(uint) mesh.vertices.length;
                 indexTotal += cast(uint) mesh.indices.length;
-                chunkLods[index][lod] = gpu;
             }
         }
+        const lodCount = terrainChunks.length != 0
+            ? terrainChunks[0].lods.length : 0;
         stdout.writeln("vulkan3d: chunks=", terrainChunks.length,
-            " lods=2 vertices=", vertexTotal, " indices=", indexTotal);
+            " lods=", lodCount, " fullRadiusChunks=",
+            runtime.world.lodFullRadiusChunks, " vertices=", vertexTotal,
+            " indices=", indexTotal);
         stdout.flush();
         createReadbackBuffer();
+    }
+
+    private void uploadLodGpu(int index, int lod)
+    {
+        auto previous = chunkLods[index][lod];
+        if (previous.vertexBuffer != VkBuffer.init)
+            vk.vkDestroyBuffer(device, previous.vertexBuffer, null);
+        if (previous.vertexMemory != VkDeviceMemory.init)
+            vk.vkFreeMemory(device, previous.vertexMemory, null);
+        if (previous.indexBuffer != VkBuffer.init)
+            vk.vkDestroyBuffer(device, previous.indexBuffer, null);
+        if (previous.indexMemory != VkDeviceMemory.init)
+            vk.vkFreeMemory(device, previous.indexMemory, null);
+
+        auto chunk = chunkData[index];
+        auto mesh = chunk.lods[lod];
+        auto gpu = ChunkGpu();
+        gpu.centerX = chunk.centerX;
+        gpu.centerZ = chunk.centerZ;
+        gpu.indexCount = cast(uint) mesh.indices.length;
+        if (gpu.indexCount != 0)
+        {
+            createBuffer(gpu.vertexBuffer, gpu.vertexMemory,
+                cast(VkDeviceSize) mesh.vertices.length * MeshVertex.sizeof,
+                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+            upload(gpu.vertexMemory, mesh.vertices);
+            createBuffer(gpu.indexBuffer, gpu.indexMemory,
+                cast(VkDeviceSize) mesh.indices.length * uint.sizeof,
+                VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+            upload(gpu.indexMemory, mesh.indices);
+        }
+        chunkLods[index][lod] = gpu;
     }
 
     private void uploadChunkGpu(int index, TerrainChunk chunk,
@@ -2271,40 +2301,16 @@ private final class App
         chunkData[index] = chunk;
         if (waitForDevice)
             vk.vkDeviceWaitIdle(device);
-        foreach (lod; 0 .. 2)
+        foreach (lod; 0 .. chunk.lods.length)
         {
-            auto previous = chunkLods[index][lod];
-            if (previous.vertexBuffer != VkBuffer.init)
-                vk.vkDestroyBuffer(device, previous.vertexBuffer, null);
-            if (previous.vertexMemory != VkDeviceMemory.init)
-                vk.vkFreeMemory(device, previous.vertexMemory, null);
-            if (previous.indexBuffer != VkBuffer.init)
-                vk.vkDestroyBuffer(device, previous.indexBuffer, null);
-            if (previous.indexMemory != VkDeviceMemory.init)
-                vk.vkFreeMemory(device, previous.indexMemory, null);
-
-            auto mesh = chunk.lods[lod];
-            auto gpu = ChunkGpu();
-            gpu.centerX = chunk.centerX;
-            gpu.centerZ = chunk.centerZ;
-            gpu.indexCount = cast(uint) mesh.indices.length;
-            if (gpu.indexCount != 0)
-            {
-                createBuffer(gpu.vertexBuffer, gpu.vertexMemory,
-                    cast(VkDeviceSize) mesh.vertices.length * MeshVertex.sizeof,
-                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-                upload(gpu.vertexMemory, mesh.vertices);
-                createBuffer(gpu.indexBuffer, gpu.indexMemory,
-                    cast(VkDeviceSize) mesh.indices.length * uint.sizeof,
-                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-                upload(gpu.indexMemory, mesh.indices);
-            }
-            chunkLods[index][lod] = gpu;
+            if (!chunk.lodReady[lod]) continue;
+            uploadLodGpu(index, cast(int) lod);
         }
     }
 
     private void rebuildTerrainAround(double x, double z, double radius)
     {
+        finishLodCompletion();
         const config = runtime.world;
         int cx0 = cast(int) floor((x - radius - config.minX) /
             config.chunkSizeX);
@@ -2391,6 +2397,48 @@ private final class App
         }
     }
 
+    private void applyCompletedLods(TerrainChunk[] completed)
+    {
+        bool changed;
+        foreach (index, chunk; completed)
+            foreach (lod; 0 .. chunk.lods.length)
+                if (chunk.lodReady[lod] && !chunkData[index].lodReady[lod])
+                    changed = true;
+        if (!changed)
+            return;
+        vk.vkDeviceWaitIdle(device);
+        const uploadStart = MonoTime.currTime;
+        uint uploaded;
+        foreach (index, chunk; completed)
+            foreach (lod; 0 .. chunk.lods.length)
+                if (chunk.lodReady[lod] && !chunkData[index].lodReady[lod])
+                {
+                    chunkData[index].lods[lod] = chunk.lods[lod];
+                    chunkData[index].lodReady[lod] = true;
+                    uploadLodGpu(cast(int) index, cast(int) lod);
+                    ++uploaded;
+                }
+        stdout.writeln("vulkan3d: deferred LODs uploaded=", uploaded, " in ",
+            (MonoTime.currTime - uploadStart).total!"msecs", " ms");
+        stdout.flush();
+    }
+
+    private void finishLodCompletion()
+    {
+        if (lodCompletion is null)
+            return;
+        auto completed = lodCompletion.take();
+        lodCompletion = null;
+        applyCompletedLods(completed);
+    }
+
+    private void pollLodCompletion()
+    {
+        if (lodCompletion is null || !lodCompletion.finished())
+            return;
+        finishLodCompletion();
+    }
+
     private void updateTerrainTools()
     {
         int requestedMaterial = materialIndex;
@@ -2469,13 +2517,21 @@ private final class App
         vk.vkCmdBindDescriptorSets(commandBuffer, 0, terrainPipelineLayout,
             0, 1, &terrainDescriptorSet, 0, null);
         VkDeviceSize offset = 0;
-        foreach (chunk; chunkLods)
+        foreach (index, chunk; chunkLods)
         {
-            const dx = chunk[0].centerX - camX;
-            const dz = chunk[0].centerZ - camZ;
-            const lodDistance = runtime.world.lodNearDistance;
-            const lod = (dx * dx + dz * dz) > lodDistance * lodDistance
-                ? 1 : 0;
+            int lod = chunkLod(runtime.world, camX, camZ,
+                chunk[0].centerX, chunk[0].centerZ);
+            if (!chunkData[index].lodReady[lod])
+            {
+                lod = -1;
+                foreach (candidate; 0 .. chunkData[index].lods.length)
+                    if (chunkData[index].lodReady[candidate])
+                    {
+                        lod = cast(int) candidate;
+                        break;
+                    }
+                if (lod < 0) continue;
+            }
             auto gpu = chunk[lod];
             if (gpu.indexCount == 0) continue;
             vk.vkCmdBindVertexBuffers(commandBuffer, 0, 1,
@@ -2575,6 +2631,7 @@ private final class App
             stamina = stamina + 12.0 * dt > 100 ? 100 :
                 stamina + 12.0 * dt;
         pollTerrainRebuild();
+        pollLodCompletion();
         updateTerrainTools();
         bool didFire;
         updateGame(game, runtime.world, camX, camZ, camY, camYaw, dt,
@@ -3415,17 +3472,34 @@ void main(string[] args)
         else if (args[i] == "--trace-hud")
             hudTrace = true;
     }
+    const exeDir = dirName(absolutePath(args[0]));
     if (shaderDir.length != 0)
     {
-        if (!exists(buildPath(shaderDir, "cube.vert.spv")))
+        const resolved = buildNormalizedPath(absolutePath(shaderDir));
+        if (!exists(buildPath(resolved, "cube.vert.spv")))
             throw new Exception("missing cube.vert.spv in " ~ shaderDir);
-        version (Windows)
-        {
-            import core.sys.windows.windows : SetCurrentDirectoryA;
-            SetCurrentDirectoryA(toStringz(shaderDir));
-        }
+        gShaderDir = resolved;
     }
-    gShaderDir = shaderDir;
+    else
+    {
+        // Explorer and direct launches set the working directory to the
+        // executable's folder, so locate the app assets from the executable.
+        foreach (up; 0 .. 3)
+        {
+            string base = exeDir;
+            foreach (step; 0 .. up)
+                base = dirName(base);
+            const candidate = buildNormalizedPath(
+                buildPath(base, "shaders3d"));
+            if (exists(buildPath(candidate, "cube.vert.spv")))
+            {
+                gShaderDir = candidate;
+                break;
+            }
+        }
+        if (gShaderDir.length == 0)
+            throw new Exception("cannot find shaders3d next to " ~ args[0]);
+    }
     if (hostTitle.length != 0)
     {
         auto parent = FindWindowA(null, toStringz(hostTitle));
