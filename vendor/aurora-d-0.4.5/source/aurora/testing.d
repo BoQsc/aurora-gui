@@ -28,6 +28,13 @@ final class UiTestDriver
     GuiWindow window() @safe pure nothrow @nogc { return _window; }
     Point pointerPosition() const @safe pure nothrow @nogc { return _pointer; }
 
+    /// Advance the synthetic event clock without dispatching an event. Tests
+    /// use this to leave click-count and repeat windows deliberately.
+    void advanceTime(long milliseconds)
+    {
+        if (milliseconds > 0) _timestampMs += milliseconds;
+    }
+
     void resize(Size logicalSize, DisplayScale scale = DisplayScale.init)
     {
         version (AuroraHeadless)

@@ -1812,6 +1812,53 @@ int main(string[] args)
     assert(paintProjection(root, driver), "Rebuild did not repaint after expanding thinking");
     assert(!root.lastThinkingCollapsedForTesting(),
         "A rebuild collapsed the thinking block the user expanded");
+
+    // Expanded reasoning in the activity projection is transcript text too:
+    // drag across it, and drag the resulting selection out like a paragraph.
+    {
+        assert(root.setActivityReasoningExpandedForTesting(true),
+            "No activity reasoning body was projected");
+        root.tickTree(0.02);
+        assert(paintProjection(root, driver),
+            "Expanded activity reasoning did not paint");
+        assert(root.activityReasoningRunCountForTesting() > 0,
+            "Expanded reasoning did not register a selectable run");
+        const thinkingOrigin =
+            root.activityReasoningRunPointForTesting(0, false);
+        const thinkingEnd =
+            root.activityReasoningRunPointForTesting(0, true);
+        assert(thinkingOrigin.x >= 0 && thinkingEnd.x > thinkingOrigin.x,
+            "Expanded thinking selection anchors were not found");
+        driver.drag(thinkingOrigin, thinkingEnd);
+        root.tickTree(0.02);
+        assert(paintProjection(root, driver),
+            "Thinking selection did not repaint");
+        const selectedThinking =
+            root.activityReasoningSelectedTextForTesting();
+        assert(selectedThinking.length > 0,
+            "Dragging across expanded thinking selected nothing");
+        assert(root.activityReasoningRunTextForTesting(0)
+            .indexOf(selectedThinking) >= 0,
+            "Selected text did not come from the reasoning block: '" ~
+            selectedThinking ~ "'");
+        // Let the synthetic double-click window expire so this press is a
+        // plain drag of the completed selection, not another word click.
+        driver.advanceTime(600);
+        driver.moveTo(thinkingOrigin);
+        driver.mouseDown();
+        driver.moveTo(Point(thinkingOrigin.x + 12, thinkingOrigin.y + 2));
+        root.tickTree(0.02);
+        assert(root.activityReasoningDraggedTextForTesting() ==
+            selectedThinking,
+            "Expanded thinking did not publish its selection for dragging");
+        driver.mouseUp();
+        assert(root.setActivityReasoningExpandedForTesting(false),
+            "Activity reasoning disappeared after the drag");
+        root.tickTree(0.02);
+        assert(paintProjection(root, driver),
+            "Collapsed activity reasoning did not repaint");
+        writeln("Expanded thinking text selects and drags like reply text");
+    }
     root.toggleLastThinkingForTesting();
     root.tickTree(0.02);
     assert(paintProjection(root, driver), "Collapsed thinking did not repaint");

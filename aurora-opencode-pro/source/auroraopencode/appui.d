@@ -1152,9 +1152,19 @@ private final class MessageBubble : Widget
     // reasoning burst then re-shapes only the line currently being written
     // instead of the whole block on every fragment.
     private TextLayout[] _thinkingParts;
+    // True for chunks that continue the same logical reasoning line. The
+    // selection model uses this to join wrapped chunks without inventing a
+    // newline between them.
+    private bool[] _thinkingPartContinuation;
     private size_t _thinkingPartsGen;
     private int _thinkingPartsWidth = -1;
     private int _thinkingPartsHeight;
+    // Expanded reasoning is painted before the reply but outside the Markdown
+    // composition. These segments make it selectable like the rest of the
+    // transcript, and stay at the front of `_selSegments` so selection indices
+    // remain in paint order.
+    private SelectSegment[] _thinkingSegments;
+    private int _registeredThinkingSegments;
     private static immutable size_t thinkingPartChunkChars = 4 * 1024;
     private static immutable size_t thinkingPartCacheChars = 1024 * 1024;
     private static struct ThinkingPartEntry
@@ -2327,6 +2337,7 @@ private final class MessageBubble : Widget
         _thinkingPartsWidth = width;
         _thinkingPartsGen = _thinkingGen;
         _thinkingParts.length = 0;
+        _thinkingPartContinuation.length = 0;
         _thinkingPartsHeight = 0;
         const text = thinkingText();
         size_t lineStart;
@@ -2341,6 +2352,7 @@ private final class MessageBubble : Widget
                 if (blank !is null)
                 {
                     _thinkingParts ~= blank;
+                    _thinkingPartContinuation ~= false;
                     _thinkingPartsHeight += blank.measuredSize().height;
                 }
             }
@@ -2359,6 +2371,7 @@ private final class MessageBubble : Widget
                     if (part !is null)
                     {
                         _thinkingParts ~= part;
+                        _thinkingPartContinuation ~= offset > 0;
                         _thinkingPartsHeight += part.measuredSize().height;
                     }
                     offset = end;
@@ -2366,6 +2379,79 @@ private final class MessageBubble : Widget
             }
             lineStart = i + 1;
         }
+    }
+
+    /// Keep the expanded reasoning runs at the front of the selection segment
+    /// list. Paint order is reasoning, then the reply, so indices from
+    /// `_selSegments` stay usable by the mouse handlers and `selectedText`.
+    private void prepareThinkingSegments(int innerWidth)
+    {
+        if (hasThinking() && !_reasoningInActivity && !_thinkingCollapsed)
+        {
+            const thinkingWidth = maxInt(1, innerWidth - thinkingIndent);
+            ensureThinkingParts(thinkingWidth);
+            const top = topInset() + thinkingHeaderHeight();
+            _thinkingSegments.length = 0;
+            int y = top;
+            foreach (index, part; _thinkingParts)
+            {
+                if (part is null) continue;
+                const height = maxInt(1, part.measuredSize().height);
+                auto segment = SelectSegment(part, padH + thinkingIndent, y,
+                    thinkingWidth, height);
+                segment.continuation =
+                    index < _thinkingPartContinuation.length &&
+                    _thinkingPartContinuation[index];
+                _thinkingSegments ~= segment;
+                y += height;
+            }
+        }
+        else
+            _thinkingSegments.length = 0;
+        prependThinkingSegments();
+    }
+
+    private void prependThinkingSegments()
+    {
+        const oldCount = minInt(_registeredThinkingSegments,
+            cast(int) _selSegments.length);
+        const newCount = cast(int) _thinkingSegments.length;
+        if (oldCount != newCount)
+        {
+            bool invalid;
+            if (_selAnchorSeg >= 0)
+                _selAnchorSeg = shiftedSelectionSegment(_selAnchorSeg,
+                    oldCount, newCount, invalid);
+            if (_selFocusSeg >= 0)
+                _selFocusSeg = shiftedSelectionSegment(_selFocusSeg,
+                    oldCount, newCount, invalid);
+            if (invalid)
+            {
+                _selAnchorSeg = -1;
+                _selFocusSeg = -1;
+            }
+        }
+        if (oldCount > 0)
+            _selSegments = _selSegments[oldCount .. $].dup;
+        if (newCount > 0)
+            _selSegments = _thinkingSegments.dup ~ _selSegments;
+        _registeredThinkingSegments = newCount;
+    }
+
+    /// Shift a selection endpoint when reasoning runs are added or removed in
+    /// front of the reply. A selection that lived inside removed reasoning is
+    /// dropped instead of silently moving to unrelated reply text.
+    private static int shiftedSelectionSegment(int segment, int oldCount,
+        int newCount, ref bool invalid)
+    {
+        if (segment < 0) return segment;
+        if (segment >= oldCount) return maxInt(0, segment + newCount - oldCount);
+        if (segment >= newCount)
+        {
+            invalid = true;
+            return segment;
+        }
+        return segment;
     }
 
     /// The reasoning text as a dstring. New fragments land in the small buffer
@@ -2758,6 +2844,7 @@ private final class MessageBubble : Widget
         }
 
         const innerWidth = maxInt(1, width - 2 * padH);
+        prepareThinkingSegments(innerWidth);
         int y = topInset();
 
         if (hasThinking() && !_reasoningInActivity)
@@ -2771,6 +2858,9 @@ private final class MessageBubble : Widget
                 noteActivity("paintThinking index=" ~ to!string(_messageIndex) ~
                     " width=" ~ to!string(innerWidth) ~ " parts=" ~
                     to!string(_thinkingParts.length));
+                if (_thinkingSegments.length > 0)
+                    drawSelectionRange(canvas, 0,
+                        cast(int) _thinkingSegments.length - 1);
                 foreach (part; _thinkingParts)
                 {
                     canvas.drawLayout(Point(padH + thinkingIndent, y), part,
@@ -2837,7 +2927,8 @@ private final class MessageBubble : Widget
                     // locked to the text instead of lagging a frame behind.
                     collectMarkdownTargets(composition, contentY, innerWidth);
                     paintMarkdownBackgrounds(canvas, composition, padH, contentY);
-                    drawSelection(canvas);
+                    drawSelectionRange(canvas, _registeredThinkingSegments,
+                        cast(int) _selSegments.length - 1);
                     paintMarkdownGlyphs(canvas, composition, padH, contentY);
                     y = contentY + cast(int) ceil(composition.height);
                 }
@@ -3687,7 +3778,12 @@ private final class MessageBubble : Widget
         _copyLabels.length = 0;
         _linkRects.length = 0;
         _linkUrls.length = 0;
-        _selSegments.length = 0;
+        // Expanded reasoning is not part of the Markdown composition, so a
+        // content-target rebuild must keep its prefix instead of dropping it.
+        const keep = minInt(_registeredThinkingSegments,
+            cast(int) _selSegments.length);
+        if (keep > 0) _selSegments = _selSegments[0 .. keep].dup;
+        else _selSegments.length = 0;
         _markdownTargetsCurrent = false;
     }
 
@@ -3892,6 +3988,19 @@ private final class MessageBubble : Widget
             segment.y + maxInt(1, segment.h / 2)));
     }
 
+    /// Test-only: text and origin of each registered selection run, in paint
+    /// order. Used to prove expanded reasoning is registered before the reply.
+    public string selectionRunTextForTesting(size_t index)
+    {
+        return index < _selSegments.length
+            ? to!string(_selSegments[index].layout.text()) : "";
+    }
+
+    public int selectionRunCountForTesting() const
+    {
+        return cast(int) _selSegments.length;
+    }
+
     private void orderedSelection(out int firstSeg, out size_t firstChar,
         out int lastSeg, out size_t lastChar)
     {
@@ -3921,7 +4030,15 @@ private final class MessageBubble : Widget
 
     private void drawSelection(ref Canvas canvas)
     {
-        if (!hasSelection()) return;
+        drawSelectionRange(canvas, 0, cast(int) _selSegments.length - 1);
+    }
+
+    /// Paint the selected portion of a contiguous segment range. Reasoning
+    /// highlights are painted before their glyphs and the reply highlights
+    /// after that prefix, so the highlight stays under the text it belongs to.
+    private void drawSelectionRange(ref Canvas canvas, int first, int last)
+    {
+        if (!hasSelection() || first < 0 || last < first) return;
         int firstSeg, lastSeg;
         size_t firstChar, lastChar;
         orderedSelection(firstSeg, firstChar, lastSeg, lastChar);
@@ -3930,6 +4047,7 @@ private final class MessageBubble : Widget
         foreach (segIndex, segment; _selSegments)
         {
             const index = cast(int) segIndex;
+            if (index < first || index > last) continue;
             if (index < firstSeg || index > lastSeg) continue;
             if (origin.y + segment.y + segment.h < clip.y ||
                 origin.y + segment.y > clip.bottom()) continue;
@@ -37565,6 +37683,7 @@ private void pollButtonSuggestionRequest()
         return bubble is null ? Point(-1, -1) : bubble.selectionRunPointForTesting(run, end);
     }
 
+
     /// Test-only: screen point of the action link `target` in the reply at
     /// `messageIndex`; (-1, -1) when that reply carries no such link.
     public Point actionLinkPointForTesting(int messageIndex, string target)
@@ -39193,6 +39312,7 @@ private void pollButtonSuggestionRequest()
         return count;
     }
 
+
     /// Test-only: the live reply's Thinking header line ("" when there is no
     /// live reply), so a contract can prove the quiet-gap note appears while
     /// output is stalled and clears when it resumes.
@@ -39229,6 +39349,78 @@ private void pollButtonSuggestionRequest()
                 texts ~= bubble.thinkingTextForTesting();
         }
         return texts;
+    }
+
+    /// The reasoning-only bubble nested in the activity projection. The normal
+    /// visual list deliberately skips it, so tests that exercise the visible
+    /// expanded Thinking body need this direct lookup.
+    private MessageBubble activityReasoningBubbleForTesting()
+    {
+        foreach (child; _messageColumn.children())
+        {
+            auto summary = cast(TurnWorkSummary) child;
+            if (summary is null) continue;
+            foreach (inner; summary.children())
+                if (inner.id() == "oc-activity-reasoning")
+                    return cast(MessageBubble) inner;
+        }
+        return null;
+    }
+
+    /// Open or close the activity batch and its reasoning body together. A
+    /// closed batch hides the Thinking header, so opening must reveal both.
+    public bool setActivityReasoningExpandedForTesting(bool expanded)
+    {
+        foreach (child; _messageColumn.children())
+        {
+            auto summary = cast(TurnWorkSummary) child;
+            if (summary is null) continue;
+            MessageBubble reasoning;
+            foreach (inner; summary.children())
+                if (inner.id() == "oc-activity-reasoning")
+                {
+                    reasoning = cast(MessageBubble) inner;
+                    break;
+                }
+            if (reasoning is null) continue;
+            summary.setCollapsed(!expanded);
+            reasoning.setThinkingCollapsed(!expanded);
+            _messageColumn.invalidate();
+            _messagesScroll.invalidate();
+            return true;
+        }
+        return false;
+    }
+
+    public Point activityReasoningRunPointForTesting(size_t run, bool end)
+    {
+        auto bubble = activityReasoningBubbleForTesting();
+        return bubble is null ? Point(-1, -1)
+            : bubble.selectionRunPointForTesting(run, end);
+    }
+
+    public int activityReasoningRunCountForTesting()
+    {
+        auto bubble = activityReasoningBubbleForTesting();
+        return bubble is null ? 0 : bubble.selectionRunCountForTesting();
+    }
+
+    public string activityReasoningRunTextForTesting(size_t run)
+    {
+        auto bubble = activityReasoningBubbleForTesting();
+        return bubble is null ? "" : bubble.selectionRunTextForTesting(run);
+    }
+
+    public string activityReasoningSelectedTextForTesting()
+    {
+        auto bubble = activityReasoningBubbleForTesting();
+        return bubble is null ? "" : bubble.selectedText();
+    }
+
+    public string activityReasoningDraggedTextForTesting()
+    {
+        auto bubble = activityReasoningBubbleForTesting();
+        return bubble is null ? "" : bubble.lastDraggedTextForTesting();
     }
 
     /// Test-only: the sanitized outgoing message list for the current session
