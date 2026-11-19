@@ -84,6 +84,9 @@ with tempfile.TemporaryDirectory(prefix='aurora-capture-test-') as temporary:
             {'action': 'screen', 'full_screen': True},
             {'action': 'screen', 'window': b_title},
             {'action': 'screen', 'list_windows': True},
+            {'action': 'screen', 'list_windows': True, 'app': 'python'},
+            {'action': 'screen', 'list_windows': True, 'app': 'zz-no-such-app'},
+            {'action': 'screen', 'app': 'python'},
         ]
         scenario = directory / 'cases.json'
         scenario.write_text(json.dumps(cases), encoding='utf-8')
@@ -123,6 +126,16 @@ with tempfile.TemporaryDirectory(prefix='aurora-capture-test-') as temporary:
         assert 'Visible windows' in rows[6]['output'], rows[6]
         assert a_title in rows[6]['output'] and b_title in rows[6]['output'], rows[6]
 
+        assert not rows[7]['failed'] and rows[7]['images'] == 0, rows[7]
+        assert a_title in rows[7]['output'] and b_title in rows[7]['output'], rows[7]
+        assert '[python]' in rows[7]['output'], 'The list did not show app names'
+        assert not rows[8]['failed'] and rows[8]['images'] == 0, rows[8]
+        assert 'No visible window matches' in rows[8]['output'], rows[8]
+        assert 'zz-no-such-app' in rows[8]['output'], rows[8]
+        assert not rows[9]['failed'], rows[9]
+        assert a_title in rows[9]['output'], rows[9]
+        assert frame(rows[9]) == (aw, ah), (frame(rows[9]), (aw, ah))
+
         state = json.loads((directory / 'state.json').read_text(encoding='utf-8'))
         deadline = time.monotonic() + 3
         while state['A']['clicks'] != 1 and time.monotonic() < deadline:
@@ -131,7 +144,7 @@ with tempfile.TemporaryDirectory(prefix='aurora-capture-test-') as temporary:
         assert state['A']['clicks'] == 1, state
         print('PASS: default screen is the target window, full_screen is opt-in, '
               'named window capture works, the window list lets the agent choose, '
-              'and a frame-relative click lands')
+              'app names filter the list, and a frame-relative click lands')
     finally:
         (directory / 'stop').touch()
         try:
