@@ -308,6 +308,58 @@ int main()
         to!string(stableOffset) ~ " to " ~ to!string(view.scrollY()));
     writeln("An active answer streams without moving a scrolled-up reader");
 
+    // Default classic transcript: a height change above the reader (a tool row
+    // expanding) must not slide the row they are reading. The virtualized
+    // presenter only corrects its own measured window; this covers the path the
+    // shipping app uses.
+    root.setExperimentalChatRedesignForTesting(false);
+    root.newChatForTesting();
+    auto toolOutput = appender!string();
+    foreach (i; 0 .. 30)
+        toolOutput.put("Expanded tool output line " ~ to!string(i) ~ "\n");
+    root.appendToolMessageForTesting("read", toolOutput.data,
+        `{"filePath":"anchor.txt"}`, 0, 0, "", 0);
+    string[] classicRoles, classicBodies;
+    foreach (i; 0 .. 30)
+    {
+        classicRoles ~= "user";
+        classicBodies ~= "Classic question " ~ to!string(i);
+        classicRoles ~= "assistant";
+        classicBodies ~= "Classic answer " ~ to!string(i) ~
+            " with enough text to wrap across the transcript column.";
+    }
+    root.addConversationForTesting(classicRoles, classicBodies);
+    // Show the tool row inside its action group; the group starts collapsed.
+    root.expandToolGroupsForTesting();
+    root.tickTree(0.02);
+    assert(driver.paint(), "the classic transcript fixture did not paint");
+    root.scrollToForTesting(900);
+    root.tickTree(0.02);
+    assert(driver.paint(), "the classic scrolled transcript did not paint");
+    assert(view.scrollY() > 0, "the classic transcript is not scrollable");
+    int classicRow = -1;
+    foreach (i; 0 .. root.messageColumnVisualCountForTesting())
+    {
+        const rect = root.bubbleBoundsForTesting(i);
+        if (rect.height <= 0) continue;
+        if (rect.y < view.scrollY() ||
+            rect.y >= view.scrollY() + view.bounds().height) continue;
+        classicRow = cast(int) i;
+        break;
+    }
+    assert(classicRow >= 0, "the classic scrolled view has no visible row");
+    const classicScreenY = screenY(root, view, classicRow);
+    assert(root.firstToolBubbleCollapsedForTesting(),
+        "the classic tool row should start collapsed");
+    root.toggleFirstToolBubbleForTesting();
+    root.tickTree(0.02);
+    assert(driver.paint(), "the expanded classic tool frame did not paint");
+    assert(screenY(root, view, classicRow) == classicScreenY,
+        "expanding a tool above the reader moved their visible row from " ~
+        to!string(classicScreenY) ~ " to " ~
+        to!string(screenY(root, view, classicRow)));
+    writeln("A height change above a scrolled-up reader keeps their row fixed");
+
     root.shutdownClient();
     return 0;
 }

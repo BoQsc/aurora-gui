@@ -11053,6 +11053,11 @@ private final class ChatScrollView : ScrollView
     private static immutable int topLoadThreshold = 24;
     // Invoked when the reader reaches the top of the transcript.
     void delegate() onReachedTop;
+    // Transcript rows in reading order, refreshed whenever the column is
+    // projected. While auto-follow is released, the first row that intersects
+    // the viewport is captured before a layout and restored after it, so a
+    // height change above the reader cannot slide the text they are reading.
+    Widget[] delegate() rowsForAnchor;
 
     this(Widget content)
     {
@@ -11074,6 +11079,16 @@ private final class ChatScrollView : ScrollView
                 view._holdPending = true;
                 return;
             }
+    }
+
+    private int contentYOf(Widget row)
+    {
+        int y;
+        const content = this.content();
+        for (auto node = row; node !is null && node !is content;
+            node = node.parent())
+            y += node.bounds().y;
+        return y;
     }
 
     protected override void onLayout()
@@ -11098,10 +11113,67 @@ private final class ChatScrollView : ScrollView
             follow = scrollY() >= maxScroll() - 4;
             return;
         }
-        // The base layout measures the new content before publishing its range.
-        // Pin in this pass; a deferred layout kept requesting another repaint
-        // even after work stopped.
-        if (follow) setScrollY(maxScroll());
+        if (follow)
+        {
+            setScrollY(maxScroll());
+            return;
+        }
+    }
+
+    override void layoutTree()
+    {
+        const previousY = scrollY();
+        const hold = _holdPending;
+        // Capture the reader's first full row before the content lays out.
+        // onLayout runs before this view's children, so only here are the
+        // final row positions available. Anchoring after the whole subtree
+        // laid out keeps that row fixed across a live tool group, a restored
+        // row, or an expand/collapse anywhere above it.
+        Widget anchorRow;
+        int anchorContentY;
+        if (!follow && !hold && rowsForAnchor !is null)
+        {
+            const top = previousY;
+            const bottom = top + bounds().height;
+            Widget partialRow;
+            int partialY;
+            foreach (row; rowsForAnchor())
+            {
+                if (row is null || row.bounds().height <= 0) continue;
+                const y = contentYOf(row);
+                if (y + row.bounds().height <= top) continue;
+                if (y >= bottom) break;
+                if (y >= top)
+                {
+                    anchorRow = row;
+                    anchorContentY = y;
+                    break;
+                }
+                if (partialRow is null)
+                {
+                    partialRow = row;
+                    partialY = y;
+                }
+            }
+            if (anchorRow is null && partialRow !is null)
+            {
+                anchorRow = partialRow;
+                anchorContentY = partialY;
+            }
+        }
+        super.layoutTree();
+        if (hold || follow || _holdPending) return;
+        if (anchorRow !is null && anchorRow.parent() !is null)
+        {
+            const delta = contentYOf(anchorRow) - anchorContentY;
+            if (delta != 0) setScrollY(previousY + delta);
+            else if (scrollY() != previousY) setScrollY(previousY);
+        }
+        else if (scrollY() != previousY)
+        {
+            // No stable row to anchor; do not let a layout move the reader.
+            setScrollY(previousY);
+        }
     }
 
     protected override void onScrollChanged()
@@ -18031,6 +18103,7 @@ private string _suggestExcludeId;
         messageCenter.setId("oc-message-center");
         _messagesScroll = new ChatScrollView(messageCenter);
         _messageColumn.following = delegate() { return _messagesScroll.follow; };
+        _messagesScroll.rowsForAnchor = delegate() { return messageColumnVisuals(); };
         _messageColumn.onAnchorCorrection = delegate(int delta) { _messagesScroll._anchorGrow += delta; };
         _messagesScroll.setId("oc-scroll");
         _messagesScroll.layoutHints().flex = 1.0;
