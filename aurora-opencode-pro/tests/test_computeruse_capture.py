@@ -64,6 +64,12 @@ with tempfile.TemporaryDirectory(prefix='aurora-capture-test-') as temporary:
         a_title, b_title = positions['A']['title'], positions['B']['title']
         ax, ay, aw, ah = window_size(a_title)
         bx, by, bw, bh = window_size(b_title)
+        # A native click is delivered as a press only when the target already
+        # owns the foreground; otherwise Windows spends it on activation.
+        a_hwnd = user32.FindWindowW(None, a_title)
+        assert a_hwnd
+        user32.SetForegroundWindow(a_hwnd)
+        time.sleep(0.3)
         # The button's desktop point expressed in fixture A's window frame.
         button_x, button_y = positions['A']['button']
         frame_x, frame_y = button_x - ax, button_y - ay
@@ -117,8 +123,11 @@ with tempfile.TemporaryDirectory(prefix='aurora-capture-test-') as temporary:
         assert 'Visible windows' in rows[6]['output'], rows[6]
         assert a_title in rows[6]['output'] and b_title in rows[6]['output'], rows[6]
 
-        time.sleep(0.2)
         state = json.loads((directory / 'state.json').read_text(encoding='utf-8'))
+        deadline = time.monotonic() + 3
+        while state['A']['clicks'] != 1 and time.monotonic() < deadline:
+            time.sleep(0.05)
+            state = json.loads((directory / 'state.json').read_text(encoding='utf-8'))
         assert state['A']['clicks'] == 1, state
         print('PASS: default screen is the target window, full_screen is opt-in, '
               'named window capture works, the window list lets the agent choose, '
