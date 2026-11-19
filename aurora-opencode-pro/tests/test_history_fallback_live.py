@@ -25,8 +25,18 @@ args = parser.parse_args()
 
 requests, summaries, failures = [], [], []
 token = "RETIRED_TOKEN=R7-2200"
-question = ("The exact record may be gone. Call read_history for message_id=missing-record "
-            "and reply with the retired token it returns.")
+# Four questions after compaction: three fallback triggers and one exact read.
+questions = [
+    ("The exact record may be gone. Call read_history for message_id=missing-record "
+     "and reply with the retired token it returns."),
+    ("Search for a fact that was never recorded. Call read_history with a query that cannot "
+     "match anything "
+     "and reply with the retired token it returns."),
+    ("Page from a missing row. Call read_history with before_id=missing-before and "
+     "query=RETIRED_TOKEN; reply with the token it returns."),
+    ("Recover the exact saved requirement. Call read_history with query=RETIRED_TOKEN "
+     "and role=user; reply EXACT-OK when a matching row contains the token."),
+]
 # Several moderate messages instead of one huge paste: painting a single
 # six-figure user bubble stalls the headless UI before the request even starts,
 # which is unrelated to the fallback under test.
@@ -37,7 +47,7 @@ prompts = [
     "Remember context chunk %d and reply RECORDED: " % index + token + " " +
     "unrelated context " * 250
     for index in range(2, 13)
-] + [question]
+] + questions
 
 
 def call(identity, name, arguments):
@@ -95,8 +105,10 @@ class Provider(http.server.BaseHTTPRequestHandler):
             assert "read_history" in names, "Recall tool not advertised"
             if len(requests) > len(prompts) * 3:
                 raise AssertionError("fallback probe added repeated continuation rounds")
-            question = any(m.get("role") == "user" and m.get("content") == prompts[-1] for m in messages)
-            if not question:
+            user_texts = [str(m.get("content", "")) for m in messages
+                          if m.get("role") == "user"]
+            current = next((text for text in reversed(user_texts) if text in questions), None)
+            if current is None:
                 return self.send("RECORDED")
             owners, results = set(), {}
             for message in messages:
@@ -105,17 +117,33 @@ class Provider(http.server.BaseHTTPRequestHandler):
                     identity = message["tool_call_id"]
                     assert identity in owners and identity not in results, "Unpaired/duplicate tool result"
                     results[identity] = message["content"]
-            if "find-fallback" not in results:
-                return self.send(calls=[call("find-fallback", "read_history", {"message_id": "missing-record"})])
-            result = json.loads(results["find-fallback"])
-            assert result.get("fallback") is True, "read_history did not return a fallback digest: " + str(result)[:400]
-            assert "message_id" in result.get("fallback_reason", ""), "fallback did not name the failed lookup"
+            scenario = {
+                questions[0]: ("fb-missing", {"message_id": "missing-record"}, "message_id"),
+                questions[1]: ("fb-query", {"query": "PRIVATE-ABSENT-4411"}, None),
+                questions[2]: ("fb-before", {"before_id": "missing-before", "query": token}, "before_id"),
+                questions[3]: ("fb-exact", {"query": token, "role": "user"}, None),
+            }[current]
+            identity, arguments, reason = scenario
+            if identity not in results:
+                return self.send(calls=[call(identity, "read_history", arguments)])
+            result = json.loads(results[identity])
+            if current == questions[3]:
+                assert result.get("fallback") is not True, "exact recall reported a fallback"
+                rows = result.get("messages", [])
+                assert rows and any(token in row.get("text", "") for row in rows), \
+                    "exact recall did not return the saved token"
+                return self.send("EXACT-OK")
+            assert result.get("fallback") is True, \
+                "read_history did not return a fallback digest: " + str(result)[:400]
+            if reason:
+                assert reason in result.get("fallback_reason", ""), \
+                    "fallback did not name the failed " + reason
             assert result.get("retired_messages", 0) > 0, "fallback reported no retired messages"
             assert len(result.get("messages", [])) == 1, "fallback did not return a digest row"
             text = result["messages"][0]["text"]
             assert token in text, "fallback digest lost the retired token"
             assert "Retired checkpoint digest" in text, "fallback digest is not labelled"
-            return self.send("R7-2200")
+            return self.send("FALLBACK-OK")
         except Exception as error:
             failures.append(str(error))
             self.send("FIXTURE_FAILED")
@@ -163,7 +191,8 @@ try:
     assert result.returncode == 0, (result.returncode, result.stdout[-2000:], result.stderr[-1000:])
     replies = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{"')]
     assert len(replies) == len(prompts), replies
-    assert replies[-1]["reply"] == "R7-2200", replies[-1]
+    assert [reply["reply"] for reply in replies[-4:]] == \
+        ["FALLBACK-OK", "FALLBACK-OK", "FALLBACK-OK", "EXACT-OK"], replies[-4:]
     assert summaries, "compaction never ran"
     assert requests, "no main request reached the provider"
     histories = [json.loads(p.read_text(encoding="utf-8")) for p in (state / "threads").glob("*.json")]
@@ -174,9 +203,10 @@ try:
         "binarySha256": hashlib.sha256(args.executable.read_bytes()).hexdigest(),
         "seconds": time.monotonic() - started,
         "mainRequests": len(requests), "summaryRequests": len(summaries),
-        "fallbackReachedModel": True, "retiredTokenRecovered": token,
+        "fallbackTriggers": ["missing message_id", "no-match query", "missing before_id"],
+        "exactRecallAfterFallback": True, "retiredTokenRecovered": token,
     }, indent=2), encoding="utf-8")
-    print("PASS real compaction, missing read_history id, fallback digest and answer; ARTIFACTS", directory)
+    print("PASS real compaction, three read_history fallback triggers, exact recall and answers; ARTIFACTS", directory)
 finally:
     server.shutdown()
     server.server_close()
