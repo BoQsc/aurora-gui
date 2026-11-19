@@ -15,9 +15,9 @@ changing the basic app or the generic host.
   render at full resolution; every chunk past 4 chunks renders at half
   resolution in all axes (24 x 64 x 24 sampling).
 - Startup builds only the LOD each chunk needs at the camera, spread across the
-  available CPU cores. A background worker then builds the complementary LODs
-  and the main thread uploads them when ready; drawing falls back to a ready
-  LOD until then.
+  available CPU cores. A capped 4-thread background worker then builds the
+  complementary LODs and the main thread uploads them when ready; drawing
+  falls back to a ready LOD until then.
 - Procedural atmosphere/skybox layer: graded sky bands, horizon haze and sun,
   drawn behind the terrain through the existing HUD pipeline.
 - Same `AURSFACE` protocol and generic `aurora-host` window as the basic app.

@@ -2428,8 +2428,12 @@ private final class App
         if (lodCompletion is null)
             return;
         auto completed = lodCompletion.take();
+        const completionMs = lodCompletion.elapsedMs();
         lodCompletion = null;
         applyCompletedLods(completed);
+        stdout.writeln("vulkan3d: background LODs completed in ",
+            completionMs, " ms");
+        stdout.flush();
     }
 
     private void pollLodCompletion()

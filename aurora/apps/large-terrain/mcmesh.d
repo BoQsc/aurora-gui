@@ -2,6 +2,7 @@ module mcmesh;
 
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
+import core.time : MonoTime;
 import engine.lighting : LightingModel;
 import engine.lod : chunkLod, lodHorizontalCells, lodVerticalCells;
 import engine.world : TerrainMaterial, WorldConfig;
@@ -307,6 +308,9 @@ private final class RebuildWorker
 
 final class TerrainChunkCompletion
 {
+    // Keep background completion from competing with the startup path.
+    enum int backgroundLodWorkers = 4;
+
     private TerrainChunk[] chunks;
     private WorldConfig config;
     private LightingModel lights;
@@ -314,6 +318,8 @@ final class TerrainChunkCompletion
     private Mutex mutex;
     private bool done;
     private string failureMessage;
+    private MonoTime started;
+    private MonoTime ended;
 
     this(TerrainChunk[] chunks, WorldConfig config, LightingModel lights)
     {
@@ -326,6 +332,7 @@ final class TerrainChunkCompletion
     void start()
     {
         if (worker !is null) return;
+        started = MonoTime.currTime;
         worker = new Thread(&run);
         worker.start();
     }
@@ -340,13 +347,12 @@ final class TerrainChunkCompletion
     {
         try
         {
-            enum int workerCount = 4;
             Thread[] workers;
             CompletionWorker[] jobs;
-            foreach (job; 0 .. workerCount)
+            foreach (job; 0 .. backgroundLodWorkers)
             {
                 jobs ~= new CompletionWorker(chunks, config, lights, job,
-                    workerCount);
+                    backgroundLodWorkers);
                 workers ~= new Thread(&jobs[$ - 1].run);
                 workers[$ - 1].start();
             }
@@ -359,6 +365,7 @@ final class TerrainChunkCompletion
         }
         catch (Throwable error)
             failureMessage = error.msg;
+        ended = MonoTime.currTime;
         synchronized (mutex)
             done = true;
     }
@@ -370,6 +377,11 @@ final class TerrainChunkCompletion
             throw new Exception("chunk LOD completion failed: " ~
                 failureMessage);
         return chunks;
+    }
+
+    double elapsedMs() const
+    {
+        return (ended - started).total!"msecs";
     }
 }
 

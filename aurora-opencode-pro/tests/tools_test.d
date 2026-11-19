@@ -961,6 +961,11 @@ int main(string[] args)
             "computer use must stay off unless AURORA_COMPUTER_USE is set");
         assert(toolSteeringPrompt(true).indexOf("`computer`") < 0,
             "disabled computer use must not appear in the steering prompt");
+        // Hiding the tool is not enough: the policy must also close the
+        // custom-script workaround for controlling the desktop.
+        assert(toolSteeringPrompt(true).indexOf(
+            "Do not create or run custom Python scripts") >= 0,
+            "disabled computer use must forbid custom desktop-control scripts");
 
         const previousComputer = environment.get("AURORA_COMPUTER_USE", null);
         environment["AURORA_COMPUTER_USE"] = "on";
@@ -984,6 +989,9 @@ int main(string[] args)
         assert(computerDescription.indexOf("running a probe or test") >= 0,
             "the computer tool description must prefer code checks: " ~
             computerDescription);
+        assert(toolSteeringPrompt(true).indexOf(
+            "Do not create or run custom Python scripts") < 0,
+            "the disabled-state script prohibition must disappear once enabled");
 
         // A call with no action fails deterministically before any desktop use.
         auto noAction = executeTool(makeCall("computer", `{}`), dir);
