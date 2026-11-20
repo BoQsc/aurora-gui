@@ -71,8 +71,10 @@ class Provider(http.server.BaseHTTPRequestHandler):
             self.reply(content='Reported from existing evidence.')
             return
         rounds = {
+            # No objective field: a plan update may replace the accepted
+            # objective, and a fixture that echoes the prompt there would hide
+            # whichever task the app actually decided to own.
             1: lambda: tool('p1', 'update_plan', {
-                'objective': latest,
                 'plan': [{'id': 'deliver', 'step': 'Deliver the requested change',
                           'kind': 'edit', 'status': 'in_progress'}]}),
             2: lambda: tool('w1', 'write', {'filePath': 'note.md', 'content': latest + '\n'}),
@@ -248,7 +250,7 @@ def main():
              (s.get('objective') or '').lower().startswith('add a copy button')),
             ('the hold did not tell the model to stop',
              not r['turns']['hold off for now'] or
-             any('holds the work' in system_text(b) for b in r['turns']['hold off for now'])),
+             any('hold the work' in system_text(b) for b in r['turns']['hold off for now'])),
         ]),
     ]
     report, errors = [], []
