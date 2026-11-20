@@ -137,4 +137,38 @@ End-to-end on the shipping executable:
 
 ```text
 python tests/verify_intent_live.py --executable aurora-opencode-pro.exe
+python tests/verify_intent_longhorizon.py --executable aurora-opencode-pro.exe
 ```
+
+## Long-horizon behaviour
+
+`tests/verify_intent_longhorizon.py` drives the same executable through short
+conversations of 3–8 turns and reads the durable state after every turn:
+question-then-continue, correction drift, repeated failure, scope amendment
+(`also`/`additionally`), new-task separation, hold-then-resume, delegation, and a
+mixed sequence that ends with an explicit new task.
+
+Measured on the previous build, six of the seven work scenarios already held:
+the objective survived side questions, repeated "still flickering" complaints,
+scope amendments, a hold, delegation, and an explicit new task archived exactly
+once. One failed:
+
+| turn | observed | expected |
+| --- | --- | --- |
+| `add a settings page…` → `make the font bigger` | objective replaced, previous work archived | amend the settings page |
+
+A refinement was indistinguishable from a new action, so the task it refined was
+archived under a new objective named after the refinement. `taskAmendmentRequest`
+now recognises refinement shapes (comparatives such as "bigger/wider/faster/
+instead", and `make/change/set/move/resize/rename/tweak/adjust/use the …`), which
+makes it an amendment while self-contained actions still own a new task. The
+probe guards both directions: "make the font bigger" amends, while "add a copy
+button", "build the exporter for xlsx" and "Fix fullscreen switching immediately,
+globally across the running world and map selector" do not.
+
+Goal ownership across many turns cannot be driven through the headless API:
+`submitAgentTurn` deliberately skips `/goal` commands, and the
+`autoGoalFromFirstMessage` setting did not persist in the fixture profile (the
+saved settings file still showed it off). That path remains covered by
+`goal_settle_contracts` and `diagnosis_intent_contracts` rather than the live
+harness.

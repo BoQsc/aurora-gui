@@ -268,6 +268,24 @@ int main()
         writefln("%s continuation(\"%s\") = %s (expected %s)", f.actual == f.expected ? "ok  " : "FAIL",
             f.text, f.actual, f.expected);
 
+    // A refinement amends the work in front of the user; a self-contained new
+    // action owns a new task. Archiving the refined task was the long-horizon
+    // drift: "make the font bigger" one turn after "add a settings page".
+    immutable Flag[] amendments = [
+        Flag("make the font bigger", true, taskAmendmentRequest("make the font bigger")),
+        Flag("make the button wider", true, taskAmendmentRequest("make the button wider")),
+        Flag("use the compact layout instead", true, taskAmendmentRequest("use the compact layout instead")),
+        Flag("also handle gzipped files", true, taskAmendmentRequest("also handle gzipped files")),
+        Flag("Fix fullscreen switching immediately, globally across the running world and map selector",
+             false, taskAmendmentRequest(
+                 "Fix fullscreen switching immediately, globally across the running world and map selector")),
+        Flag("add a copy button", false, taskAmendmentRequest("add a copy button")),
+        Flag("build the exporter for xlsx", false, taskAmendmentRequest("build the exporter for xlsx")),
+    ];
+    foreach (const ref f; amendments)
+        writefln("%s amendment(\"%s\") = %s (expected %s)", f.actual == f.expected ? "ok  " : "FAIL",
+            f.text, f.actual, f.expected);
+
     // Verb coverage: a bare imperative in front of any verb must read as a
     // request, whether or not the verb is enumerated.
     writeln("\n== Verb coverage (\"<verb> the panel\" as a bare imperative, cold start) ==");

@@ -700,6 +700,23 @@ bool explicitlyNewTask(string text)
 
 /// Explicit references to ongoing work refine its acceptance. Independent
 /// action requests get their own scope; semantic overlap alone is insufficient.
+/// A small refinement of the work in front of the user. One turn after "add a
+/// settings page", "make the font bigger" amends that page; treating it as a new
+/// action archived the page and started a task named after the refinement.
+private bool refinementRequest(string text)
+{
+    const value = paddedLower(text);
+    foreach (phrase; [" bigger ", " smaller ", " wider ", " narrower ", " faster ",
+            " slower ", " taller ", " shorter ", " lighter ", " darker ", " dimmer ",
+            " brighter ", " quieter ", " louder ", " bolder ", " thinner ", " instead "])
+        if (value.canFind(phrase)) return true;
+    foreach (prefix; [" make it ", " make that ", " make this ", " make the ",
+            " change the ", " set the ", " move the ", " resize the ", " rename the ",
+            " tweak ", " adjust ", " use the ", " use that "])
+        if (value.startsWith(prefix)) return true;
+    return false;
+}
+
 bool taskAmendmentRequest(string text)
 {
     const value = text.toLower().split().join(" ");
@@ -707,6 +724,7 @@ bool taskAmendmentRequest(string text)
     if (words.canFind("remaining") || words.canFind("original") ||
         value.startsWith("also ") || value.startsWith("additionally ") ||
         value.startsWith("in addition ")) return true;
+    if (refinementRequest(text)) return true;
     return ["fix it", "so fix it", "just fix it", "try to fix it", "do it", "do that", "do this"].canFind(value);
 }
 
