@@ -468,16 +468,18 @@ bool stateQuestionRequest(string text)
 }
 
 /// Turn a parse into a turn intent using the session's work state. While work is
-/// unfinished, unplaced text and an indicative-mood change belong to that work;
-/// with nothing unfinished a change starts a task and unplaced text stays chat.
-RequestIntent resolvedRequestIntent(RequestIntent parsed, bool workActive)
+/// unfinished, unplaced text belongs to it. An indicative-mood change belongs to
+/// any recorded work, finished or not: "it is still too small" points at what was
+/// just delivered, and starting a new task for it archives the work the user is
+/// complaining about. With no recorded work a change starts a task.
+RequestIntent resolvedRequestIntent(RequestIntent parsed, bool workActive, bool recordedWork)
 {
     final switch (parsed)
     {
         case RequestIntent.indeterminate:
             return workActive ? RequestIntent.continuation : RequestIntent.conversation;
         case RequestIntent.changeRequest:
-            return workActive ? RequestIntent.continuation : RequestIntent.implementation;
+            return recordedWork ? RequestIntent.continuation : RequestIntent.implementation;
         case RequestIntent.conversation:
         case RequestIntent.clarification:
         case RequestIntent.diagnosis:
@@ -548,7 +550,7 @@ bool workRestrictionRequest(string text)
 /// A hold is not an explanation, but it withholds work just the same. An active
 /// goal kept running after "hold off for now" because only explanation requests
 /// counted as restrictions.
-private bool holdRequest(string text)
+public bool holdRequest(string text)
 {
     const value = paddedLower(text);
     foreach (phrase; [" hold off ", " hold on ", " hold that ", " hold the work ",

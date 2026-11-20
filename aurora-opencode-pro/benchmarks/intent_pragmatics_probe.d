@@ -29,6 +29,8 @@ struct Case
     /// True when the utterance arrives while work is already unfinished, so it
     /// amends or corrects that work instead of starting a task.
     bool warm;
+    /// True when the session already holds a task or goal, finished or not.
+    bool recorded;
 }
 
 private string label(RequestIntent intent) { return requestIntentName(intent); }
@@ -50,9 +52,9 @@ int main()
 {
     alias I = RequestIntent;
     Case[] corpus;
-    void expect(string category, string text, I[] accept, bool warm = false)
+    void expect(string category, string text, I[] accept, bool warm = false, bool recorded = false)
     {
-        corpus ~= Case(text, category, accept, warm);
+        corpus ~= Case(text, category, accept, warm, recorded || warm);
     }
 
     // A complaint about the product is a change request. A reader does not
@@ -91,6 +93,9 @@ int main()
     expect("correction-without-keyword", "you already have permission, just do it",
         [I.implementation, I.continuation], true);
     expect("correction-without-keyword", "you keep saying it's done but it isn't", [I.continuation], true);
+    // The same complaint after the app already marked the work complete still
+    // amends it; starting a task there archived the work being complained about.
+    expect("correction-without-keyword", "it is still too small", [I.continuation], false, true);
 
     // Ellipsis and anaphora: the instruction lives in the previous turn.
     expect("deictic-elision", "same for the tray menu", [I.continuation], true);
@@ -154,13 +159,14 @@ int main()
     writeln("== Labelled pragmatic corpus (resolved against work state) ==");
     foreach (ref c; corpus)
     {
-        const actual = resolvedRequestIntent(requestIntent(c.text), c.warm);
+        const actual = resolvedRequestIntent(requestIntent(c.text), c.warm, c.recorded);
         if (!(c.category in categoryTotal)) categoryOrder ~= c.category;
         ++categoryTotal[c.category];
         if (accepted(c, actual)) { ++passed; continue; }
         ++failed;
         ++categoryMissed[c.category];
-        writefln("FAIL [%s] \"%s\"%s", c.category, c.text, c.warm ? " (mid-work)" : "");
+        writefln("FAIL [%s] \"%s\"%s", c.category, c.text,
+            c.warm ? " (mid-work)" : c.recorded ? " (after completion)" : "");
         writefln("     classified %-14s expected %s", label(actual), acceptText(c));
         const workWanted = c.accept.canFind(I.implementation) || c.accept.canFind(I.continuation);
         if (workWanted && (actual == I.conversation || actual == I.clarification))
@@ -279,7 +285,7 @@ int main()
     string[] missed;
     foreach (verb; verbs)
     {
-        if (resolvedRequestIntent(requestIntent(verb ~ " the panel"), false) == I.implementation)
+        if (resolvedRequestIntent(requestIntent(verb ~ " the panel"), false, false) == I.implementation)
             ++recognized;
         else missed ~= verb;
     }
@@ -294,7 +300,7 @@ int main()
     // Harness integrity only. Mismatches above are measurements, not failures:
     // this probe reports the gap instead of asserting a shipping contract.
     assert(corpus.length > 0 && passed + failed == corpus.length);
-    assert(passed + failed == 62);
+    assert(passed + failed == 63);
 
     writeln("\nPROBE COMPLETE");
     return 0;

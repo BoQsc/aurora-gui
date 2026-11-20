@@ -21,7 +21,7 @@ breaks.
 
 | measurement | before | now |
 | --- | --- | --- |
-| natural utterances labelled correctly (62) | 20 | **62** |
+| natural utterances labelled correctly (63) | 20 | **63** |
 | mismatches that remove requested work | 41 | **0** |
 | bare imperatives recognised (80 verbs) | 9/9 listed, 0/72 unlisted | **80/80** |
 | approval / hold / permission guard probes | 6 miss | **0 miss** |
@@ -31,6 +31,20 @@ The old failure was one-sided: text the parser could not place became
 `conversation`, which returns before any objective exists
 (`source/auroraopencode/taskflow.d`), and `clarification` additionally told the
 model the request "asks for an explanation" (`source/auroraopencode/contextpolicy.d`).
+
+The probe is handler-level. `tests/verify_intent_live.py` drives the shipping
+executable through the real turn pipeline with a deterministic provider and reads
+the durable task state and the system prompts the app actually sent. It found two
+pipeline gaps the probe could not see:
+
+- a complaint after the app had marked the work complete started a **new** task
+  and archived the work being complained about, because "work active" only
+  counted unfinished work. An indicative-mood change now belongs to any recorded
+  work, finished or not.
+- "hold off for now" was read as a change request by sentence position and
+  continued the work. A hold is now its own decision in `acceptTaskRequest`:
+  keep the recorded outcome, start nothing, and the request guidance says the
+  user asked to hold.
 
 ## Design
 
@@ -46,7 +60,7 @@ decisions:
 | parse | work unfinished | nothing unfinished |
 | --- | --- | --- |
 | `indeterminate` | continuation | conversation |
-| `changeRequest` | continuation | implementation |
+| `changeRequest` | continuation | continuation when any work is recorded, else implementation |
 
 `workActive` is an active goal, or an objective whose task is not completed.
 `requestIntentName` still stores only the six turn values, so restored sessions
@@ -118,3 +132,9 @@ them pass:
 Run them with `python tests/run_architecture_checks.py <fixture>…`; all seven pass
 on this build. Each fixture pins its own plan mode, so the result does not depend
 on an ambient `AURORA_STRICT_PLAN`.
+
+End-to-end on the shipping executable:
+
+```text
+python tests/verify_intent_live.py --executable aurora-opencode-pro.exe
+```

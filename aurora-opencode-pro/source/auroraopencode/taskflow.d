@@ -155,7 +155,10 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId, b
     const corrective = correctiveFollowUpRequest(text) ||
         (continuationFragment(text) &&
          correctiveFollowUpRequest(previousUserRequest(session)));
-    scope(exit) if ((reportedFailureRequest(text) || corrective) &&
+    // A complaint about work already marked complete resumes it, and is also a
+    // report that its passing check did not hold.
+    bool resumedComplaint;
+    scope(exit) if ((reportedFailureRequest(text) || corrective || resumedComplaint) &&
         !workRestrictionRequest(text) && session.objective.length)
     {
         session.verificationStatus = "required";
@@ -168,9 +171,11 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId, b
     // The parse is deliberately conservative. The session decides what an
     // unplaced statement or an indicative-mood change means, and unfinished work
     // owns both: a defect report is the work in progress, not a new chat.
+    const parsed = requestIntent(text);
     const workActive = session.goalStatus == "active" ||
         (session.objective.length > 0 && session.taskStatus != "completed");
-    const intent = resolvedRequestIntent(requestIntent(text), workActive);
+    const recordedWork = session.goal.length > 0 || session.objective.length > 0;
+    const intent = resolvedRequestIntent(parsed, workActive, recordedWork);
     const name = requestIntentName(intent);
     if (intent == RequestIntent.conversation)
     {
@@ -196,14 +201,26 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId, b
         session.contract.currentIntent = name;
         return;
     }
+    // A hold is not work. Keep the recorded outcome, start nothing, and let the
+    // prompt say so; continuing it was the reported "stop does not stop" failure.
+    if (holdRequest(text))
+    {
+        session.contract.currentIntent = "conversation";
+        session.contract.blocker = "";
+        return;
+    }
     if (intent == RequestIntent.continuation &&
         (session.taskStatus == "completed" || !session.objective.length))
     {
-        if (corrective && session.objective.length)
+        // A complaint about just-completed work amends it. A bare "continue" after
+        // a finished task stays chat: it would resurrect archived work the user
+        // did not point at.
+        if ((corrective || parsed == RequestIntent.changeRequest) && session.objective.length)
         {
             session.contract.currentIntent = "continuation";
             session.taskStatus = "active";
             session.contract.blocker = "";
+            resumedComplaint = parsed == RequestIntent.changeRequest;
             return;
         }
         session.contract.currentIntent = "conversation";

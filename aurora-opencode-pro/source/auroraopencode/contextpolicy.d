@@ -7,7 +7,7 @@ import auroraopencode.taskcontext : taskContext;
 import auroraopencode.taskpolicy : requiredEvidence;
 import auroraopencode.taskflow : taskInvestigation;
 import auroraopencode.requestintent : RequestIntent, answerOnlyRequest, requestIntent,
-    controlInstructionText, continuationFragment;
+    controlInstructionText, continuationFragment, holdRequest;
 import auroraopencode.goalmode : goalActive, goalAnswerDelivered, goalPromptBlock;
 import std.array : appender, join, split;
 import std.algorithm : canFind, min, max;
@@ -73,6 +73,9 @@ public string durableTaskPrompt(const ref ChatSession session,
         prompt.put("The latest request asks for an explanation. Answer it from the " ~
             "evidence; do not resume desktop actions or reconcile the older checklist. " ~
             "Preserve the parent objective, current step and return point. The unfinished work remains recorded for resume.\n");
+    else if (holdRequest(currentRequest))
+        prompt.put("The user asked to hold the work. Do not start, resume or continue it; " ~
+            "keep the recorded outcome, current step and return point for when they resume.\n");
     else if (requestIntent(currentRequest) == RequestIntent.diagnosis)
         prompt.put("The latest request asks why. Diagnose the cause from evidence and resolve it with the correct change; " ~
             "do not stop at an explanation. Preserve the current objective and unfinished checklist, and do not " ~
