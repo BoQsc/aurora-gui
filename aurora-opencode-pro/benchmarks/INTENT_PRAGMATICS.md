@@ -116,4 +116,5 @@ them pass:
   approval of a finished investigation.
 
 Run them with `python tests/run_architecture_checks.py <fixture>…`; all seven pass
-on this build (`agent_workflow_contracts` needs `AURORA_STRICT_PLAN=1`).
+on this build. Each fixture pins its own plan mode, so the result does not depend
+on an ambient `AURORA_STRICT_PLAN`.

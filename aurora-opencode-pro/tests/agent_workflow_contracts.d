@@ -4,8 +4,10 @@ import auroraopencode.core;
 import auroraopencode.taskflow;
 import auroraopencode.taskcontinuation;
 import auroraopencode.requestintent : requestIntent, RequestIntent;
+import auroraopencode.planmode : setStrictPlanSetting;
 import std.conv : to;
 import std.json : JSONValue, parseJSON;
+import std.process : environment;
 import std.stdio : writeln;
 
 void append(ref ChatSession session, string role, string content, string tool = "")
@@ -24,6 +26,12 @@ void append(ref ChatSession session, string role, string content, string tool = 
 
 int main()
 {
+    // This fixture asserts tracked-plan evidence rules, which only apply in
+    // tracked mode. Pin the mode instead of inheriting an ambient
+    // AURORA_STRICT_PLAN, which is unset by default and made the plan-evidence
+    // assertions fail for reasons unrelated to the code under test.
+    environment["AURORA_STRICT_PLAN"] = "1";
+    setStrictPlanSetting(true);
     foreach (request; ["Plan how to fix the parser without changing files.", "Please plan the migration.",
             "Help me plan the refactor."])
         assert(requestIntent(request) == RequestIntent.analysis, request);
