@@ -1,10 +1,12 @@
 """Drive the shipping executable through the real turn pipeline for intent behaviour.
 
-One real app process answers the prompts in order. A deterministic local provider
-completes each turn with real native tools (plan, write, read, complete), so the
-console loop advances to the next prompt the way it does for a user. The evidence
-is what the app actually sent to the provider (the durable task state and the
-per-request guidance) and what it persisted in its own journal.
+The app is driven through its own session-server protocol: create one session,
+submit each prompt, and wait for that turn's completion event. A deterministic
+local provider answers with plain text, so no filesystem tool host is needed and
+the check runs in restricted launchers as well as a normal shell.
+
+The evidence is what the app actually sent to the provider (the durable task
+state and the per-request guidance) and what it persisted in its own journal.
 
 Scenarios:
 
@@ -22,6 +24,7 @@ import http.server
 import json
 import os
 from pathlib import Path
+import queue
 import subprocess
 import tempfile
 import threading
@@ -34,15 +37,8 @@ parser.add_argument('--dump', action='store_true', help='Print the requests and 
 args = parser.parse_args()
 
 
-def tool(identity, name, value):
-    return {'index': 0, 'id': identity, 'type': 'function',
-            'function': {'name': name, 'arguments': json.dumps(value)}}
-
-
 class Provider(http.server.BaseHTTPRequestHandler):
     captured = []
-    turn = None
-    round = 0
 
     def log_message(self, *_):
         pass
@@ -61,37 +57,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         Provider.captured.append(body)
-        humans = [m['content'] for m in body.get('messages', [])
-                  if m.get('role') == 'user' and isinstance(m.get('content'), str)]
-        latest = humans[-1] if humans else ''
-        if latest != Provider.turn:
-            Provider.turn, Provider.round = latest, 0
-        Provider.round += 1
-        if not body.get('tools'):
-            self.reply(content='Reported from existing evidence.')
-            return
-        rounds = {
-            # No objective field: a plan update may replace the accepted
-            # objective, and a fixture that echoes the prompt there would hide
-            # whichever task the app actually decided to own.
-            1: lambda: tool('p1', 'update_plan', {
-                'plan': [{'id': 'deliver', 'step': 'Deliver the requested change',
-                          'kind': 'edit', 'status': 'in_progress'}]}),
-            2: lambda: tool('w1', 'write', {'filePath': 'note.md', 'content': latest + '\n'}),
-            3: lambda: tool('r1', 'read', {'filePath': 'note.md'}),
-            4: lambda: tool('c1', 'update_plan', {
-                'plan_mode': 'patch',
-                'plan': [{'id': 'deliver', 'status': 'completed', 'evidence': ['w1', 'r1']}]}),
-        }
-        if Provider.round in rounds:
-            self.reply('', rounds[Provider.round]())
-        else:
-            self.reply(content='Delivered and read back note.md.')
-
-    def reply(self, content='', call=None):
-        delta = {'tool_calls': [call]} if call else {'content': content}
-        data = ('data: ' + json.dumps({'choices': [{'delta': delta, 'finish_reason': None}]}) + '\n\n' +
-                'data: ' + json.dumps({'choices': [{'delta': {}, 'finish_reason': 'tool_calls' if call else 'stop'}]}) +
+        data = ('data: ' + json.dumps({'choices': [{'delta': {'content': 'Reported as applied.'},
+                                                    'finish_reason': None}]}) + '\n\n' +
+                'data: ' + json.dumps({'choices': [{'delta': {}, 'finish_reason': 'stop'}]}) +
                 '\n\ndata: [DONE]\n\n').encode()
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
@@ -120,16 +88,6 @@ def latest_human(body):
     return humans[-1] if humans else ''
 
 
-def completed_turns(state):
-    journal = state / 'runtime-events.jsonl'
-    if not journal.is_file():
-        return 0
-    try:
-        return journal.read_text(encoding='utf-8', errors='replace').count('"type":"turn.completed"')
-    except OSError:
-        return 0
-
-
 def persisted(state):
     journal = state / 'runtime-events.jsonl'
     latest = {}
@@ -145,8 +103,68 @@ def persisted(state):
     return latest
 
 
+class SessionServer:
+    """The app's own JSONL session API, one submit per turn."""
+
+    def __init__(self, state, workspace, log):
+        environment = dict(os.environ, APPDATA=str(state.parent), AURORA_STRICT_PLAN='0')
+        self.process = subprocess.Popen(
+            [str(args.executable.resolve()), '--session-server',
+             '--state-dir', str(state), '--workspace', str(workspace)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True,
+            encoding='utf-8', errors='replace', env=environment)
+        self.events = queue.Queue()
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self):
+        for line in self.process.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                self.events.put(json.loads(line))
+            except ValueError:
+                self.events.put({'type': 'text', 'line': line})
+
+    def send(self, operation):
+        self.process.stdin.write(json.dumps(operation) + '\n')
+        self.process.stdin.flush()
+
+    def wait_for(self, kind, request_id=None, timeout=90):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                event = self.events.get(timeout=max(0.1, deadline - time.monotonic()))
+            except queue.Empty:
+                break
+            if event.get('type') != kind:
+                continue
+            if request_id is not None and event.get('requestId') != request_id:
+                continue
+            return event
+        return {}
+
+    def close(self):
+        try:
+            self.send({'type': 'shutdown'})
+            self.wait_for('bye', timeout=10)
+        except (OSError, ValueError):
+            pass
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=15)
+        try:
+            self.process.stdin.close()
+        except OSError:
+            pass
+
+
 def run(prompts):
-    """One real app process: isolated profile and workspace, deterministic provider."""
+    """One isolated profile; the prompts are submitted in order to one session."""
     directory = Path(tempfile.mkdtemp(prefix='intent-live-', dir=package / 'build'))
     workspace = directory / 'workspace'
     workspace.mkdir()
@@ -161,36 +179,29 @@ def run(prompts):
     (state / 'settings.json').write_text(json.dumps(settings), encoding='utf-8')
     start = len(Provider.captured)
     log = (directory / 'process.log').open('w', encoding='utf-8', errors='replace')
-    process = subprocess.Popen([str(args.executable.resolve()), '--headless-loop-json'],
-        cwd=workspace, stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT,
-        text=True, encoding='utf-8', errors='replace',
-        env=dict(os.environ, APPDATA=str(directory / 'appdata'), AURORA_STRICT_PLAN='0'))
-    process.stdin.write('\n'.join([*prompts, 'exit']) + '\n')
-    process.stdin.flush()
-    deadline = time.monotonic() + 120
+    app = SessionServer(state, workspace, log)
+    turns = {}
+    completed = 0
     try:
-        while time.monotonic() < deadline and completed_turns(state) < len(prompts):
-            if process.poll() is not None:
-                break
-            time.sleep(0.25)
+        app.wait_for('ready', timeout=60)
+        app.send({'type': 'create', 'id': 'intent', 'title': 'intent fixture',
+                  'model': 'intent-fixture', 'tools': True, 'workspace': str(workspace)})
+        app.wait_for('created', timeout=30)
+        for index, prompt in enumerate(prompts, start=1):
+            request_id = f'r{index}'
+            before = len(Provider.captured)
+            app.send({'type': 'submit', 'id': 'intent', 'requestId': request_id, 'text': prompt})
+            event = app.wait_for('turn.completed', request_id=request_id, timeout=90)
+            if event.get('type') == 'turn.completed':
+                completed += 1
+            turns[prompt] = Provider.captured[before:]
     finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=15)
-        try:
-            process.stdin.close()
-        except OSError:
-            pass
+        app.close()
         log.close()
     bodies = Provider.captured[start:]
     (directory / 'requests.json').write_text(json.dumps(bodies, indent=2), encoding='utf-8')
-    return dict(directory=directory, state=state, bodies=bodies,
-                turns={prompt: [b for b in bodies if latest_human(b) == prompt] for prompt in prompts},
-                session=persisted(state), completed=completed_turns(state))
+    return dict(directory=directory, state=state, bodies=bodies, turns=turns,
+                session=persisted(state), completed=completed, accepted=len(turns))
 
 
 def check(name, prompts, assertions):
