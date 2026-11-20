@@ -10,7 +10,8 @@ import auroraopencode.completionhandoff : completionHandoffInstruction;
 import auroraopencode.turnpolicy : hasIncompleteTaskSteps;
 import auroraopencode.taskflow : taskInvestigation, missingVerificationInput;
 import auroraopencode.taskcontext : taskExcerpt;
-import auroraopencode.requestintent : answerOnlyRequest, directQuestionRequest, requestIntent, RequestIntent;
+import auroraopencode.requestintent : answerOnlyRequest, directQuestionRequest,
+    explanationOnlyRequest, requestIntent, stateQuestionRequest, RequestIntent;
 import auroraopencode.orchestrator : experimentalOrchestratorFilterTools;
 import std.json : JSONValue, JSONType, parseJSON;
 
@@ -84,9 +85,14 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     // repair still needs the tools to deliver a result, even when it is phrased
     // as a question. Withholding them made the model print its lookup as XML
     // call text, which the transcript then showed as the answer.
+    // Answer-only means "no code change", not "no tools". Only a question whose
+    // answer is recorded state, or an explicit explanation request, can be
+    // answered without a lookup; otherwise a completed task left "what's in the
+    // log?" with no channel to read the log.
     const finalAnswer = policy.finalAnswer || (policy.toolsEnabled && !policy.diagnosticReview &&
         !policy.orchestratorEnabled && executionReadyToAnswer(session) &&
-        answerOnlyRequest(requestText) && directQuestionRequest(requestText));
+        answerOnlyRequest(requestText) &&
+        (explanationOnlyRequest(requestText) || stateQuestionRequest(requestText)));
     import auroraopencode.answercontract : answerContract;
     const responseContract = answerContract(requestText, policy.verbosity);
     if (policy.toolsEnabled)

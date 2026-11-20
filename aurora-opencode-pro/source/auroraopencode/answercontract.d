@@ -70,7 +70,8 @@ string answerContract(string request, string verbosity)
     else if (requestIntent(request) == RequestIntent.diagnosis)
         result ~= "This request asks for a cause: investigate it from evidence and resolve it when the cause is within reach. " ~
             "Do not stop at an explanation; state the cause and the fix that was applied, or name the concrete blocker.\n";
-    else if (requestIntent(request) == RequestIntent.implementation)
+    else if (requestIntent(request) == RequestIntent.implementation ||
+        requestIntent(request) == RequestIntent.changeRequest)
         result ~= "This is authorized implementation work: carry it through to the requested result. When the deliverable is a running " ~
             "program or visible UI, launch it and exercise the user's actual path; a compile or synthetic check is not proof of " ~
             "visible behavior. Do not hand back a build for the user to run.\n";

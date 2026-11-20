@@ -198,6 +198,7 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         const actionRequest = requestIntent(humanRequest) == RequestIntent.implementation ||
             requestIntent(humanRequest) == RequestIntent.continuation ||
             requestIntent(humanRequest) == RequestIntent.diagnosis ||
+            requestIntent(humanRequest) == RequestIntent.changeRequest ||
             actionApprovalRequest(humanRequest);
         if (session.goal.length && session.goalStatus != "active" &&
             !session.queuedFollowUps.length && !actionRequest)

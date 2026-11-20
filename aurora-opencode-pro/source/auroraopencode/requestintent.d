@@ -3,7 +3,12 @@ module auroraopencode.requestintent;
 import std.algorithm : canFind;
 import std.string : toLower, split, join, startsWith, strip;
 
-enum RequestIntent { conversation, clarification, diagnosis, analysis, implementation, continuation }
+/// `changeRequest` and `indeterminate` are parses, not turn decisions. An
+/// indicative-mood statement and text with no cue at all both need the session's
+/// work state before they mean anything; `resolvedRequestIntent` turns them into
+/// one of the six turn intents.
+enum RequestIntent { conversation, clarification, diagnosis, analysis, implementation,
+    continuation, changeRequest, indeterminate }
 
 private string[] requestWords(string text)
 {
@@ -39,6 +44,13 @@ private bool leadingQuestion(const(string)[] words)
 private bool explicitExplanationOnly(string text)
 {
     const normalized = text.toLower.split().join(" ");
+    // "Don't just explain it, fix it" emphasizes action. Reading the negated
+    // phrase as an explanation restriction inverted the user's emphasis and
+    // turned an emphatic repair order into an answer-only turn.
+    foreach (phrase; ["don't just explain", "dont just explain", "do not just explain",
+            "don't just tell", "dont just tell", "don't just answer",
+            "not just explain", "not just tell", "not just answer"])
+        if (normalized.canFind(phrase)) return false;
     foreach (phrase; ["answer only", "explain only", "explanation only",
             "just explain", "only explain", "just answer", "just tell me",
             "do not edit", "don't edit", "do not change", "don't change",
@@ -148,6 +160,143 @@ private bool statusQuestion(const(string)[] words)
     return true;
 }
 
+/// Lowercase, whitespace-collapsed text with sentence punctuation removed, so a
+/// phrase matches whether or not a comma or full stop sits next to it
+/// ("thanks, that's all").
+private string paddedLower(string text)
+{
+    char[] buffer;
+    buffer.reserve(text.length + 2);
+    foreach (ch; text.toLower)
+        buffer ~= (ch == ',' || ch == '.' || ch == '!' || ch == '?' ||
+            ch == ';' || ch == ':') ? ' ' : ch;
+    return " " ~ buffer.idup.split().join(" ") ~ " ";
+}
+
+private bool anyWord(const(string)[] words, const(string)[] wanted)
+{
+    foreach (word; wanted) if (words.canFind(word)) return true;
+    return false;
+}
+
+/// Wh-words ask for information. They keep a statement-shaped change cue from
+/// turning a genuine question ("what should be the default?") into work.
+private bool whQuestion(const(string)[] words)
+{
+    size_t i;
+    while (i < words.length &&
+        ["so", "now", "then", "please", "instead", "just", "and", "but"].canFind(words[i])) ++i;
+    return i < words.length && ["what", "what's", "whats", "how", "how's", "hows",
+        "why", "when", "where", "who", "which"].canFind(words[i]);
+}
+
+/// "Can you X", "is it possible to X" and "would it be hard to X" ask for X.
+/// Reading them as questions made an offered change an explanation request, so
+/// the turn answered instead of doing the work.
+private bool capabilityRequest(string text, const(string)[] words)
+{
+    if (anyWord(words, ["what", "what's", "whats", "how", "why", "when", "where",
+            "who", "which", "whether"])) return false;
+    const value = paddedLower(text);
+    foreach (frame; [" can you ", " could you ", " would you ", " will you ",
+            " is it possible ", " are you able ", " is there a way ", " any way to ",
+            " would it be hard ", " would it be easy ", " would it be possible ",
+            " would it be difficult ", " would it be feasible "])
+        if (value.canFind(frame)) return true;
+    return false;
+}
+
+/// A defect or a desired state stated without an imperative verb. Most users
+/// report work this way ("the icon is too small", "it keeps jumping"), and a
+/// verb-first parser read every one of them as casual conversation.
+private bool changeCue(string text)
+{
+    const value = paddedLower(text);
+    foreach (phrase; [" is too ", " are too ", " too small ", " too big ", " too slow ",
+            " too fast ", " too large ", " too narrow ", " too wide ", " too bright ",
+            " too dark ", " needs to ", " need to ", " should be ", " should probably ",
+            " shouldn't ", " would be nice ", " would be better ", " would be good ",
+            " it'd be nice ", " that'd be better ", " i'd like ", " i would like ",
+            " i want ", " i don't want ", " i dont want ", " keeps ", " keeps failing ",
+            " forgets ", " jumps ", " flickers ", " flicker ", " hangs ", " crashes ",
+            " crash ", " stutters ", " freezes ", " is slow ", " is broken ",
+            " is missing ", " is unusable ", " is off ", " looks off ", " looks wrong ",
+            " looks bad ", " is wrong ", " handled this better ", " the old version ",
+            " used to ", " was better ", " no way to ", " missing ", " leaks ", " lags ",
+            " doesn't work ", " does not work ", " won't ", " can't ", " cannot ",
+            " isn't working ", " aren't ", " always ", " never ", " from now on ",
+            " scrap that ", " go back to ", " roll back ",
+            " don't just ", " dont just ", " do not just ", " not just "])
+        if (value.canFind(phrase)) return true;
+    return false;
+}
+
+/// Instructions whose verb lives in the previous turn.
+private bool elidedRequest(string text)
+{
+    const value = paddedLower(text);
+    foreach (phrase; [" same for ", " same with ", " and the other ",
+            " the other one ", " the second one ", " the first one ", " likewise ",
+            " do the same ", " and then the ", " the rest of them "])
+        if (value.canFind(phrase)) return true;
+    import std.regex : matchFirst;
+    return cast(bool) matchFirst(value, `\bdo (?:step )?\d`);
+}
+
+/// "keep going" and "carry on" continue the current work without naming it.
+private bool continuesWork(string text)
+{
+    const value = paddedLower(text);
+    foreach (phrase; [" keep going ", " go on ", " carry on ", " keep at it ",
+            " keep working ", " next step ", " the next one ", " next one ",
+            " finish the rest ", " do the rest ", " the remaining "])
+        if (value.canFind(phrase)) return true;
+    return false;
+}
+
+/// Greetings and short acknowledgements carry no work. "hello" and "thanks" sat
+/// in the question-word list, so a greeting took the answer-only path.
+private bool socialPhrase(string text)
+{
+    const words = requestWords(text);
+    if (words.length > 4) return false;
+    const value = paddedLower(text);
+    foreach (phrase; [" hello ", " hi ", " hey ", " thanks ", " thank you ",
+            " good morning ", " good night ", " cool ", " nice ", " cheers ",
+            " bye ", " good job ", " well done "])
+        if (value.canFind(phrase)) return true;
+    return false;
+}
+
+/// A bare imperative does not need to be in the verb list: sentence position
+/// already marks it as an instruction ("hide the empty categories"). Enumerating
+/// verbs made every unlisted one read as conversation, so 72 of 72 measured
+/// imperatives outside the list were dropped.
+private bool leadingImperative(string text, const(string)[] words)
+{
+    if (words.length < 2) return false;
+    const stripped = text.strip;
+    if (stripped.length && stripped[$ - 1] == '?') return false;
+    static immutable string[] nonVerbs = ["not", "don't", "dont", "no", "yes", "yeah", "yep", "ok",
+        "okay", "sure", "maybe", "well", "so", "but", "and", "or", "the", "a", "an",
+        "it", "this", "that", "these", "those", "i", "you", "we", "they", "he", "she",
+        "there", "here", "please", "now", "then", "also", "just", "only", "still",
+        "never", "always", "wait", "hmm", "uh", "oh", "ah", "hello", "hi", "hey",
+        "won't", "can't", "cannot", "isn't", "aren't", "doesn't", "didn't",
+        "wasn't", "weren't", "shouldn't", "wouldn't", "couldn't",
+        "thanks", "what", "how", "why", "when", "where", "who", "which", "is", "are",
+        "was", "were", "am", "do", "does", "did", "can", "could", "would", "should",
+        "will", "may", "might", "shall", "have", "has", "had", "any", "some", "if",
+        "while", "because", "before", "after", "about", "for", "from", "with",
+        "without", "to", "at", "on", "in", "of", "by", "as", "than", "very",
+        "really", "again", "too", "all", "both", "each", "every", "same", "other",
+        "another", "next", "last", "first", "second", "third", "status", "recap",
+        "explain", "describe", "summarize", "summarise", "answer", "plan", "analyze",
+        "analyse", "review", "inspect", "check", "compare", "evaluate", "diagnose",
+        "investigate", "research", "audit", "find", "look", "examine"];
+    return !nonVerbs.canFind(words[0]);
+}
+
 /// Feedback that the work in progress is still wrong. It often has no action
 /// verb of its own, so the generic parser would classify it as casual
 /// conversation and stop the turn before the correction was applied.
@@ -158,6 +307,10 @@ bool correctiveFollowUpRequest(string text)
             " second time ", " third time ",
             " not fixing ", " not doing anything ", " not doing anythign ",
             " not what i asked ", " not what was asked ", " not what i wanted ",
+            " you're editing ", " you are editing ", " wrong file ", " wrong panel ",
+            " wrong one ", " that's not what ", " that is not what ",
+            " no, the ", " no, not ", " not that one ", " wait, not ",
+            " you keep saying ", " you said it was fixed ",
             " keeps failing ", " keeps happening ", " failed again ",
             " still not ", " still broken ", " still failing ", " still not working ",
             " still does not ", " still doesn't ", " still cannot ", " still can't ",
@@ -230,6 +383,7 @@ RequestIntent requestIntent(string text)
                 "investigate", "research", "audit", "find", "look", "examine"].canFind(word)) analysis = true;
     }
     if (continuation) return RequestIntent.continuation;
+    if (continuesWork(text)) return RequestIntent.continuation;
     // An explicit answer-only restriction wins over a correction so the
     // requested scope is preserved ("explain why it is still broken; do not
     // change anything").
@@ -258,9 +412,18 @@ RequestIntent requestIntent(string text)
     // not a request to stop at an explanation; only an explicit explain-only
     // instruction above remains answer-only.
     if (words.canFind("why")) return RequestIntent.diagnosis;
+    // A change request does not need an imperative verb that the list knows:
+    // a capability frame, an indicative-mood statement, an elided instruction or
+    // sentence position all carry it. These stay parses; the caller resolves them
+    // against the session's unfinished work.
+    if (capabilityRequest(text, words)) return RequestIntent.changeRequest;
+    if (socialPhrase(text)) return RequestIntent.conversation;
+    if (!whQuestion(words) && changeCue(text)) return RequestIntent.changeRequest;
+    if (elidedRequest(text)) return RequestIntent.changeRequest;
     if (leadingQuestion(words) || words.canFind("explanation"))
         return RequestIntent.clarification;
-    return RequestIntent.conversation;
+    if (leadingImperative(text, words)) return RequestIntent.changeRequest;
+    return RequestIntent.indeterminate;
 }
 
 string requestIntentName(RequestIntent intent)
@@ -273,6 +436,10 @@ string requestIntentName(RequestIntent intent)
         case RequestIntent.analysis: return "analysis";
         case RequestIntent.implementation: return "implementation";
         case RequestIntent.continuation: return "continuation";
+        // Stored contract intent keeps the six turn values so restored sessions
+        // and older builds read the same state.
+        case RequestIntent.changeRequest: return "implementation";
+        case RequestIntent.indeterminate: return "conversation";
     }
 }
 
@@ -286,6 +453,40 @@ bool explanationOnlyRequest(string text)
 }
 
 bool answerOnlyRequest(string text) { return requestIntent(text) == RequestIntent.clarification; }
+
+/// A question whose answer is recorded task state needs no lookup. Without this
+/// the tool-free final answer fired for any direct question, so "what's in the
+/// log?" had no channel to read the log.
+bool stateQuestionRequest(string text)
+{
+    const words = requestWords(text);
+    foreach (noun; ["left", "remaining", "status", "steps", "step", "plan", "goal",
+            "progress", "queue", "next", "summary", "cost", "tokens", "turns",
+            "chats", "objective", "blocker"])
+        if (words.canFind(noun)) return true;
+    return false;
+}
+
+/// Turn a parse into a turn intent using the session's work state. While work is
+/// unfinished, unplaced text and an indicative-mood change belong to that work;
+/// with nothing unfinished a change starts a task and unplaced text stays chat.
+RequestIntent resolvedRequestIntent(RequestIntent parsed, bool workActive)
+{
+    final switch (parsed)
+    {
+        case RequestIntent.indeterminate:
+            return workActive ? RequestIntent.continuation : RequestIntent.conversation;
+        case RequestIntent.changeRequest:
+            return workActive ? RequestIntent.continuation : RequestIntent.implementation;
+        case RequestIntent.conversation:
+        case RequestIntent.clarification:
+        case RequestIntent.diagnosis:
+        case RequestIntent.analysis:
+        case RequestIntent.implementation:
+        case RequestIntent.continuation:
+            return parsed;
+    }
+}
 
 /// Internal control records can be appended as user-role messages so the model
 /// sees them, but they are not user instructions and must never become a new
@@ -341,7 +542,24 @@ bool directQuestionRequest(string text)
 /// restriction: its answer is delivered and the goal keeps owning the work.
 bool workRestrictionRequest(string text)
 {
-    return explicitExplanationOnly(text) || explanationOnlyRequest(text);
+    return explicitExplanationOnly(text) || explanationOnlyRequest(text) || holdRequest(text);
+}
+
+/// A hold is not an explanation, but it withholds work just the same. An active
+/// goal kept running after "hold off for now" because only explanation requests
+/// counted as restrictions.
+private bool holdRequest(string text)
+{
+    const value = paddedLower(text);
+    foreach (phrase; [" hold off ", " hold on ", " hold that ", " hold the work ",
+            " not yet ", " not now ", " don't do anything ", " dont do anything ",
+            " do nothing ", " leave it for now ", " stay put ", " wait for now ",
+            " wait a moment ", " wait a bit ", " wait a minute ", " let me check ",
+            " let me look ", " let me think ", " give me a moment ", " one moment ",
+            " stop for now ", " stand by ", " pause for now ", " pause this ",
+            " pause the work "])
+        if (value.canFind(phrase)) return true;
+    return false;
 }
 
 /// A cause-seeking follow-up must not resume desktop input, even though it does
@@ -389,8 +607,17 @@ bool actionApprovalRequest(string text)
     // own; a following directive is the same authorization. A question,
     // diagnosis or explanation after the approval still asks for an answer.
     const normalized = text.toLower.strip;
+    // Delegation transfers the decision to the agent, which authorizes the work
+    // it already described just as "go ahead" does.
+    foreach (delegation; ["you decide", "you choose", "you pick", "your call",
+            "your choice", "up to you", "whatever you think", "whatever you prefer",
+            "whatever works", "whichever you think", "whichever you prefer",
+            "use your judgment", "use your judgement", "use your best judgment",
+            "your best judgment", "your judgment", "your judgement"])
+        if (normalized.startsWith(delegation)) return true;
     static immutable string[] approvalPrefixes = ["go ahead", "carry on",
-        "yes", "yeah", "yep", "sure", "ok", "okay", "proceed"];
+        "sounds good", "that works", "yes", "yeah", "yep",
+        "sure", "ok", "okay", "proceed"];
     foreach (prefix; approvalPrefixes)
     {
         if (!normalized.startsWith(prefix)) continue;
@@ -435,12 +662,16 @@ bool correctiveActionRequest(string text)
 bool permissionQuestionReply(string text)
 {
     const lower = text.toLower;
-    if (!lower.canFind("?")) return false;
+    // Phrases first: "I can do that if you want." asks permission without a
+    // question mark, and reading it as a completed outcome settled the turn.
     foreach (phrase; ["would you like me to", "should i ", "may i ",
             "do you want me to", "shall i ", "can i proceed", "could i proceed",
             "do you want to proceed", "please confirm", "would you prefer",
             "which option do you prefer", "which approach would you like",
-            "let me know if you want me to", "let me know if you'd like me to"])
+            "let me know if you want me to", "let me know if you'd like me to",
+            "if you want me to", "if you'd like me to", "if you want",
+            "if you'd like", "say the word", "let me know and i", "want me to",
+            "happy to do that if", "just say go"])
         if (lower.canFind(phrase)) return true;
     return false;
 }

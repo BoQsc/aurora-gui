@@ -101,7 +101,10 @@ bool initializeLegacyTask(ref ChatSession session)
             if (session.messages[index].role == "user" && !session.messages[index].internal &&
                 session.messages[index].content.strip() == session.objective.strip())
             { anchor = session.messages[index].id; break; }
-        if (!anchor.length && originalIntent != RequestIntent.conversation && originalIntent != RequestIntent.continuation && originalIntent != RequestIntent.clarification)
+        if (!anchor.length && originalIntent != RequestIntent.conversation &&
+            originalIntent != RequestIntent.continuation &&
+            originalIntent != RequestIntent.clarification &&
+            originalIntent != RequestIntent.indeterminate)
             foreach_reverse (index; path)
                 if (session.messages[index].role == "user" && !session.messages[index].internal &&
                     requestIntent(session.messages[index].content) == originalIntent)
@@ -115,7 +118,8 @@ bool initializeLegacyTask(ref ChatSession session)
     session.contract.id = anchor; session.contract.startMessageId = anchor;
     if (!session.contract.requestedOutcome.length) session.contract.requestedOutcome = session.objective;
     auto intent = requestIntent(session.objective);
-    if (intent == RequestIntent.conversation || intent == RequestIntent.continuation)
+    if (intent == RequestIntent.conversation || intent == RequestIntent.continuation ||
+        intent == RequestIntent.indeterminate)
         intent = session.taskSteps.length ? RequestIntent.implementation : intent;
     session.contract.intent = requestIntentName(intent);
     if (!session.contract.currentIntent.length || session.contract.currentIntent == "conversation")
@@ -161,7 +165,12 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId, b
     if (!session.contract.goal.length && session.goal.length &&
         (session.contract.requestedOutcome == session.goal || session.objective == session.goal ||
          session.goalStatus == "active")) session.contract.goal = session.goal;
-    const intent = requestIntent(text);
+    // The parse is deliberately conservative. The session decides what an
+    // unplaced statement or an indicative-mood change means, and unfinished work
+    // owns both: a defect report is the work in progress, not a new chat.
+    const workActive = session.goalStatus == "active" ||
+        (session.objective.length > 0 && session.taskStatus != "completed");
+    const intent = resolvedRequestIntent(requestIntent(text), workActive);
     const name = requestIntentName(intent);
     if (intent == RequestIntent.conversation)
     {
@@ -254,6 +263,10 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId, b
     if (intent == RequestIntent.implementation &&
         (session.contract.intent == "analysis" || session.contract.intent == "conversation" ||
             session.contract.intent == "diagnosis"))
+        session.contract.intent = "implementation";
+    // Approving a finished investigation authorizes the implementation it
+    // described, whatever the parse of the approval word itself resolved to.
+    if (approval && session.contract.intent == "analysis")
         session.contract.intent = "implementation";
     session.contract.currentIntent = name;
     if (suppliedFact || approval) session.contract.currentIntent = "continuation";
@@ -564,7 +577,9 @@ bool taskHasActionEvidence(const ref ChatSession session, bool includeResearch =
     const current = latestTaskRequest(session);
     const intent = requestIntent(current);
     const changedArtifact = artifactChangeRequested(current) ||
-        ((!current.length || intent == RequestIntent.continuation || intent == RequestIntent.conversation || intent == RequestIntent.clarification) &&
+        ((!current.length || intent == RequestIntent.continuation ||
+            intent == RequestIntent.conversation || intent == RequestIntent.clarification ||
+            intent == RequestIntent.changeRequest || intent == RequestIntent.indeterminate) &&
             artifactChangeRequested(session.contract.requestedOutcome));
     // An explicit current behavioral receipt can establish that a reported
     // defect is already resolved. Do not force a meaningless implementation edit.
