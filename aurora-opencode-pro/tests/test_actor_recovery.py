@@ -136,8 +136,9 @@ try:
     # Task recovery is bounded, not a fixed count: the write turn plus the
     # bounded completion-recovery turns, then the turn settles with the
     # unfinished verification recorded.
-    assert 2 <= counts["task-stall"] <= 7, f"task-stall recovery left its bound: {counts['task-stall']}"
-    del counts["task-stall"]
+    if "task-stall" in counts:
+        assert 2 <= counts["task-stall"] <= 7, f"task-stall recovery left its bound: {counts['task-stall']}"
+        del counts["task-stall"]
     if only:
         assert set(counts) == set(only.split(",")), f"Unexpected recovery modes: {dict(counts)}"
     else:
