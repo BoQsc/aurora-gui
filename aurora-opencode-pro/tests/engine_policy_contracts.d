@@ -108,10 +108,19 @@ int main()
     prepared = prepareAgentRequest(session, request);
     assert(prepared.messages[$ - 1].content.indexOf("Outcome check before the final reply") < 0);
     assert(prepared.messages[$ - 1].content.indexOf("hovering Checkpoint") >= 0);
-    assert(prepared.tools.length == 0 && session.taskSteps[0].status == "completed",
-        "Verified completion exposed tools for another audit or rewrote the plan");
+    // A verified change request keeps its tools: its answer is the delivered
+    // change, not prose. Only a question answered from recorded state or an
+    // explicit explanation request gets the tool-free final answer.
+    assert(prepared.tools.length == 2 && session.taskSteps[0].status == "completed",
+        "A verified change request lost its tools or rewrote the plan");
     session.taskSteps[0].status = "in_progress";
     assert(prepareAgentRequest(session, request).messages[$ - 1].content.indexOf("Outcome check before the final reply") < 0);
+    session = ChatSession.init;
+    session.verificationStatus = "passed";
+    append(session, "user", "What is the current status?");
+    prepared = prepareAgentRequest(session, request);
+    assert(prepared.tools.length == 0,
+        "A status question answered from recorded state still exposed tools");
     writeln("PASS turn decisions preserve evidence, steering, goals and delegation; request modes isolate capabilities");
     return 0;
 }
