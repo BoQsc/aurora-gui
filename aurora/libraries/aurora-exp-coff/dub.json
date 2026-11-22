@@ -1,0 +1,59 @@
+{
+  "name": "aurora-exp-coff",
+  "description": "COFF object reader and linker foundation for Aurora",
+  "authors": [
+    "Aurora libraries"
+  ],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
+  "version": "0.1.0",
+  "targetType": "library",
+  "sourcePaths": [
+    "source"
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
+  "configurations": [
+    {
+      "name": "library",
+      "targetType": "library",
+      "targetName": "aurora-exp-coff"
+    },
+    {
+      "name": "inspect",
+      "targetType": "executable",
+      "targetName": "coff-inspect",
+      "mainSourceFile": "tests/inspect.d"
+    },
+    {
+      "name": "link",
+      "targetType": "executable",
+      "targetName": "coff-link",
+      "mainSourceFile": "tests/link.d"
+    },
+    {
+      "name": "archive",
+      "targetType": "executable",
+      "targetName": "coff-archive",
+      "mainSourceFile": "tests/archive.d"
+    }
+  ],
+  "dependencies": {
+    "aurora-exp-win32-image": {
+      "path": "../aurora-exp-win32-image"
+    }
+  }
+}

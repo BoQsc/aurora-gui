@@ -1719,7 +1719,7 @@ final class PreviewWidget : Widget
             });
         if (_inlineFontPicker !is null)
         {
-            _inlineFontPicker.setConsumeAnchorPress(true);
+
             _inlineFontPicker.onDismissed = delegate()
             {
                 _inlineFontPicker = null;

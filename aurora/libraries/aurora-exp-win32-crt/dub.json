@@ -1,0 +1,39 @@
+{
+  "name": "aurora-exp-win32-crt",
+  "description": "Aurora-owned C runtime: entry point, heap, strings, ctype, console, and file primitives",
+  "authors": [
+    "Aurora libraries"
+  ],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
+  "version": "0.1.0",
+  "targetType": "library",
+  "sourcePaths": [
+    "source"
+  ],
+  "libs-windows": [
+    "kernel32"
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
+  "configurations": [
+    {
+      "name": "library",
+      "targetType": "library",
+      "targetName": "aurora-exp-win32-crt"
+    }
+  ]
+}

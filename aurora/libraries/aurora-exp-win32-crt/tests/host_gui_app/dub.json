@@ -1,0 +1,62 @@
+{
+  "name": "host-gui-zero-crt",
+  "description": "Verification fixture: windowed aurora-host linked with the Aurora CRT",
+  "authors": [
+    "Aurora libraries"
+  ],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
+  "sourcePaths": [
+    "../../../../../aurora/aurora-host/source",
+    "../../../../../aurora/aurora-host/generated"
+  ],
+  "stringImportPaths": [
+    "../../../../../aurora/aurora-host/assets"
+  ],
+  "targetName": "host-zero-crt-gui",
+  "targetType": "executable",
+  "targetPath": "build",
+  "mainSourceFile": "../../../../../aurora/aurora-host/source/aurorahost/main.d",
+  "dflags-windows": [
+    "-mscrtlib=msvcrt"
+  ],
+  "libs-windows": [
+    "user32",
+    "gdi32"
+  ],
+  "lflags-windows": [
+    "/NODEFAULTLIB:msvcrt",
+    "/NODEFAULTLIB:libcmt",
+    "/NODEFAULTLIB:oldnames",
+    "/ENTRY:mainCRTStartup",
+    "kernel32.lib",
+    "/EXPORT:_tls_used",
+    "/EXPORT:_tls_index"
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
+  "dependencies": {
+    "aurora-d": {
+      "path": "../../../../../aurora/aurora-d"
+    },
+    "aurora-standard": {
+      "path": "../../../../../aurora/aurora-standard"
+    },
+    "aurora-exp-win32-crt": {
+      "path": "../.."
+    }
+  }
+}

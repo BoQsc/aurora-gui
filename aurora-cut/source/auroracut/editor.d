@@ -1790,7 +1790,7 @@ final class EditorRoot : VBox
             content, PopupPlacement.below, Size(520, 220));
         if (_resolutionPopup !is null)
         {
-            _resolutionPopup.setConsumeAnchorPress(true);
+
             _resolutionPopup.onDismissed = delegate() { _resolutionPopup = null; };
             widthField.requestFocus();
         }
@@ -1919,7 +1919,7 @@ final class EditorRoot : VBox
             content, PopupPlacement.below, Size(430, 195));
         if (_compressOutputPopup !is null)
         {
-            _compressOutputPopup.setConsumeAnchorPress(true);
+
             _compressOutputPopup.onDismissed = delegate() {
                 _compressOutputPopup = null;
             };
@@ -3160,7 +3160,7 @@ final class EditorRoot : VBox
             content, PopupPlacement.below, Size(560, 320));
         if (_downloadPopup !is null)
         {
-            _downloadPopup.setConsumeAnchorPress(true);
+
             _downloadPopup.onDismissed = delegate() {
                 _downloadPopup = null;
                 _ytDlpQualityButton = null;
@@ -3940,7 +3940,7 @@ final class EditorRoot : VBox
             content, PopupPlacement.below, Size(440, 400));
         if (_historyPopup !is null)
         {
-            _historyPopup.setConsumeAnchorPress(true);
+
             _historyPopup.onDismissed = delegate() {
                 _historyPopup = null;
                 _historyList = null;
@@ -6164,7 +6164,7 @@ final class EditorRoot : VBox
             });
         if (_fontPickerPopup !is null)
         {
-            _fontPickerPopup.setConsumeAnchorPress(true);
+
             _fontPickerPopup.onDismissed = delegate()
             {
                 _fontPickerPopup = null;
