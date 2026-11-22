@@ -84,17 +84,14 @@ def main() -> int:
             opened, buffer = exchange(sock, buffer, ids, "menu",
                                       node="lite-commands")
             items = menu_items(opened)
-            if not any(item.get("label") == "Active controls"
-                       for item in items):
-                raise RuntimeError(f"active controls missing: {items}")
-            exchange(sock, buffer, ids, "menuClick", index=0)
-            controls, buffer = exchange(sock, buffer, ids, "menuState")
             trigger = next(
-                (item for item in menu_items(controls)
-                 if item.get("label") == "Trigger preset-opencode"), None)
+                (item for item in items
+                 if item.get("label") ==
+                 "Trigger preset-opencode  [button lite-provider-opencode]"),
+                None)
             if trigger is None:
                 raise RuntimeError(
-                    f"action trigger not listed: {menu_items(controls)}")
+                    f"action trigger not listed: {items}")
             exchange(sock, buffer, ids, "menuClick", index=trigger["index"])
             print("command menu passed: active nodes listed and action triggered")
             return 0

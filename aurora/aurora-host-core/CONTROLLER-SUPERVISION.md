@@ -30,3 +30,21 @@ the app explicitly requests an isolated test group.
 6. A host must never quietly exit without recording run intent.
 7. Verification uses the live host when one exists; it must not launch a second
    copy of the app.
+
+## Window-state independence
+
+Host actions must remain usable when the window is minimized or behind another
+window. Development and verification must use the host control channel instead
+of requiring:
+
+- foreground activation
+- restoring or maximizing the window
+- full-screen capture
+- a visible transient popup
+
+`hostlite --start-minimized` is the policy test mode. Commands such as `tree`,
+`getText`, `setText`, and `trigger` must work while the window is minimized.
+`trigger` dispatches a node/action by id and deliberately ignores pointer
+coordinates, so it remains reliable when the window is minimized or covered.
+A user minimizing the app must never make controller or diagnostics actions
+unavailable.

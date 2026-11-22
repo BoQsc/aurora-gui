@@ -45,6 +45,7 @@ int main(string[] args)
     string instanceGroup;
     bool noActivate;
     ushort controllerPort = 8791;
+    bool startMinimized;
     for (size_t index = 1; index < args.length; ++index)
     {
         if (args[index] == "--scene" && index + 1 < args.length)
@@ -83,6 +84,8 @@ int main(string[] args)
             controllerPort = to!ushort(args[index + 1]);
             ++index;
         }
+        else if (args[index] == "--start-minimized")
+            startMinimized = true;
     }
     if (scenePath.length == 0)
         scenePath = embeddedScenePath();
@@ -114,7 +117,8 @@ int main(string[] args)
         auto registry = new NodeRegistry();
         const settings = loadSettings();
         environment["AURORA_RENDERER"] = "software";
-        auto window = createWindow(scene, registry, false, false, noActivate);
+        auto window = createWindow(scene, registry, startMinimized, false,
+            noActivate);
         const controllerExe = buildPath(dirName(thisExePath()),
             "aurora-opencode-lite-controller.exe");
         // Production default: isolate the controller in its own process so a

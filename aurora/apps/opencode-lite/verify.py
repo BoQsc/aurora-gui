@@ -213,6 +213,7 @@ def main() -> int:
     run([PYTHON, "-B", "tests/run_run_journal_test.py"])
     run([PYTHON, "-B", "tests/run_controller_supervisor_test.py"])
     run([PYTHON, "-B", "tests/run_command_menu_test.py"])
+    run([PYTHON, "-B", "tests/run_minimized_control_test.py"])
     run([DUB, "build", "--config=plugin", f"--compiler={COMPILER}"])
     run([DUB, "build", "--config=plugin-smoke", f"--compiler={COMPILER}"])
     run([DUB, "build", "--config=plugin-reload-test",

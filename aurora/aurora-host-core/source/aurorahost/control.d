@@ -530,6 +530,9 @@ class ControlServer
                 case "uiClick":
                     uiClick(requestId, document);
                     break;
+                case "trigger":
+                    trigger(requestId, document);
+                    break;
                 case "uiMove":
                     uiMove(requestId, document);
                     break;
@@ -1153,6 +1156,15 @@ class ControlServer
         extra["x"] = JSONValue(x);
         extra["y"] = JSONValue(y);
         respond(id, true, null, extra);
+    }
+
+    /** Dispatch a scene action by node id without pointer or window geometry. */
+    private void trigger(long id, JSONValue document)
+    {
+        const node = requireString(document, "node");
+        const action = requireString(document, "action");
+        _registry.dispatchAction(node, action);
+        respond(id, true);
     }
 
     private void uiMove(long id, JSONValue document)

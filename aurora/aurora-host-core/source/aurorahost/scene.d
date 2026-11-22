@@ -1518,34 +1518,30 @@ private ContextMenuItem[] buildCommandItems(NodeRegistry registry, string selfId
         auto widget = registry.widget(id);
         if (widget is null)
             continue;
-        ContextMenuItem[] actions;
-        if (widget.focusable() && widget.enabled() && widget.visible())
-        {
-            actions ~= ContextMenuItem.command("Focus", IconKind.none,
-                delegate() { widget.requestFocus(); }, "", true);
-        }
         const action = registry.action(id);
         if (action.length > 0)
         {
-            actions ~= ContextMenuItem.command("Trigger " ~ action,
-                IconKind.none, delegate()
+            const label = "Trigger " ~ action ~ "  [" ~
+                registry.type(id) ~ " " ~ id ~ "]";
+            controls ~= ContextMenuItem.command(label, IconKind.none,
+                delegate()
                 {
                     registry.dispatchAction(id, action);
                 }, "", true);
         }
-        if (actions.length == 0)
-            continue;
-        const label = registry.type(id) ~ " " ~ id;
-        controls ~= ContextMenuItem.submenuItem(label, IconKind.none,
-            actions, true);
+        else if (widget.focusable() && widget.enabled() && widget.visible())
+        {
+            controls ~= ContextMenuItem.command(
+                "Focus  [" ~ registry.type(id) ~ " " ~ id ~ "]",
+                IconKind.none, delegate() { widget.requestFocus(); }, "", true);
+        }
     }
     if (controls.length == 0)
     {
         controls ~= ContextMenuItem.command("No active controls",
             IconKind.none, null, "", false);
     }
-    return [ContextMenuItem.submenuItem("Active controls", IconKind.none,
-        controls, true)];
+    return controls;
 }
 
 Widget buildWidget(const SceneNode node, NodeRegistry registry)
