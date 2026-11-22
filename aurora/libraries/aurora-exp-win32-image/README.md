@@ -150,3 +150,10 @@ These are separate laboratory milestones, not hidden gaps:
 D runtime and Phobos only; no `aurora-d` dependency. Source is 0BSD. Structures
 are written from the documented PE/COFF format; no Windows SDK header or
 Microsoft CRT source is copied or translated.
+
+## GUI inspector
+
+[`../aurora-exp-win32-inspector`](../aurora-exp-win32-inspector) is the friendly
+front end: it opens an image, shows this coverage, verifies the rebuild, emits
+the minimal executable, and runs it with the loader. It is a separate package so
+this library stays free of GUI dependencies.

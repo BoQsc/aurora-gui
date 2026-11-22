@@ -1,0 +1,96 @@
+{
+  "name": "aurora-exp-win32-inspector",
+  "description": "GUI inspector and manager for the Aurora Win32 binary-format laboratory",
+  "authors": [
+    "Aurora libraries"
+  ],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
+  "version": "0.1.0",
+  "sourcePaths": [
+    "source"
+  ],
+  "dependencies": {
+    "aurora-d": {
+      "path": "../../aurora-d"
+    },
+    "aurora-exp-win32-image": {
+      "path": "../aurora-exp-win32-image"
+    }
+  },
+  "libs-windows": [
+    "user32",
+    "gdi32",
+    "shell32"
+  ],
+  "libs-linux": [
+    "X11",
+    "dl"
+  ],
+  "lflags-osx": [
+    "-framework",
+    "AppKit",
+    "-framework",
+    "CoreGraphics",
+    "-framework",
+    "CoreFoundation",
+    "-framework",
+    "QuartzCore",
+    "-lobjc"
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
+  "configurations": [
+    {
+      "name": "default",
+      "targetType": "executable",
+      "targetName": "win32-inspector",
+      "mainSourceFile": "source/app.d",
+      "lflags-windows": [
+        "/SUBSYSTEM:WINDOWS",
+        "/ENTRY:mainCRTStartup"
+      ]
+    },
+    {
+      "name": "headless-smoke",
+      "targetType": "executable",
+      "targetName": "win32-inspector-headless",
+      "mainSourceFile": "tests/headless_smoke.d",
+      "versions": [
+        "AuroraHeadless"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "shell32"
+      ]
+    },
+    {
+      "name": "interaction",
+      "targetType": "executable",
+      "targetName": "win32-inspector-interaction",
+      "mainSourceFile": "tests/interaction.d",
+      "versions": [
+        "AuroraHeadless"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "shell32"
+      ]
+    }
+  ]
+}
