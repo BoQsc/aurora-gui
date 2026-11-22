@@ -3,13 +3,11 @@ module aurorahost.main;
 version (Windows)
     import aurorahost.crt.msvcrt_shim;
 
-import aurorahost.control : ControlServer;
 import aurorahost.dev_panel : DevPanel, DevProject;
-import aurorahost.tcp_control : TcpControl;
-import aurorahost.events : HostEvent;
 import aurorahost.protocol : Capabilities, HostVersion,
     NodeTypes, ProtocolVersion, SchemaVersion;
-import aurorahost.scene : applyScene, createWindow, describeScene,
+import aurorahost.runtime : runHostWindow;
+import aurorahost.scene : createWindow, describeScene,
     loadScene, NodeRegistry, Scene;
 import aurora.standard.text.unicode.properties : UnicodeDataVersion;
 import aurora : GuiWindow;
@@ -17,8 +15,7 @@ import aurora : GuiWindow;
 import std.algorithm : canFind;
 import std.array : join;
 import std.conv : to;
-import std.datetime : SysTime;
-import std.file : exists, getcwd, mkdirRecurse, readText, timeLastModified, write;
+import std.file : exists, getcwd, mkdirRecurse, readText, write;
 import std.path : buildPath, dirName;
 import std.stdio : stderr, stdout, writeln;
 
@@ -70,112 +67,7 @@ private int renderScene(const Scene scene, string outputPath)
     return 0;
 }
 
-private class SceneWatcher
-{
-    private string _path;
-    private GuiWindow _window;
-    private NodeRegistry _registry;
-    private SysTime _stamp;
-
-    this(string path, GuiWindow window, NodeRegistry registry)
-    {
-        _path = path;
-        _window = window;
-        _registry = registry;
-        _stamp = timeLastModified(path);
-    }
-
-    void poll()
-    {
-        SysTime stamp;
-        try
-            stamp = timeLastModified(_path);
-        catch (Exception)
-            return;
-        if (stamp <= _stamp)
-            return;
-        _stamp = stamp;
-        try
-        {
-            const scene = loadScene(_path);
-            applyScene(_window, scene, _registry);
-            stderr.writeln("reloaded: " ~ describeScene(scene));
-            stderr.flush();
-        }
-        catch (Exception error)
-        {
-            stderr.writeln("aurora-host: reload failed: " ~ error.msg);
-            stderr.flush();
-        }
-    }
-}
-
-private int runWindowed(GuiWindow window, NodeRegistry registry, bool control,
-    string scenePath, bool watch, ushort listenPort = 0)
-{
-    ControlServer server;
-    if (control || listenPort != 0)
-    {
-        server = new ControlServer(window, registry, scenePath);
-        server.stdoutEnabled(control);
-        registry.onActivate = delegate(string id)
-        {
-            server.eventActivated(id);
-        };
-        registry.onAction = delegate(string node, string action)
-        {
-            server.eventAction(node, action);
-        };
-        registry.onEvent = delegate(HostEvent event)
-        {
-            server.eventInput(event);
-        };
-    }
-    TcpControl tcp;
-    if (listenPort != 0)
-    {
-        tcp = new TcpControl(server, listenPort);
-        tcp.start();
-    }
-    SceneWatcher watcher;
-    if (watch)
-        watcher = new SceneWatcher(scenePath, window, registry);
-    if (control || listenPort != 0 || watch || registry.onService !is null)
-    {
-        window.applicationService = delegate(double delta)
-        {
-            if (registry.onService !is null)
-                registry.onService(delta);
-            if (watcher !is null)
-                watcher.poll();
-            if (server !is null)
-            {
-                server.service(delta);
-                server.drain();
-            }
-        };
-    }
-    if (server !is null)
-    {
-        server.start();
-        writeln("READY");
-        if (listenPort != 0)
-            writeln("LISTEN 127.0.0.1:", listenPort);
-        stdout.flush();
-    }
-    stdout.writeln("aurora-host: renderer=", window.rendererName(),
-        " hardware=", window.hardwareAccelerated(),
-        " fallback=", window.rendererFallbackReason());
-    stdout.flush();
-    const result = window.run();
-    if (tcp !is null)
-        tcp.stop();
-    if (server !is null)
-        server.stop();
-    return result;
-}
-
-int main(string[] args)
+int runCli(string[] args)
 {
     timeBeginPeriod(1);
     scope(exit) timeEndPeriod(1);
@@ -266,7 +158,7 @@ int main(string[] args)
                 auto window = createWindow(scene, registry,
                     args.canFind("--minimized"), args.canFind("--maximized"),
                     args.canFind("--no-activate"));
-                return runWindowed(window, registry, args.canFind("--control"),
+                return runHostWindow(window, registry, args.canFind("--control"),
                     args[2], args.canFind("--watch"), listenPort);
             }
 
@@ -294,7 +186,7 @@ int main(string[] args)
                     panel.service(delta);
                 };
                 panel.attach(window.root);
-                return runWindowed(window, registry, args.canFind("--control"),
+                return runHostWindow(window, registry, args.canFind("--control"),
                     scenePath, false, listenPort);
             }
 

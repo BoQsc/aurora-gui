@@ -13,14 +13,15 @@ content means.
 
 ## Primary GUI path
 
-The host is the primary application presentation path for Aurora. New GUI work
-is a validated host scene, not a new executable that constructs its own
+The host runtime is the primary application presentation path for Aurora. New
+GUI work is a validated host scene, not a new executable that constructs its own
 `GuiWindow`. Application policy stays outside the host and uses the public scene
-and control/shared-surface contracts. Direct window construction is limited to
-host internals, framework tests, and an explicitly owner-approved specialized
-embedder.
+and control/shared-surface contracts. Applications may depend on
+`aurora-host-core` for the standard GUI; they must not depend on this CLI
+package. Direct window construction is limited to host internals, framework
+tests, and an explicitly owner-approved specialized embedder.
 
-## The host MUST own
+## Host-core MUST own
 
 - Scene parsing, validation, and construction of the retained widget tree.
 - The primary Aurora window, its lifecycle, layout, painting, and invalidation,
@@ -36,7 +37,7 @@ embedder.
 - The versioned control/shared-surface contract in [MODULES.md](MODULES.md);
   external modules run out of process and the host never loads them.
 
-## The host MUST NOT own
+## Host-core MUST NOT own
 
 - Browser, JavaScript, 3D-engine, simulation, or application-domain policy.
 - Application rendering or asset pipelines. Applications render offscreen and
@@ -50,14 +51,15 @@ embedder.
 
 ## Enforcement rules
 
-1. The host dependency set is exactly `aurora-d` and `aurora-standard`, at the
-   approved vendor paths.
+1. The host CLI dependency set is `aurora-host-core`, `aurora-d`, and
+   `aurora-standard`. Host-core depends only on `aurora-d` and
+   `aurora-standard`.
 2. Host source imports are limited to `aurora.*`, `aurorahost.*`,
    `std.*`, and `core.*`.
-3. No framework or application package may depend on the host package, and no
-   source belonging to a package may import the `aurorahost` namespace. The host
-   remains a leaf. Standalone evidence captures and ignored build output are not
-   packages and cannot create a build dependency.
+3. No package may depend on the `aurora-host` CLI. Applications may depend on
+   `aurora-host-core` and import the `aurorahost` namespace only through that
+   dependency. Host-core is host code; app domain policy must not be added to
+   it. Standalone evidence captures and ignored build output are not packages.
 4. The generated protocol/API reference must remain current through
    `tools/generate_reference.py --check`.
 5. The semantic rule remains subject to review: a feature that requires knowing

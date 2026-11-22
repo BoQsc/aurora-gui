@@ -22,6 +22,7 @@ import std.file : readText;
 import std.format : format;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : absolutePath, buildPath, dirName, isAbsolute;
+import std.stdio : stderr;
 import std.utf : toUTF8;
 
 import aurora;
@@ -36,6 +37,13 @@ struct SceneWindow
     bool decorated = true;
     ubyte[] iconData;
     RgbaImage iconImage;
+}
+
+private void reportCallback(string where, Throwable error)
+{
+    stderr.writeln("aurora-host: " ~ where ~ " callback failed: " ~
+        error.msg);
+    stderr.flush();
 }
 
 struct SceneNode
@@ -64,6 +72,7 @@ struct SceneNode
     bool active;
     bool lineNumbers;
     bool highlightCurrentLine;
+    bool readOnly;
     int fontSize;
     string textAlign;
     bool hasTextColor;
@@ -179,6 +188,28 @@ class NodeRegistry
         return true;
     }
 
+    string text(string id)
+    {
+        auto widget = id in _widgets;
+        if (widget is null)
+            return "";
+        if (auto editor = cast(HostTextEditor) *widget)
+            return editor.textUtf8();
+        if (auto editor = cast(TextEditor) *widget)
+            return editor.textUtf8();
+        auto stored = id in _texts;
+        return stored is null ? "" : *stored;
+    }
+
+    bool setEnabled(string id, bool value)
+    {
+        auto widget = id in _widgets;
+        if (widget is null)
+            return false;
+        (*widget).setEnabled(value);
+        return true;
+    }
+
     Widget widget(string id)
     {
         auto found = id in _widgets;
@@ -283,13 +314,23 @@ class NodeRegistry
     void notifyActivated(string id)
     {
         if (onActivate !is null)
-            onActivate(id);
+        {
+            try
+                onActivate(id);
+            catch (Throwable error)
+                reportCallback("activate", error);
+        }
     }
 
     void dispatchAction(string node, string action)
     {
         if (onAction !is null)
-            onAction(node, action);
+        {
+            try
+                onAction(node, action);
+            catch (Throwable error)
+                reportCallback("action", error);
+        }
     }
 
     bool setCanvasCommands(string id, CanvasCommand[] commands)
@@ -536,7 +577,8 @@ private bool isNodeSpecificField(string type, string name)
             return name == "orientation";
         case "textArea":
             return name == "text" || name == "events" || name == "menu" ||
-                name == "lineNumbers" || name == "highlightCurrentLine";
+                name == "lineNumbers" || name == "highlightCurrentLine" ||
+                name == "readOnly";
         case "textField":
             return name == "text" || name == "events" || name == "menu";
         case "titleBar":
@@ -1077,6 +1119,7 @@ private SceneNode parseNode(JSONValue value, ref int count, int depth,
             node.lineNumbers = readBool(value, "lineNumbers", false, label);
             node.highlightCurrentLine = readBool(value,
                 "highlightCurrentLine", false, label);
+            node.readOnly = readBool(value, "readOnly", false, label);
             if (auto events = "events" in value.object)
                 node.events = parseEditorEvents(*events, label ~ ".events");
             if (auto menu = "menu" in value.object)
@@ -1290,7 +1333,10 @@ private void emitEditorEvent(T)(T editor, string node, string kind,
     event.length = editor.textView.length;
     event.line = editor.cursorLine();
     event.column = editor.cursorColumn();
-    registry.onEvent(event);
+    try
+        registry.onEvent(event);
+    catch (Throwable error)
+        reportCallback("editor event", error);
 }
 
 private void wireEditorEvents(T)(T editor, const SceneNode node,
@@ -1545,6 +1591,7 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
                 editor.setTextColor(node.textColor);
             editor.setLineNumbers(node.lineNumbers);
             editor.setCurrentLineHighlight(node.highlightCurrentLine);
+            editor.setReadOnly(node.readOnly);
             editor.layoutHints().flex = 1.0;
             applyHints(editor, node);
             registry.registerNode(node.id, node.type, editor, node.text);
@@ -1613,7 +1660,12 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
             {
                 event.node = eventNode;
                 if (registry.onEvent !is null)
-                    registry.onEvent(event);
+                {
+                    try
+                        registry.onEvent(event);
+                    catch (Throwable error)
+                        reportCallback("canvas event", error);
+                }
             };
             applyHints(canvas, node);
             registry.registerNode(node.id, node.type, canvas, "");
@@ -1638,7 +1690,12 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
             {
                 event.node = eventNode;
                 if (registry.onEvent !is null)
-                    registry.onEvent(event);
+                {
+                    try
+                        registry.onEvent(event);
+                    catch (Throwable error)
+                        reportCallback("surface event", error);
+                }
             };
             applyHints(surface, node);
             registry.registerNode(source.id, source.type, surface,
@@ -1706,7 +1763,12 @@ void applyScene(GuiWindow window, const Scene scene, NodeRegistry registry)
     window.setFrameDark(scene.window.theme == "dark");
     window.setTheme(themeWithOverrides(scene));
     if (registry.onAfterApply !is null)
-        registry.onAfterApply();
+    {
+        try
+            registry.onAfterApply();
+        catch (Throwable error)
+            reportCallback("after-apply", error);
+    }
     registry.restoreEditorState(editorState);
 }
 

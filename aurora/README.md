@@ -1,8 +1,8 @@
 # Aurora v2
 
 Aurora v2 is the self-contained GUI foundation for the Aurora suite. It lives in
-one folder and contains four sibling packages. Its primary application path is
-an `aurora-host` scene, not a new window executable built around `GuiWindow`.
+one folder and contains the shared GUI/host packages. Its primary application
+path is a host scene, not a new window executable built around `GuiWindow`.
 The one standalone GUI executable is the pre-existing `aurora-designer`
 design-time tool.
 
@@ -11,7 +11,8 @@ design-time tool.
 | `aurora-d/` | The GUI library: Vulkan and software rendering, the retained compositor, widgets, and the pure-D Unicode/OpenType text engine. It is the foundation used by the host, not the default application entry point. Semantic version `2.0.0`; the folder name carries no version. |
 | `aurora-standard/` | The frozen Unicode 17.0.0 text standard used by the host. |
 | `aurora-designer/` | The existing visual UI designer and design-time tool, with a hierarchy-aware canvas, Layers tree, inspector hierarchy controls, and a visible frameless titlebar. It depends on `aurora-d`; it is not a template for new applications. |
-| `aurora-host/` | The primary GUI application path: retained-scene host, runner, and live scene editor. It stays a separate executable and remains a leaf. |
+| `aurora-host-core/` | The reusable standard GUI/runtime: scenes, window shell, layout, input, control surface, and live reload. Applications depend on this for standard GUI. |
+| `aurora-host/` | The thin CLI/dev shell over host-core: retained-scene runner and live scene editor. Apps must not depend on this executable package. |
 
 `libraries/` is the shelf for experimental, general-purpose library packages.
 It is deliberately outside the v2 verification gate: `verify.py` neither builds
@@ -32,8 +33,8 @@ Why this layout:
 - one GUI library source, with no version number in its folder name;
 - the standard is a package beside the library, not a second copy inside it;
 - the host is separate and no framework package depends on it;
-- the host is the primary application shell; new GUI products are scenes, not
-  another standalone window executable;
+- host-core is the primary application shell; new GUI products are scenes, and
+  app code owns only domain behavior;
 - the designer is a design-time tool for the library, not a new application
   template;
 - release history stays in the package that owns it (`CHANGELOG.md`, `docs/`).
@@ -52,8 +53,10 @@ framework tests, and a specialized embedder that the project owner has
 explicitly approved. The `GuiWindow` examples in the library documentation
 describe library mechanisms; they are not the application template.
 
-The host remains a leaf. Applications do not import or link `aurora-host`; they
-run it and communicate through its public scene and control contracts.
+The `aurora-host` CLI package remains a leaf. Applications do not import or link
+it; when they embeds the standard GUI, they depend on `aurora-host-core` and use
+its scene/runtime APIs. Generic GUI gaps belong in host-core, never in a
+per-app copy.
 
 ## Requirements
 

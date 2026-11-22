@@ -133,6 +133,13 @@ def _check_host_imports(root: Path, policy: dict) -> list[str]:
     generated = root / "generated"
     if generated.is_dir():
         files += list(_iter_files(generated, (".d", ".di")))
+    core = root.parent / "aurora-host-core"
+    core_source = core / "source"
+    if core_source.is_dir():
+        files += list(_iter_files(core_source, (".d", ".di")))
+    core_generated = core / "generated"
+    if core_generated.is_dir():
+        files += list(_iter_files(core_generated, (".d", ".di")))
     if not files:
         return [f"host source directories have no D files: {source}, {generated}"]
     prefixes = policy["allowedImportPrefixes"]
@@ -154,9 +161,12 @@ def _check_host_imports(root: Path, policy: dict) -> list[str]:
 def _check_leaf(root: Path, repo: Path, policy: dict) -> list[str]:
     errors: list[str] = []
     host_name = policy["package"]
+    core_name = "aurora-host-core"
+    core_root = (root.parent / core_name).resolve()
     namespace = policy["namespace"]
     manifests = list(_iter_files(repo, ("dub.json",)))
     packages = {manifest.parent.resolve() for manifest in manifests}
+    package_documents: dict[Path, dict] = {}
     for manifest in manifests:
         try:
             manifest_relative = manifest.resolve().relative_to(root.resolve())
@@ -168,6 +178,7 @@ def _check_leaf(root: Path, repo: Path, policy: dict) -> list[str]:
             document = _read_json(manifest)
         except (OSError, ValueError):
             continue
+        package_documents[manifest.parent.resolve()] = document
         dependencies = document.get("dependencies")
         if not isinstance(dependencies, dict):
             continue
@@ -183,23 +194,34 @@ def _check_leaf(root: Path, repo: Path, policy: dict) -> list[str]:
                     errors.append(f"{manifest}: dependency path targets the host")
 
     for path in _iter_files(repo, (".d", ".di")):
-        if _package_for(path.resolve(), packages) is None:
+        resolved = path.resolve()
+        package_root = _package_for(resolved, packages)
+        if package_root is None:
             # Evidence captures and ignored build output are not packages and
             # cannot create a build dependency on the host.
             continue
+        if package_root == core_root:
+            continue
         try:
-            path.resolve().relative_to(root.resolve())
+            resolved.relative_to(root.resolve())
             continue
         except ValueError:
             pass
+        document = package_documents.get(package_root, {})
+        dependencies = document.get("dependencies", {})
+        if not isinstance(dependencies, dict):
+            dependencies = {}
+        has_core = core_name in dependencies
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         for module in sorted(set(_imports(text))):
-            if module == namespace or module.startswith(namespace + "."):
+            if (module == namespace or module.startswith(namespace + ".")) \
+                    and not has_core:
                 errors.append(
-                    f"{path}: outside code imports host namespace {module!r}"
+                    f"{path}: package imports host namespace {module!r} "
+                    "without depending on aurora-host-core"
                 )
     return errors
 

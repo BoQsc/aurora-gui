@@ -13,6 +13,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parents[1]
+CORE = ROOT.parent / "aurora-host-core"
 DEFAULT_HOST = ROOT / "build" / "verify" / "aurora-host.exe"
 PROBE_SOURCE = ROOT / "tests" / "crt_probe.d"
 
@@ -68,6 +69,8 @@ def build_probe(dmd: str, temporary: Path) -> Path:
         "-i",
         f"-I{ROOT / 'source'}",
         f"-I{ROOT / 'generated'}",
+        f"-I{CORE / 'source'}",
+        f"-I{CORE / 'generated'}",
         f"-od={objects}",
         f"-of={probe}",
         str(PROBE_SOURCE),

@@ -7,25 +7,24 @@ short guide. Detailed explanations remain in `aurora-d/docs/` and
 
 ## 1. Ownership
 
-- **The host is the primary GUI path.** New GUI products start as validated
-  scenes run by `aurora-host`. Do not create a new executable around
-  `GuiWindow` to deliver an application; direct window construction is limited
-  to host internals, framework tests, and an owner-approved specialized
-  embedder. Existing direct-window applications are migration sources, not
-  examples.
-- **The host stays a leaf.** Applications do not import or link `aurora-host`.
-  They provide a scene and use the versioned control/shared-surface contract for
-  domain behavior.
+- **Host-core is the primary GUI path.** New GUI products use validated scenes
+  and the `aurora-host-core` runtime. Do not create a new executable around
+  `GuiWindow` to deliver an application. Direct window construction is limited
+  to host internals, framework tests, and explicit owner-approved special
+  embedders; app-specific GUI must not be copied from the host.
+- **The host CLI stays a leaf.** Applications do not import or link the
+  `aurora-host` executable package. They may depend on `aurora-host-core` for
+  the standard GUI and use its scene/control contracts for domain behavior.
 - **The library owns GUI behavior.** Rendering, text layout, widget layout,
   input routing, the retained compositor, DPI conversion, and window-shell
   behavior belong in `aurora-d`.
 - **An application owns its content and policy.** It supplies data, scenes, and
   product decisions; it does not fork framework behavior into a private copy.
-- **The host owns the retained UI shell.** `aurora-host` parses and validates
-  scenes, owns the window, layout, painting, input routing, frame clock, DPI
-  scaling, and the control surface. It does not own application domain policy.
-- The host may depend on `aurora-d` and `aurora-standard`. No framework or
-  application package may depend on the host.
+- **Host-core owns the retained UI shell.** It parses and validates scenes, owns
+  the window, layout, painting, input routing, frame clock, DPI scaling, live
+  reload, and the control surface. It does not own application domain policy.
+- The host CLI and host-core may depend on `aurora-d`, `aurora-standard`, and
+  the core package. No package may depend on the `aurora-host` CLI.
 
 ## 2. One framework source
 

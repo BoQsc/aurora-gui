@@ -7,15 +7,14 @@
   "copyright": "Copyright (C) 2026 aurora-host contributors",
   "license": "0BSD",
   "sourcePaths": [
-    "source",
-    "generated"
+    "source"
   ],
   "stringImportPaths": [
     "assets"
   ],
   "targetName": "aurora-host",
   "targetType": "executable",
-  "mainSourceFile": "source/aurorahost/main.d",
+  "mainSourceFile": "source/host_main.d",
   "dflags-windows": [
     "-mscrtlib=msvcrt"
   ],
@@ -23,6 +22,9 @@
   "dependencies": {
     "aurora-d": {
       "path": "../aurora-d"
+    },
+    "aurora-host-core": {
+      "path": "../aurora-host-core"
     },
     "aurora-standard": {
       "path": "../aurora-standard"
@@ -33,7 +35,7 @@
       "name": "host",
       "targetType": "executable",
       "targetName": "aurora-host",
-      "mainSourceFile": "source/aurorahost/main.d",
+      "mainSourceFile": "source/host_main.d",
       "libs-windows": [
         "user32",
         "gdi32"
@@ -58,7 +60,7 @@
       "name": "host-headless",
       "targetType": "executable",
       "targetName": "aurora-host-headless",
-      "mainSourceFile": "source/aurorahost/main.d",
+      "mainSourceFile": "source/host_main.d",
       "versions": [
         "AuroraHeadless"
       ],

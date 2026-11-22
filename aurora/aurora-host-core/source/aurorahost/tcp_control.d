@@ -87,8 +87,15 @@ class TcpControl
             }
             synchronized (_mutex)
                 _clients ~= client;
-            clientLoop(client);
+            startClient(client);
         }
+    }
+
+    private void startClient(Socket client)
+    {
+        auto worker = new Thread(delegate() { clientLoop(client); });
+        worker.isDaemon = true;
+        worker.start();
     }
 
     private void clientLoop(Socket client)

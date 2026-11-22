@@ -1,0 +1,277 @@
+{
+  "name": "aurora-opencode-lite",
+  "description": "Minimal independent Aurora OpenCode shell built only from the Aurora v2 tree",
+  "authors": [
+    "Aurora project"
+  ],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
+  "targetType": "executable",
+  "targetName": "aurora-opencode-lite",
+  "targetPath": "build",
+  "mainSourceFile": "source/hostlite.d",
+  "sourcePaths": [
+    "source"
+  ],
+  "stringImportPaths": [
+    "assets"
+  ],
+  "dependencies": {
+    "aurora-d": {
+      "path": "../../aurora-d"
+    },
+    "aurora-host-core": {
+      "path": "../../aurora-host-core"
+    },
+    "aurora-standard": {
+      "path": "../../aurora-standard"
+    }
+  },
+  "libs-windows": [
+    "user32",
+    "gdi32",
+    "winhttp"
+  ],
+
+  "configurations": [
+    {
+      "name": "default",
+      "targetType": "executable",
+      "targetName": "aurora-opencode-lite",
+      "mainSourceFile": "source/hostlite.d",
+      "excludedSourceFiles": [
+        "source/app.d"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:WINDOWS",
+        "/ENTRY:mainCRTStartup"
+      ]
+    },
+    {
+      "name": "http-smoke",
+      "targetType": "executable",
+      "targetName": "aurora-opencode-lite-http-smoke",
+      "mainSourceFile": "tests/http_smoke.d",
+      "excludedSourceFiles": [
+        "source/app.d",
+        "source/hostlite.d"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:CONSOLE",
+        "/ENTRY:mainCRTStartup"
+      ]
+    },
+    {
+      "name": "session-smoke",
+      "targetType": "executable",
+      "targetName": "aurora-opencode-lite-session-smoke",
+      "mainSourceFile": "tests/session_smoke.d",
+      "excludedSourceFiles": [
+        "source/app.d",
+        "source/hostlite.d"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:CONSOLE",
+        "/ENTRY:mainCRTStartup"
+      ]
+    },
+    {
+      "name": "host-lite",
+      "targetType": "executable",
+      "targetName": "aurora-opencode-lite-host",
+      "mainSourceFile": "source/hostlite.d",
+      "excludedSourceFiles": [
+        "source/app.d"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "kernel32",
+        "advapi32",
+        "ole32",
+        "shell32",
+        "winhttp",
+        "ws2_32",
+        "winmm",
+        "avrt",
+        "msvcrt",
+        "oldnames"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:WINDOWS",
+        "/ENTRY:mainCRTStartup"
+      ]
+    },
+    {
+      "name": "live-smoke",
+      "targetType": "executable",
+      "targetName": "aurora-opencode-lite-live-smoke",
+      "mainSourceFile": "tests/live_smoke.d",
+      "excludedSourceFiles": [
+        "source/app.d",
+        "source/hostlite.d"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "winhttp",
+        "ws2_32",
+        "winmm",
+        "avrt"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:CONSOLE",
+        "/ENTRY:mainCRTStartup"
+      ]
+    },
+    {
+      "name": "direct-prototype",
+      "targetType": "executable",
+      "targetName": "aurora-opencode-lite-direct",
+      "mainSourceFile": "source/app.d",
+      "excludedSourceFiles": [
+        "source/hostlite.d"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:WINDOWS",
+        "/ENTRY:mainCRTStartup"
+      ]
+    },
+    {
+      "name": "controller",
+      "targetType": "executable",
+      "targetName": "aurora-opencode-lite-controller",
+      "mainSourceFile": "source/controller_main.d",
+      "excludedSourceFiles": [
+        "source/app.d",
+        "source/hostlite.d"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "winhttp",
+        "ws2_32",
+        "winmm",
+        "avrt"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:CONSOLE",
+        "/ENTRY:mainCRTStartup"
+      ]
+    },
+    {
+      "name": "plugin",
+      "targetType": "dynamicLibrary",
+      "targetName": "opencode-lite-controller",
+      "mainSourceFile": "source/plugin_entry.d",
+      "excludedSourceFiles": [
+        "source/app.d",
+        "source/hostlite.d",
+        "source/controller_main.d"
+      ],
+      "dflags-windows": [
+        "-mscrtlib=msvcrt"
+      ],
+      "lflags-windows": [
+        "/DLL",
+        "/ALTERNATENAME:open=_open",
+        "/ALTERNATENAME:read=_read",
+        "/ALTERNATENAME:write=_write",
+        "/ALTERNATENAME:close=_close",
+        "/ALTERNATENAME:tzset=_tzset",
+        "/EXPORT:aurora_lite_plugin_init",
+        "/EXPORT:aurora_lite_plugin_action",
+        "/EXPORT:aurora_lite_plugin_tick",
+        "/EXPORT:aurora_lite_plugin_refresh",
+        "/EXPORT:aurora_lite_plugin_shutdown"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "kernel32",
+        "advapi32",
+        "ole32",
+        "shell32",
+        "winhttp",
+        "ws2_32",
+        "winmm",
+        "avrt",
+        "msvcrt",
+        "oldnames"
+      ]
+    },
+    {
+      "name": "plugin-smoke",
+      "targetType": "executable",
+      "targetName": "aurora-opencode-lite-plugin-smoke",
+      "mainSourceFile": "tests/plugin_smoke.d",
+      "excludedSourceFiles": [
+        "source/app.d",
+        "source/hostlite.d",
+        "source/controller_main.d",
+        "source/plugin_main.d"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "kernel32",
+        "advapi32",
+        "ole32",
+        "shell32",
+        "winhttp",
+        "ws2_32",
+        "winmm",
+        "avrt"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:CONSOLE",
+        "/ENTRY:mainCRTStartup"
+      ]
+    },
+    {
+      "name": "plugin-reload-test",
+      "targetType": "executable",
+      "targetName": "aurora-opencode-lite-plugin-reload-test",
+      "mainSourceFile": "tests/plugin_reload_test.d",
+      "excludedSourceFiles": [
+        "source/app.d",
+        "source/hostlite.d",
+        "source/controller_main.d",
+        "source/plugin_main.d",
+        "source/plugin_entry.d"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32",
+        "kernel32",
+        "advapi32",
+        "ole32",
+        "shell32",
+        "winhttp",
+        "ws2_32",
+        "winmm",
+        "avrt"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:CONSOLE",
+        "/ENTRY:mainCRTStartup"
+      ]
+    }
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
+  "version": "0.1.0"
+}

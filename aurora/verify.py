@@ -15,7 +15,9 @@ ROOT = Path(__file__).resolve().parent
 LIBRARY = ROOT / "aurora-d"
 DESIGNER = ROOT / "aurora-designer"
 HOST = ROOT / "aurora-host"
+HOST_CORE = ROOT / "aurora-host-core"
 BASE = ROOT / "apps" / "base"
+LITE = ROOT / "apps" / "opencode-lite"
 SCRIPTS = ROOT / "scripts"
 DUB = os.environ.get("DUB", "dub")
 COMPILER = os.environ.get("DC", "dmd")
@@ -78,6 +80,7 @@ def main() -> int:
     print(f"designer smoke: {len(smoke_data)} bytes, P6")
 
     # ---- Aurora Host ----
+    run([DUB, "build", "--config=library", f"--compiler={COMPILER}"], HOST_CORE)
     run([PYTHON, "-B", "tools/check_boundary.py"], HOST)
     run([PYTHON, "-B", "tools/generate_reference.py", "--check"], HOST)
     run([DUB, "build", "--config=host-headless", f"--compiler={COMPILER}"], HOST)
@@ -114,12 +117,17 @@ def main() -> int:
         ],
         HOST,
     )
-    run([PYTHON, "-B", "apps/breakout/dev_swap_test.py"], HOST)
-    run([PYTHON, "-B", "apps/empty-app/live_reload_test.py"], HOST)
+    run([PYTHON, "-B", str(ROOT / "apps" / "breakout" / "dev_swap_test.py")],
+        ROOT)
+    run([PYTHON, "-B", str(ROOT / "apps" / "empty-app" / "live_reload_test.py")],
+        ROOT)
 
     # ---- Aurora Base and generator ----
     run([PYTHON, "-B", "smoke_test.py"], BASE)
     run([PYTHON, "-B", "new_app_test.py"], SCRIPTS)
+
+    # ---- Aurora OpenCode Lite ----
+    run([PYTHON, "-B", "verify.py"], LITE)
 
     print()
     print("Aurora v2 verification passed.")

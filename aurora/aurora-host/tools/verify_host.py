@@ -14,8 +14,9 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
 AURORA = REPO / "aurora-d"
+CORE = REPO / "aurora-host-core"
 STANDARD = REPO / "aurora-standard"
-MAIN = ROOT / "source" / "aurorahost" / "main.d"
+MAIN = ROOT / "source" / "host_main.d"
 
 sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -57,8 +58,11 @@ def build(dmd: str, temp: pathlib.Path, name: str, *, headless: bool) -> pathlib
         dmd,
         f"-I{AURORA / 'source'}",
         f"-I{STANDARD / 'source'}",
+        f"-I{CORE / 'source'}",
+        f"-I{CORE / 'generated'}",
         f"-I{ROOT / 'generated'}",
         f"-I{ROOT / 'source'}",
+        f"-J{CORE / 'assets'}",
         f"-J{ROOT / 'assets'}",
         "-mscrtlib=msvcrt",
         "-i",

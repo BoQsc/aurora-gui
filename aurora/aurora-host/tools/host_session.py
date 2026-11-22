@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import queue
 import subprocess
@@ -10,7 +11,7 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-EXE = ROOT / "aurora-host.exe"
+EXE = Path(os.environ.get("AURORA_HOST_EXE", ROOT / "aurora-host.exe"))
 
 
 class Host:

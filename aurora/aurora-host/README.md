@@ -1,9 +1,9 @@
 # Aurora Host
 
-The retained-scene host for Aurora. It is separate from the GUI library and
-depends only on the sibling `aurora-d` and `aurora-standard` packages. No
-framework package depends on it. Delete this folder and the library is
-unaffected.
+The thin retained-scene CLI and live scene editor. The reusable standard GUI
+runtime lives in the sibling [`aurora-host-core`](../aurora-host-core) package;
+this executable depends on core, `aurora-d`, and `aurora-standard`. No
+application depends on this CLI package.
 
 ## Primary application path
 
@@ -11,12 +11,11 @@ This host is the main way to build and ship an Aurora GUI. New application work
 starts from a validated scene and runs it with `aurora-host`; use `--dev` or
 `tools/live_host.py` for the live scene-building loop.
 
-The host owns the window and retained UI shell. Application domain state and
-policy remain outside it and use the scene plus the versioned control and
-shared-surface contracts. An application does not import or link the host, and
-it does not create another `GuiWindow` shell. A direct-window executable for a
-new GUI product requires explicit project-owner approval and is not the default
-application pattern.
+Host-core owns the window, retained UI shell, and live reload. Application domain
+state and policy remain outside it and use the scene plus the versioned control
+and shared-surface contracts. Applications may depend on host-core, never on
+this CLI package, and must not create another `GuiWindow` shell. A direct-window
+executable for a new GUI product requires explicit project-owner approval.
 
 ## Responsibility
 

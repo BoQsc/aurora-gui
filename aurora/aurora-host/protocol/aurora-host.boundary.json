@@ -5,6 +5,7 @@
   "responsibility": "Own the retained Aurora UI shell and its platform boundary.",
   "allowedDependencies": {
     "aurora-d": "../aurora-d",
+    "aurora-host-core": "../aurora-host-core",
     "aurora-standard": "../aurora-standard"
   },
   "allowedImportPrefixes": [

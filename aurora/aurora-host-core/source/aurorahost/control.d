@@ -479,6 +479,9 @@ class ControlServer
                 case "setText":
                     setText(requestId, document);
                     break;
+                case "setEnabled":
+                    setEnabled(requestId, document);
+                    break;
                 case "getText":
                     getText(requestId, document);
                     break;
@@ -665,6 +668,24 @@ class ControlServer
         JSONValue[string] extra;
         extra["node"] = JSONValue(node);
         extra["text"] = JSONValue(editor.textUtf8());
+        respond(id, true, null, extra);
+    }
+
+    private void setEnabled(long id, JSONValue document)
+    {
+        const node = requireString(document, "node");
+        auto value = "enabled" in document.object;
+        enforce(value !is null && ((*value).type == JSONType.true_ ||
+            (*value).type == JSONType.false_),
+            "enabled must be a boolean");
+        if (!_registry.setEnabled(node, (*value).boolean))
+        {
+            respond(id, false, "unknown node: " ~ node);
+            return;
+        }
+        JSONValue[string] extra;
+        extra["node"] = JSONValue(node);
+        extra["enabled"] = JSONValue((*value).boolean);
         respond(id, true, null, extra);
     }
 
@@ -1399,7 +1420,16 @@ class ControlServer
         const parent = dirName(path);
         if (parent.length > 0 && parent != ".")
             mkdirRecurse(parent);
+        // A minimized native window has an iconic 21x1 client area. Tests and
+        // live tooling intentionally run the host minimized, but a screenshot
+        // must still capture the full logical scene. Restore for the capture
+        // and return to the minimized state immediately afterward.
+        const wasMinimized = _window.isMinimized();
+        if (wasMinimized)
+            _window.restore();
         _window.saveScreenshot(path);
+        if (wasMinimized)
+            _window.minimize();
         JSONValue[string] extra;
         extra["path"] = JSONValue(path);
         respond(id, true, null, extra);

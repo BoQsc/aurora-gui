@@ -1,0 +1,44 @@
+{
+  "name": "aurora-host-core",
+  "description": "Reusable Aurora host runtime: scenes, windows, control, and live reload",
+  "authors": [
+    "Aurora project"
+  ],
+  "copyright": "Copyright (C) 2026 aurora-host contributors",
+  "license": "0BSD",
+  "sourcePaths": [
+    "source",
+    "generated"
+  ],
+  "stringImportPaths": [
+    "assets"
+  ],
+  "targetName": "aurora-host-core",
+  "targetType": "library",
+  "version": "2.0.0",
+  "dflags-windows": [
+    "-mscrtlib=msvcrt"
+  ],
+  "dependencies": {
+    "aurora-d": {
+      "path": "../aurora-d"
+    },
+    "aurora-standard": {
+      "path": "../aurora-standard"
+    }
+  },
+  "configurations": [
+    {
+      "name": "library",
+      "targetType": "library",
+      "targetName": "aurora-host-core",
+      "sourcePaths": [
+        "source",
+        "generated"
+      ],
+      "stringImportPaths": [
+        "assets"
+      ]
+    }
+  ]
+}
