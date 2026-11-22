@@ -33,6 +33,8 @@ struct SceneWindow
     string title = "Aurora Host";
     int width = 760;
     int height = 520;
+    int minWidth;
+    int minHeight;
     string theme = "light";
     bool decorated = true;
     ubyte[] iconData;
@@ -619,6 +621,8 @@ private bool isWindowField(string name)
         case "title":
         case "width":
         case "height":
+        case "minWidth":
+        case "minHeight":
         case "theme":
         case "decorated":
         case "icon":
@@ -1266,6 +1270,10 @@ Scene loadScene(string path)
             "Aurora Host", "scene.window");
         scene.window.width = readInt(window, "width", 760, "scene.window");
         scene.window.height = readInt(window, "height", 520, "scene.window");
+        scene.window.minWidth = readRange(window, "minWidth", 0, 0, 10000,
+            "scene.window");
+        scene.window.minHeight = readRange(window, "minHeight", 0, 0, 10000,
+            "scene.window");
         scene.window.theme = readString(window, "theme", "light", "scene.window");
         scene.window.decorated = readBool(window, "decorated", true,
             "scene.window");
@@ -1590,7 +1598,13 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
             editor.setLineNumbers(node.lineNumbers);
             editor.setCurrentLineHighlight(node.highlightCurrentLine);
             editor.setReadOnly(node.readOnly);
-            editor.layoutHints().flex = 1.0;
+            // A text area defaults to filling the remaining space, but an
+            // explicit height/flex must win so a fixed transcript can coexist
+            // with a footer or composer below it.
+            if (node.flex > 0 || node.height > 0)
+                editor.layoutHints().flex = cast(double) node.flex;
+            else
+                editor.layoutHints().flex = 1.0;
             applyHints(editor, node);
             registry.registerNode(node.id, node.type, editor, node.text);
             wireEditorEvents(editor, node, registry);
@@ -1720,6 +1734,8 @@ GuiWindow createWindow(const Scene scene, NodeRegistry registry,
     options.title = scene.window.title;
     options.width = scene.window.width;
     options.height = scene.window.height;
+    options.minWidth = scene.window.minWidth;
+    options.minHeight = scene.window.minHeight;
     options.decorated = scene.window.decorated;
     options.targetFps = 144;
     options.startMinimized = startMinimized;
@@ -1755,6 +1771,7 @@ void applyScene(GuiWindow window, const Scene scene, NodeRegistry registry)
         registry.iconPath = iconPath;
     auto root = buildWidget(scene.root, registry);
     registerTooltips(scene.root, registry);
+    window.setMinimumSize(scene.window.minWidth, scene.window.minHeight);
     window.setRoot(root);
     window.setTitle(scene.window.title);
     window.setDecorated(scene.window.decorated);

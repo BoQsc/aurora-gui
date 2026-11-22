@@ -4,6 +4,8 @@
     "title": "Aurora OpenCode Lite",
     "width": 960,
     "height": 680,
+    "minWidth": 960,
+    "minHeight": 680,
     "theme": "dark"
   },
   "root": {
@@ -96,17 +98,20 @@
         "spacing": 8,
         "children": [
           {
-            "id": "lite-save",
-            "type": "button",
-            "text": "Save",
-            "action": "save"
+            "type": "spacer",
+            "flex": 1
           },
           {
             "type": "label",
             "text": "Stored locally",
             "scale": 1,
-            "textColor": "#7d8ea3",
-            "flex": 1
+            "textColor": "#7d8ea3"
+          },
+          {
+            "id": "lite-save",
+            "type": "button",
+            "text": "Save",
+            "action": "save"
           }
         ]
       },
@@ -122,15 +127,15 @@
         "height": 40,
         "children": [
           {
+            "id": "lite-input",
+            "type": "textField",
+            "width": 650
+          },
+          {
             "id": "lite-send",
             "type": "button",
             "text": "Send",
             "action": "send"
-          },
-          {
-            "id": "lite-input",
-            "type": "textField",
-            "flex": 1
           }
         ]
       },

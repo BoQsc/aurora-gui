@@ -303,6 +303,22 @@ def main() -> int:
                 )
             verify_ppm(control_image)
 
+            layout = run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(ROOT / "tools" / "scene_layout_test.py"),
+                    "--host",
+                    str(gui),
+                ],
+                env=control_env,
+            )
+            if "scene layout passed" not in layout.stdout:
+                raise VerificationError(
+                    "scene layout contract test did not report success\n"
+                    + layout.stdout
+                )
+
             editor_image = temp / "editor.ppm"
             editor = run(
                 [

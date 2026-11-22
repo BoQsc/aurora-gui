@@ -1016,6 +1016,8 @@ else version (Windows)
         private bool _minimized;
         private bool _preventMinimize;
         private bool _restoringFromMinimize;
+        private int _minimumWidth;
+        private int _minimumHeight;
         private bool _hasWindowedPlacement;
         private LONG_PTR _windowedStyle;
         private LONG_PTR _windowedExStyle;
@@ -1047,6 +1049,8 @@ else version (Windows)
 
             _dpi = querySystemDpi();
             _displayScale = DisplayScale.fromDpi(_dpi);
+            _minimumWidth = maxIntLocal(0, options.minWidth);
+            _minimumHeight = maxIntLocal(0, options.minHeight);
 
             DWORD style = options.decorated ? WS_OVERLAPPEDWINDOW : WS_POPUP;
             // Frameless windows still carry WS_MINIMIZEBOX/WS_MAXIMIZEBOX so the
@@ -1851,6 +1855,64 @@ else version (Windows)
                 SWP_NOZORDER | SWP_NOACTIVATE) != FALSE;
         }
 
+        override bool setMinimumSize(int width, int height)
+        {
+            _minimumWidth = maxIntLocal(0, width);
+            _minimumHeight = maxIntLocal(0, height);
+            if (_hwnd is null || _fullscreen)
+                return true;
+            const minimum = minimumOuterRect();
+            RECT current;
+            if (GetWindowRect(_hwnd, &current) == FALSE)
+                return false;
+            const currentWidth = current.right - current.left;
+            const currentHeight = current.bottom - current.top;
+            if (currentWidth < minimum.right || currentHeight < minimum.bottom)
+            {
+                return SetWindowPos(_hwnd, null, 0, 0,
+                    maxIntLocal(currentWidth, minimum.right),
+                    maxIntLocal(currentHeight, minimum.bottom),
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) != FALSE;
+            }
+            return true;
+        }
+
+        private RECT minimumOuterRect() nothrow
+        {
+            RECT outer;
+            if (_hwnd is null)
+                return outer;
+            const physical = _displayScale.logicalToPhysical(Size(
+                maxIntLocal(1, _minimumWidth),
+                maxIntLocal(1, _minimumHeight)));
+            int frameWidth;
+            int frameHeight;
+            RECT windowRect;
+            RECT clientRect;
+            if (GetWindowRect(_hwnd, &windowRect) != FALSE &&
+                GetClientRect(_hwnd, &clientRect) != FALSE)
+            {
+                frameWidth = (windowRect.right - windowRect.left) -
+                    (clientRect.right - clientRect.left);
+                frameHeight = (windowRect.bottom - windowRect.top) -
+                    (clientRect.bottom - clientRect.top);
+            }
+            outer = RECT(0, 0, physical.width + maxIntLocal(0, frameWidth),
+                physical.height + maxIntLocal(0, frameHeight));
+            return outer;
+        }
+
+        private void applyMinimumTrackSize(MINMAXINFO* info) nothrow
+        {
+            if (info is null || (_minimumWidth <= 0 && _minimumHeight <= 0))
+                return;
+            const outer = minimumOuterRect();
+            if (_minimumWidth > 0)
+                info.ptMinTrackSize.x = outer.right;
+            if (_minimumHeight > 0)
+                info.ptMinTrackSize.y = outer.bottom;
+        }
+
         override bool queryWorkArea(Point screenPoint, out Rect workArea)
         {
             workArea = Rect.init;
@@ -2190,6 +2252,9 @@ else version (Windows)
                     if (_preventMinimize &&
                         (cast(UINT) wParam & 0xFFF0) == SC_MINIMIZE)
                         return 0;
+                    return DefWindowProcW(_hwnd, message, wParam, lParam);
+                case WM_GETMINMAXINFO:
+                    applyMinimumTrackSize(cast(MINMAXINFO*) lParam);
                     return DefWindowProcW(_hwnd, message, wParam, lParam);
                 case WM_SIZE:
                 {

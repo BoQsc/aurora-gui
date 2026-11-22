@@ -30,6 +30,9 @@ struct WindowOptions
     string iconPath;
     int width = 960;
     int height = 640;
+    /** Minimum logical client size; 0 leaves that axis unconstrained. */
+    int minWidth;
+    int minHeight;
     int x = int.min;
     int y = int.min;
     bool resizable = true;
@@ -212,6 +215,12 @@ abstract class NativeWindow
     bool queryWorkArea(Point screenPoint, out Rect workArea)
     {
         workArea = Rect.init;
+        return false;
+    }
+
+    /** Set a minimum logical client size; unsupported backends return false. */
+    bool setMinimumSize(int width, int height)
+    {
         return false;
     }
 

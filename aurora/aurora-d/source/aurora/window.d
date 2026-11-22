@@ -244,6 +244,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         return _native !is null && _native.setWindowBounds(logicalBounds);
     }
 
+    /** Set the minimum logical client size; unsupported backends return false. */
+    bool setMinimumSize(int width, int height)
+    {
+        return _native !is null && _native.setMinimumSize(width, height);
+    }
+
     /** Re-apply the native frame colors after a light/dark theme toggle. */
     void setFrameDark(bool dark)
     {
