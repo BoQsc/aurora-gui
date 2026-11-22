@@ -237,8 +237,9 @@ int main()
     // Reported: the referenced "Aurora Designer Check" chat answered its goal
     // continuation with prose only while a checklist outcome and verification
     // were still open. The turn settled and the chat sat idle while the goal
-    // still advertised itself as active. The app must keep spending recovery
-    // turns on real work; an active goal chat never stops.
+    // still advertised itself as active. The app spends bounded recovery turns
+    // on real work; a goal that never acts is then stopped instead of being
+    // re-prompted forever.
     {
         auto session = sessionWith(actionGoal);
         session.contract.currentIntent = "analysis";
@@ -263,14 +264,13 @@ int main()
                 outputRecoveryMarker ~ " keep going", true));
         appendLinked(session, msg("assistant", "Still summarizing."));
         const exhausted = decide(session);
-        require(exhausted.continues() && exhausted.advanceGoal,
-            "exhausted goal recovery stopped the active goal chat");
-        require(exhausted.guidance.startsWith("Agent output recovery:"),
-            "exhausted goal recovery did not keep asking for a concrete action");
-        require(exhausted.settleGoal.length == 0,
-            "exhausted goal recovery paused the user's goal");
-        require(session.goalStatus == "active",
-            "exhausted goal recovery paused the user's goal");
+        require(exhausted.action == TurnAction.settle &&
+            exhausted.settleGoal == "paused",
+            "a goal that never acted kept the chat looping instead of stopping");
+        require(exhausted.guidance.length == 0,
+            "the stopped goal still queued another recovery turn");
+        require(exhausted.taskStatus != "completed",
+            "stopping a stalled goal fabricated completion of its work");
     }
 
     // The reported refusal: the user pauses an unmet goal, asks why the agent

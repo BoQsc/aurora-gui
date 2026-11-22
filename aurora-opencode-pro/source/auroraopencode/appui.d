@@ -137,7 +137,8 @@ import auroraopencode.restorestore : RestoreBundle, readRestoreBundle, readThrea
 import auroraopencode.outputguard : agentOutputIssue, outputFailurePrefix,
     outputRecoveryMarker, outputIssueDescription;
 import auroraopencode.outputrecovery : answerReplayed, outputRecoveryCount,
-    maxOutputRecoveries, auditStallIssue,
+    maxOutputRecoveries, auditStallIssue, goalAuditRecoveryCount,
+    maxGoalAuditRecoveries,
     outputRecoveryAllowed, unfinishedTaskRecoveryInstruction;
 import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow,
     transcriptVirtualThreshold;
@@ -23470,10 +23471,18 @@ private void pollButtonSuggestionRequest()
         publishThreadUpdated(*session);
         markDirty();
         // A settle that starts no further turn completes an answer goal whose
-        // reply was delivered. It never pauses the user's goal: pausing is the
-        // user's control alone, so unfinished work stays active for Continue.
+        // reply was delivered. A goal that spent its whole recovery budget
+        // without a useful action is paused here so the chat actually stops;
+        // all other unfinished work stays active for Continue.
         if (decision.settleGoal == "completed")
             applyGoalCompletion(*session, "");
+        else if (decision.settleGoal == "paused")
+        {
+            pauseActiveGoal(*session);
+            publishThreadUpdated(*session);
+            markDirty();
+            updateGoalBar();
+        }
         if (decision.status.length) updateStatus(decision.status);
         if (!decision.continues())
         {
@@ -23982,11 +23991,14 @@ private void pollButtonSuggestionRequest()
         const explanationOnly =
             explanationOnlyRequest(latestActualUserRequest(*session));
         const taskAudit = auditStallIssue(event.outputIssue);
-        // An active action goal never stops for exhausted output recovery. The
-        // referenced goal chat settled here with its goal still active, so the
-        // budget applies to ordinary tasks only while a goal still owns work.
+        // A goal keeps recovering past the ordinary budget while it still owns
+        // work, but that audit is bounded too: an unbounded one replayed the
+        // same prose-only refusal on every retry and left the goal running
+        // forever. Once the goal's own recovery budget is spent, settle it and
+        // keep the recorded work for Start.
         const goalKeepsRunning = taskAudit && goalActive(*session) &&
-            !goalIsAnswerTurn(session.goal) && !explanationOnly;
+            !goalIsAnswerTurn(session.goal) && !explanationOnly &&
+            goalAuditRecoveryCount(*session) < maxGoalAuditRecoveries;
         const recover = goalKeepsRunning
             ? toolsEnabledForSession(*session) && !_stopPending &&
                 !computerUseAbortActive()
@@ -24057,13 +24069,20 @@ private void pollButtonSuggestionRequest()
     }
 
     /// End an exhausted progress audit without a failure row or another
-    /// request. The reply and recorded work stay and the goal remains active;
-    /// Continue is the explicit way back. Audit bookkeeping must never pause
-    /// the user's goal or stop the chat.
+    /// request. The reply and recorded work stay. An ordinary task stays active
+    /// for Continue; a goal that spent its whole recovery budget without a
+    /// useful action is paused so the chat actually stops.
     private void settleStalledAudit(int sessionIndex)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
         auto session = &_sessions[sessionIndex];
+        const stopGoal = goalActive(*session) &&
+            goalAuditRecoveryCount(*session) >= maxGoalAuditRecoveries;
+        if (stopGoal)
+        {
+            session.goalStatus = "paused";
+            recordGoalOutcome(*session, "paused", Clock.currTime.toUnixTime());
+        }
         // Same typed-order rule as the ordinary settle: guidance first, then a
         // queued follow-up. This drain sets taskStatus to active, so the audit's
         // own settled status is assigned afterwards and stays authoritative.
@@ -24071,7 +24090,9 @@ private void pollButtonSuggestionRequest()
         session.turnStatus = "completed";
         session.taskStatus = session.verificationStatus == "required" ||
             session.verificationStatus == "failed" ? "verifying" : "active";
-        updateStatus("Unfinished work remains recorded. Press Continue to resume it.");
+        updateStatus(stopGoal
+            ? "Goal stopped after repeated turns without progress · press Start to resume."
+            : "Unfinished work remains recorded. Press Continue to resume it.");
         setTurnInFlight(false);
         freezeTurnTiming();
         markUnreadIfBackground(sessionIndex);
@@ -24079,6 +24100,7 @@ private void pollButtonSuggestionRequest()
         markDirty();
         rebuildMessageColumn();
         refreshBubbleActions();
+        if (stopGoal) updateGoalBar();
         startNextQueuedFollowUp(sessionIndex);
     }
 

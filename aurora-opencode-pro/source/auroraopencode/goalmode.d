@@ -292,9 +292,11 @@ public enum goalAuditRecoveryInstruction = " The previous goal continuation " ~
     "summary, or the remaining work. Take one concrete action with the " ~
     "available tools and report what actually changed. If the goal is " ~
     "demonstrably complete, call `goal_complete` with a concise summary and " ~
-    "accepted evidence. Do not stop for a question: decide routine choices " ~
-    "yourself and continue with the best supported default. The goal remains " ~
-    "active until it is complete; only the user can pause it.";
+    "accepted evidence: that tool is offered in this request, so never answer " ~
+    "that it is unavailable and never ask the user to pause or stop the goal. " ~
+    "Do not stop for a question: decide routine choices yourself and continue " ~
+    "with the best supported default. The goal runs until it is complete or " ~
+    "the app stops it after repeated turns without progress.";
 
 /// Added when the agent asked for input inside an active goal. The request
 /// stays in the transcript as recorded context, but a goal chat never settles

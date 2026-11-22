@@ -1252,8 +1252,9 @@ public final class ConversationActor
         updateLast();
         if (event.cancelled) { applyStop(); return; }
         if (diagnosticActive) { finishDiagnostic(); applySteering(); request(); return; }
-        // A prose-only goal continuation is not a failure: decideTurn settles
-        // it and pauses the goal, so an internal audit can never stop the chat.
+        // A prose-only goal continuation is not a failure: decideTurn recovers
+        // it and, once the bounded budget is spent, settles it and pauses the
+        // goal, so an internal audit can never leave the chat looping.
         auto policy = config.turn; policy.toolsEnabled = config.request.toolsEnabled; policy.finishReason = event.finishReason;
         policy.diagnosticAvailable = config.diagnosticModel.length > 0;
         policy.pendingChildren = waitingChildren;
@@ -1275,6 +1276,8 @@ public final class ConversationActor
         // records the same outcome the UI applies.
         if (decision.settleGoal == "completed")
         { session.goalStatus = "completed"; recordGoalOutcome(session, "completed", frameUnix); }
+        else if (decision.settleGoal == "paused")
+        { session.goalStatus = "paused"; recordGoalOutcome(session, "paused", frameUnix); }
         if (decision.action == TurnAction.reportChild) session.turnStatus = "completed";
         if (decision.continues()) { metadata(); request(); return; }
         running = false; engine.activeRequestId = 0;

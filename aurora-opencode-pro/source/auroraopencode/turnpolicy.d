@@ -16,7 +16,8 @@ import auroraopencode.requestintent : RequestIntent, actionApprovalRequest,
     requestIntent, workRestrictionRequest;
 import auroraopencode.planmode : planModeProposalPending;
 import auroraopencode.outputguard : outputRecoveryMarker;
-import auroraopencode.outputrecovery : goalAuditStalled;
+import auroraopencode.outputrecovery : goalAuditStalled, goalAuditRecoveryCount,
+    maxGoalAuditRecoveries;
 import std.string : strip;
 
 enum TurnAction { settle, failed, interrupted, applySteering, request, waitInput, waitChildren, reportChild }
@@ -37,8 +38,9 @@ struct TurnDecision
     TurnAction action;
     string turnStatus, taskStatus, guidance, recordedSummary, status, nextSpeaker;
     /// Outcome an active goal takes when this settle starts no further turn:
-    /// "completed" for an answer goal whose reply is delivered. A settle never
-    /// pauses the goal: pausing is the user's control alone.
+    /// "completed" for an answer goal whose reply is delivered, "paused" when a
+    /// goal spent its whole recovery budget without a useful action. Routine
+    /// settles never pause the goal: the user's pause stays the normal control.
     string settleGoal;
     bool advanceHop, clearNextSpeaker, clearDiagnostic, clearBlocker, advanceGoal;
     int diagnosticRequests;
@@ -250,9 +252,9 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     // A goal continuation answered with prose only has not advanced the goal.
     // Requesting the same continuation again replayed the refusal, and settling
     // left the active goal with no running turn. Spend the output recovery turn
-    // on a concrete action instead. The recovery budget never ends an active
-    // goal: only goal_complete, an explicit user pause or a work restriction
-    // stops the chat while the goal still owns unfinished work.
+    // on a concrete action instead, within a bounded budget. A goal that spends
+    // that budget without a useful action is stopped and paused: repeating the
+    // request only replayed the same refusal while the goal kept running.
     if (goalKeepsRunning)
     {
         if (goalNeedsHumanInput(session))
@@ -272,9 +274,21 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
             request(goalContinuationInstruction(session), "Continuing toward the goal…");
             return result;
         }
-        // Exhausted recovery used to settle here, leaving the chat idle while
-        // the goal still advertised itself as active. The goal owns the work
-        // until it is reached or the user stops it, so keep recovering.
+        // Recovery is bounded. Once the model has answered a stalled goal turn
+        // without any useful action for the whole budget, another "take an
+        // action" request only replays the same refusal: the reported thread
+        // answered "pause the active goal, this session cannot call
+        // goal_complete" four times while the app queued the next recovery,
+        // growing the prompt to 386k tokens. Stop the goal and keep its
+        // recorded work for Start instead of looping without progress.
+        if (goalAuditRecoveryCount(session) >= maxGoalAuditRecoveries)
+        {
+            result.turnStatus = "completed";
+            result.taskStatus = "active";
+            result.status = "Goal stopped after repeated turns without progress · press Start to resume.";
+            result.settleGoal = "paused";
+            return result;
+        }
         result.advanceGoal = true;
         request(outputRecoveryMarker ~ goalAuditRecoveryInstruction,
             "Recovering the goal…");

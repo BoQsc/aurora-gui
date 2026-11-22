@@ -1,7 +1,11 @@
 module goal_hold_contracts;
 
-// Progress audits recover and never paint a failure row. A goal chat keeps
-// running past the recovery budget: only completion or the user stops it.
+// Progress audits recover and never paint a failure row. The goal's recovery
+// budget is bounded: a goal that keeps answering without a useful action is
+// stopped and paused instead of re-prompting the same refusal forever. The
+// reported chat replied "pause the active goal, this session cannot call
+// goal_complete" on every retry while the app queued another turn and grew the
+// prompt past 386k tokens.
 
 import aurora;
 import auroraopencode.appui : OpenCodeRoot;
@@ -72,21 +76,20 @@ int main()
             root.addConversationForTesting(["assistant"], ["Still done without a check."]);
             root.startTurnClockForTesting(); root.injectOutputFailureForTesting(issue);
         }
-        assert(root.turnStatusForTesting() == "running" && root.failedMessageCountForTesting() == 0,
-            "Exhausted goal recovery stopped the active goal chat");
-        assert(root.goalStatusForTesting() == "active",
-            "Exhaustion paused or completed the user's goal");
+        assert(root.goalStatusForTesting() == "paused",
+            "Exhausted goal recovery left the goal running without progress");
+        assert(root.turnStatusForTesting() == "completed",
+            "Exhausted goal recovery kept requesting turns");
         assert(root.taskStatusForTesting() != "completed",
             "Exhaustion fabricated completion of the unfinished task");
+        assert(root.failedMessageCountForTesting() == 0,
+            "Exhaustion painted a failure over the delivered answer");
         bool visible;
         foreach (i; 0 .. root.totalMessageCountForTesting())
             if (root.messageContentForTesting(i).indexOf("Agent output stalled") >= 0) visible = true;
         assert(!visible, "Audit exhaustion leaked a failure notice into the transcript");
-        // The goal chat is intentionally still running; stop it so the next
-        // fixture starts from a clean turn.
-        root.stopActiveTurnForTesting();
         pump();
     }
-    writeln("PASS goal audits recover without stopping the active goal chat");
+    writeln("PASS goal audits recover, then stop a goal that never acts");
     return 0;
 }

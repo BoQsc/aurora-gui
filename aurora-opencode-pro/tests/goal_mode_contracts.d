@@ -4,8 +4,10 @@ import auroraopencode.core : ChatMessage, ChatSession, Settings, TaskStep,
     ensureMessageGraph, goalHistoryFromJson, goalHistoryToJson, newMessageId;
 import auroraopencode.goalmode;
 import auroraopencode.goalmutation : resetTaskForNewGoal;
-import auroraopencode.outputrecovery : goalAuditStalled;
+import auroraopencode.outputrecovery : goalAuditStalled, goalAuditRecoveryCount,
+    maxGoalAuditRecoveries;
 import auroraopencode.outputguard : outputRecoveryMarker;
+import auroraopencode.turnpolicy : decideTurn, TurnPolicy, TurnAction;
 import std.json : JSONValue, parseJSON;
 import auroraopencode.runtime : AgentEventKind, AgentRuntimeEvent,
     projectAgentRuntimeEvents;
@@ -434,8 +436,57 @@ int main()
         appendLinked(progressed, progress);
         require(!goalAuditStalled(progressed),
             "useful tool progress did not clear the goal stall");
+        require(goalAuditRecoveryCount(retried) == 1,
+            "stalled goal recovery turns were not counted");
+        ChatSession spent = retried;
+        foreach (_; 0 .. maxGoalAuditRecoveries - 1)
+        {
+            appendLinked(spent, msg("user",
+                outputRecoveryMarker ~ goalAuditRecoveryInstruction, true));
+            appendLinked(spent, msg("assistant", "Pause the goal yourself."));
+        }
+        require(goalAuditRecoveryCount(spent) == maxGoalAuditRecoveries,
+            "the goal recovery budget did not reach its bound");
+        appendLinked(spent, msg("user", "New request while stalled."));
+        require(goalAuditRecoveryCount(spent) == 0,
+            "a new user request did not start a fresh recovery budget");
+        require(goalAuditRecoveryCount(progressed) == 0,
+            "useful tool progress did not reset the goal recovery budget");
     }
-    writeln("PASS prose-only goal turns remain stalled until a useful action");
+    // A stalled goal is bounded in the turn decision itself: the reported chat
+    // answered every recovery with "pause the active goal; this session cannot
+    // invoke goal_complete" while the app queued another turn, so the goal
+    // never stopped and the prompt grew past 386k tokens.
+    {
+        ChatSession stalled;
+        stalled.goal = "Deliver every requested outcome";
+        stalled.goalStatus = "active";
+        appendLinked(stalled, msg("user", stalled.goal));
+        appendLinked(stalled, msg("user", "Persistent goal continuation: " ~ stalled.goal, true));
+        appendLinked(stalled, msg("assistant",
+            "Pause the active goal; this session cannot invoke goal_complete."));
+        TurnPolicy policy;
+        policy.toolsEnabled = true;
+        foreach (attempt; 0 .. maxGoalAuditRecoveries)
+        {
+            auto recovering = decideTurn(stalled, policy);
+            require(recovering.action == TurnAction.request && recovering.advanceGoal,
+                "a stalled goal lost a bounded recovery turn");
+            appendLinked(stalled, msg("user", recovering.guidance, true));
+            appendLinked(stalled, msg("assistant",
+                "Pause the active goal; this session cannot invoke goal_complete."));
+        }
+        auto stopped = decideTurn(stalled, policy);
+        require(stopped.action == TurnAction.settle && stopped.settleGoal == "paused",
+            "a goal that never acted kept the chat looping instead of stopping");
+        require(stopped.guidance.length == 0,
+            "the stopped goal still queued another turn");
+        require(stopped.taskStatus != "completed",
+            "stopping a stalled goal fabricated completion of its work");
+        require(stopped.status.indexOf("without progress") >= 0,
+            "the stopped goal did not explain why it stopped");
+    }
+    writeln("PASS prose-only goal turns remain stalled until a useful action, within a bounded recovery budget");
 
     foreach (definitions; [nativeOnlyToolDefinitions(), builtinToolDefinitions()])
     {
