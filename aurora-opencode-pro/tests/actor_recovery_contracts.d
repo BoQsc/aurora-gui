@@ -26,12 +26,11 @@ int main()
     if (only.length) modes = only.split(",");
     foreach (mode; modes)
     {
-        // A goal-stall turn performs a real write, so its workspace lives
-        // outside the checkout: the filesystem host serializes work on one
-        // checkout and a concurrent source operation would stall the write.
-        const workspace = mode == "goal-stall"
-            ? buildPath(tempDir(), "aurora-goal-stall-" ~ to!string(MonoTime.currTime.ticks))
-            : buildPath(directory, mode);
+        // Fixture workspaces live outside the checkout: the filesystem host
+        // serializes work on one checkout, so a concurrent source operation in
+        // the running app would stall a fixture write for its whole timeout.
+        const workspace = buildPath(tempDir(),
+            "aurora-actor-recovery-" ~ mode ~ "-" ~ to!string(MonoTime.currTime.ticks));
         mkdirRecurse(workspace);
         ChatSession initial; initial.id = "recovery-" ~ mode; initial.model = "actor-" ~ mode;
         const persistent = mode == "budget" || mode == "transient-cap" || mode == "bad-output" ||

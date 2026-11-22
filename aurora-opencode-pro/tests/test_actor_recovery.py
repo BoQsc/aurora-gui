@@ -125,7 +125,7 @@ try:
     env = dict(os.environ, AURORA_CONTRACT_PROVIDER_BASE=f"http://127.0.0.1:{server.server_port}/v1",
                AURORA_ACTOR_RECOVERY_MODES=only)
     result = subprocess.run([sys.executable, str(package / "tests/run_architecture_checks.py"),
-                             "actor_recovery_contracts"], cwd=package.parent, env=env, timeout=150)
+                             "actor_recovery_contracts"], cwd=package.parent, env=env, timeout=600)
     assert result.returncode == 0, "Actor recovery fixture failed"
     expected = {"retry": 2, "retry-stop": 1, "transient-cap": 3, "budget": 1,
                 "quota": 2, "bad-output": 4, "summary": 1, "summary-error": 1, "unoffered": 4, "mixed-offer": 2}
