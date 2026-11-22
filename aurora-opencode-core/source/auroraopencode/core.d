@@ -1870,9 +1870,10 @@ public struct Settings
     // by default; the Settings dialog owns the switch.
     bool composerSuggestion = true;
     // After a reply settles, show 2 clickable follow-up messages at the end
-    // of the chat as deliberately different directions. On by default; the
-    // Settings dialog owns the switch.
-    bool experimentalFollowUpSuggestions = true;
+    // of the chat as deliberately different directions. Experimental and off
+    // by default while the suggestions are still being improved; the Settings
+    // dialog owns the switch.
+    bool experimentalFollowUpSuggestions;
     string diagnosticModel; // opt-in, same-provider read-only review of stalled tasks
     bool hideHunkHeaders = true;
     // Render assistant-viewed images as a compact image-only row instead of a
@@ -2561,6 +2562,12 @@ public Settings loadSettings()
                 // extra completion protocol once. Explicit goals stay intact.
                 if (settingsVersion < 4)
                     settings.autoGoalFromFirstMessage = false;
+                // Version 5 makes the in-chat follow-up suggestions opt-in.
+                // Earlier builds persisted `true` for this experimental
+                // feature by default; clear it once while the suggestions are
+                // still being improved. The Settings dialog can turn it on.
+                if (settingsVersion < 5)
+                    settings.experimentalFollowUpSuggestions = false;
             }
         }
         catch (Exception error)
@@ -2624,7 +2631,7 @@ public void saveSettings(const ref Settings settings, bool strictIO = false)
 {
     ensureStateDirectory();
     JSONValue root;
-    root["settingsVersion"] = 4;
+    root["settingsVersion"] = 5;
     root["baseUrl"] = settings.baseUrl;
     root["apiKey"] = settings.apiKey;
     JSONValue providerKeys = JSONValue(string[].init);

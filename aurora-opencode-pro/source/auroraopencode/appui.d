@@ -30151,7 +30151,8 @@ private void pollButtonSuggestionRequest()
         optionsBody.add(suggestionRow);
 
         // Suggested follow-ups: 2 clickable, deliberately different next
-        // messages at the end of a settled chat. Experimental but on by default.
+        // messages at the end of a settled chat. Experimental and off by
+        // default while the suggestions are still being improved.
         auto followUpsRow = new HBox(8);
         followUpsRow.layoutHints().preferredHeight = 32;
         auto followUpsCheck = new CheckBox("Suggest follow-ups at end of chat");

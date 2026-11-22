@@ -1,8 +1,8 @@
 module followup_suggestions_ui_contracts;
 
 // Suggested follow-ups: 2 clickable next messages at the end of a settled
-// chat, on by default behind an experimental Settings switch. No provider
-// request is completed here: the queued job is dropped with its conversation.
+// chat, opt-in behind an experimental Settings switch. No provider request is
+// completed here: the queued job is dropped with its conversation.
 
 import aurora;
 import auroraopencode.appui : OpenCodeRoot;
@@ -10,7 +10,7 @@ import auroraopencode.core;
 import core.time : MonoTime, msecs, seconds;
 import core.thread : Thread;
 import std.conv : to;
-import std.file : mkdirRecurse, tempDir;
+import std.file : mkdirRecurse, tempDir, write;
 import std.path : buildPath;
 import std.string : indexOf;
 import std.stdio : writeln;
@@ -22,6 +22,16 @@ int main()
     const workspace = buildPath(directory, "workspace");
     mkdirRecurse(workspace);
     setOpencodeStateDirectoryForTesting(directory);
+    // Older builds saved `true` for this experimental feature by default; the
+    // one-time migration must make existing installs opt-in as well.
+    const legacy = buildPath(directory, "legacy-settings");
+    mkdirRecurse(legacy);
+    setOpencodeStateDirectoryForTesting(legacy);
+    write(buildPath(legacy, "settings.json"),
+        `{"settingsVersion":4,"experimentalFollowUpSuggestions":true}`);
+    assert(!loadSettings().experimentalFollowUpSuggestions,
+        "the old default follow-up setting was not migrated to off");
+    setOpencodeStateDirectoryForTesting(directory);
     Settings settings;
     settings.baseUrl = "http://127.0.0.1:9/v1";
     settings.apiKey = "fixture";
@@ -29,9 +39,8 @@ int main()
     settings.workspace = workspace;
     settings.quickTitle = false;
     settings.composerSuggestion = true;
-    // Deliberately leave experimentalFollowUpSuggestions at its default.
-    assert(settings.experimentalFollowUpSuggestions,
-        "suggested follow-ups must default to on");
+    assert(!settings.experimentalFollowUpSuggestions,
+        "suggested follow-ups must default to off");
     saveSettings(settings);
 
     WindowOptions options;
@@ -51,13 +60,31 @@ int main()
         Thread.sleep(1.msecs);
     }
 
-    // The Settings switch exists and is on by default.
+    // The Settings switch exists and is off by default.
     auto followUpsSwitch = root.followUpsCheckboxForTesting();
     assert(followUpsSwitch !is null,
         "the suggested follow-ups setting is missing");
-    assert(followUpsSwitch.checked(),
-        "suggested follow-ups are not on by default");
+    assert(!followUpsSwitch.checked(),
+        "suggested follow-ups are on by default");
     root.dismissPopupForTesting();
+
+    // The default-off setting keeps a settled conversation free of chips even
+    // when a list is available.
+    root.newChatForTesting();
+    root.tickTree(0.02);
+    root.addConversationForTesting(["user", "assistant"],
+        ["Add a stop button", "The stop button is in place."]);
+    root.offerFollowUpsForTesting(["This must stay hidden", "So must this"]);
+    root.tickTree(0.02);
+    root.projectTranscriptForTesting();
+    assert(driver.paint(), "the default transcript could not paint");
+    assert(root.followUpChipBoundsForTesting().length == 0,
+        "follow-up chips appeared although the feature is off by default");
+
+    // Opt in for the rest of the fixture. The dialog was dismissed above; its
+    // checkbox stays alive and still runs the same change handler.
+    followUpsSwitch.setChecked(true, true);
+    root.tickTree(0.02);
 
     // A settled conversation paints two chips at the end of the transcript.
     root.newChatForTesting();
@@ -136,8 +163,8 @@ int main()
     assert(root.followUpsPendingForTesting(),
         "opening a settled conversation did not request follow-ups");
 
-    writeln("PASS suggested follow-ups are on by default, render as " ~
-        "clickable chips at the end of a settled chat, preserve a typed " ~
+    writeln("PASS suggested follow-ups default to off, render after opt-in " ~
+        "as clickable chips at the end of a settled chat, preserve a typed " ~
         "draft on click, disappear when disabled, and ask only for settled " ~
         "replies");
     window.close();
