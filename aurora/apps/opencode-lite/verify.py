@@ -27,6 +27,18 @@ def run(command: list[object], timeout: int = 1800) -> None:
                    check=True, timeout=timeout)
 
 
+def standalone_running() -> bool:
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI",
+             "IMAGENAME eq aurora-opencode-lite-standalone.exe",
+             "/FO", "CSV", "/NH"],
+            capture_output=True, timeout=30)
+    except Exception:
+        return False
+    return b"aurora-opencode-lite-standalone.exe" in result.stdout.lower()
+
+
 def pe_layout(path: Path) -> tuple[int, int, int]:
     data = path.read_bytes()
     pe = struct.unpack_from("<I", data, 0x3C)[0]
@@ -162,7 +174,22 @@ def main() -> int:
     if "lite-stop" in scene_text:
         raise RuntimeError("host scene still has the separate lite-stop button")
 
-    if "--live" in sys.argv:
+    live = "--live" in sys.argv
+    full = "--full" in sys.argv
+    if live and full:
+        raise RuntimeError("choose either --live or --full")
+    if standalone_running():
+        if full:
+            raise RuntimeError(
+                "standalone is running; full verification would rebuild the "
+                "locked EXE. Use `python verify.py` for the live check, or "
+                "stop the host at an explicit restart point.")
+        if not live:
+            print("standalone running; selecting the live check "
+                  "(controller DLL + scene only).", flush=True)
+            live = True
+
+    if live:
         # Live workflow: update the controller DLL and validate the scene, but
         # never rebuild the locked standalone EXE or disturb the running host.
         run([DUB, "build", "--config=plugin", f"--compiler={COMPILER}"])

@@ -24,6 +24,29 @@ The old direct-window `source/app.d`/`LiteShell` path remains only as the
 explicit `direct-prototype` configuration. It is not the default and is not a
 template for future apps.
 
+## Live-first development
+
+Keep the standalone host running. While it is open:
+
+```bat
+python verify.py
+```
+
+This automatically selects the live check: it rebuilds the controller DLL and
+validates the scene, but never rebuilds the locked standalone EXE or restarts
+the host. The default is intentionally live-first.
+
+The full gate is opt-in and requires the host to be stopped at an explicit
+restart point:
+
+```bat
+python verify.py --full
+```
+
+Running `--full` while the host is open is refused. `tools/build_standalone.py`
+also refuses to rebuild while the standalone is running. Do not kill or
+relaunch the host just to apply scene/controller changes.
+
 ## Live code development
 
 For controller-code iteration, run the host without its embedded controller:

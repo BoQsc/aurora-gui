@@ -127,7 +127,7 @@ def main() -> int:
     run([PYTHON, "-B", "new_app_test.py"], SCRIPTS)
 
     # ---- Aurora OpenCode Lite ----
-    run([PYTHON, "-B", "verify.py"], LITE)
+    run([PYTHON, "-B", "verify.py", "--full"], LITE)
 
     print()
     print("Aurora v2 verification passed.")
