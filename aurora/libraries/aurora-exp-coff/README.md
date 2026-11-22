@@ -144,7 +144,9 @@ Standalone app/host gates and `scripts/dub-standalone.py` embed an icon with
 `scripts/embed-app-icon.py`, which reuses the tested `patch-pe-icon.py`
 resource builder. It discovers `<app>/assets/<name>.ico` or
 `<app>/<name>.ico`, falls back to the Aurora host icon, and verifies that
-Windows `ExtractIconExW` can read the result.
+Windows `ExtractIconExW` can read the result. Aurora-D's Win32 backend also
+falls back to the executable's embedded `RT_GROUP_ICON` id 1 when an app has no
+valid `WindowOptions.iconPath`, so default-titlebar windows show the icon.
 
 ## Default standalone linker
 

@@ -1533,9 +1533,21 @@ else version (Windows)
 
         private bool setWindowIcon(string path)
         {
-            if (_hwnd is null || path.length == 0) return false;
-            auto large = loadWindowIcon(path, SM_CXICON, SM_CYICON);
-            auto small = loadWindowIcon(path, SM_CXSMICON, SM_CYSMICON);
+            if (_hwnd is null) return false;
+            HICON large = null;
+            HICON small = null;
+            if (path.length != 0)
+            {
+                large = loadWindowIcon(path, SM_CXICON, SM_CYICON);
+                small = loadWindowIcon(path, SM_CXSMICON, SM_CYSMICON);
+            }
+            // Apps that rely on the default Windows titlebar often do not
+            // provide an icon file. Use the icon embedded in the executable
+            // (RT_GROUP_ICON id 1) as the fallback.
+            if (large is null)
+                large = loadEmbeddedWindowIcon(SM_CXICON, SM_CYICON);
+            if (small is null)
+                small = loadEmbeddedWindowIcon(SM_CXSMICON, SM_CYSMICON);
             if (large is null && small is null) return false;
 
             auto oldLarge = _largeIcon;
@@ -1580,6 +1592,17 @@ else version (Windows)
             const height = GetSystemMetrics(metricY);
             return cast(HICON) LoadImageW(null, toUTF16z(path), IMAGE_ICON,
                 width, height, LR_LOADFROMFILE);
+        }
+
+        private HICON loadEmbeddedWindowIcon(int metricX, int metricY)
+        {
+            const width = GetSystemMetrics(metricX);
+            const height = GetSystemMetrics(metricY);
+            auto hmodule = GetModuleHandleW(null);
+            if (hmodule is null) return null;
+            return cast(HICON) LoadImageW(hmodule,
+                cast(const(wchar)*) cast(size_t) 1, IMAGE_ICON,
+                width, height, LR_DEFAULTCOLOR);
         }
 
         private void releaseWindowIcons()
