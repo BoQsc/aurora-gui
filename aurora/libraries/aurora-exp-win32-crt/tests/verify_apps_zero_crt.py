@@ -25,6 +25,7 @@ REPO = Path(__file__).resolve().parents[4]
 PACKAGE = REPO / "aurora" / "libraries" / "aurora-exp-win32-crt"
 COFF = REPO / "aurora" / "libraries" / "aurora-exp-coff"
 LINKER = COFF / "coff-link.exe"
+ICON_HELPER = REPO / "scripts" / "embed-app-icon.py"
 OUTPUT = REPO / "build" / "zero-crt" / "apps"
 
 sys.path.insert(0, str(PACKAGE / "tests"))
@@ -231,6 +232,14 @@ def verify_app(name: str, app_dir: Path, environment: dict[str, str]) -> list[st
         raise CheckError(
             f"{name}: PE subsystem {actual}, expected {expected}; "
             "the app's /SUBSYSTEM flag was not propagated")
+    icon = subprocess.run(
+        [sys.executable, "-B", str(ICON_HELPER), str(executable),
+         str(app_dir), name],
+        capture_output=True, text=True, timeout=120,
+    )
+    if icon.returncode != 0:
+        raise CheckError(
+            f"{name}: icon embedding failed\n" + icon.stdout + icon.stderr)
     imports = read_imports(executable)
     forbidden = sorted(
         dll for dll in imports if dll.startswith(FORBIDDEN_PREFIXES)

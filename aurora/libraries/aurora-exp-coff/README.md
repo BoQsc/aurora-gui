@@ -138,6 +138,14 @@ the PDB info, TPI, DBI, symbol-record, section-header, and publics streams.
 match the PDB info stream, `mainCRTStartup` in the public symbols, `.text` in the
 section headers, and the EXE to exit 0.
 
+## Icon embedding
+
+Standalone app/host gates and `scripts/dub-standalone.py` embed an icon with
+`scripts/embed-app-icon.py`, which reuses the tested `patch-pe-icon.py`
+resource builder. It discovers `<app>/assets/<name>.ico` or
+`<app>/<name>.ico`, falls back to the Aurora host icon, and verifies that
+Windows `ExtractIconExW` can read the result.
+
 ## Default standalone linker
 
 ```bat

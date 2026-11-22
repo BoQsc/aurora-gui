@@ -2,13 +2,16 @@
 """Run DUB with the Aurora linker as the default standalone linker.
 
 Builds `coff-link`, sets `LINKCMD64`, and forwards all arguments to DUB in the
-current package. Use this instead of `dub` for standalone (zero-CRT) builds:
+current package. After a successful build, embeds an app icon from
+`assets/<target>.ico`, `<target>.ico`, or the Aurora host fallback. Use this
+instead of `dub` for standalone (zero-CRT) builds:
 
     python scripts/dub-standalone.py build --compiler=dmd
 """
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import subprocess
 import sys
@@ -17,6 +20,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 COFF = REPO / "aurora" / "libraries" / "aurora-exp-coff"
 LINKER = COFF / "coff-link.exe"
+ICON_HELPER = REPO / "scripts" / "embed-app-icon.py"
 
 
 def dub_path() -> str:
@@ -45,6 +49,26 @@ def main() -> int:
     environment = os.environ.copy()
     environment["LINKCMD64"] = str(LINKER)
     result = subprocess.run([dub_path(), *sys.argv[1:]], env=environment)
+    if result.returncode == 0:
+        manifest = Path.cwd() / "dub.json"
+        if manifest.is_file():
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+                target = data.get("targetName") or data.get("name")
+                if target:
+                    candidates = list(Path.cwd().rglob(f"{target}.exe"))
+                    if candidates:
+                        executable = max(candidates,
+                                         key=lambda path: path.stat().st_mtime)
+                        icon = subprocess.run(
+                            [sys.executable, "-B", str(ICON_HELPER),
+                             str(executable), str(Path.cwd()), target],
+                            capture_output=True, text=True, timeout=120,
+                        )
+                        if icon.returncode != 0:
+                            print(icon.stdout + icon.stderr, file=sys.stderr)
+            except (OSError, ValueError):
+                pass
     return result.returncode
 
 

@@ -21,6 +21,7 @@ REPO = Path(__file__).resolve().parents[4]
 PACKAGE = REPO / "aurora" / "libraries" / "aurora-exp-win32-crt"
 COFF = REPO / "aurora" / "libraries" / "aurora-exp-coff"
 LINKER = COFF / "coff-link.exe"
+ICON_HELPER = REPO / "scripts" / "embed-app-icon.py"
 FIXTURE = PACKAGE / "tests" / "host_gui_app"
 EXECUTABLE = FIXTURE / "build" / "host-zero-crt-gui.exe"
 SCENE = REPO / "aurora" / "aurora-host" / "samples" / "hello.scene.json"
@@ -78,6 +79,14 @@ def check() -> list[str]:
     if subsystem != 2:
         raise CheckError(
             f"GUI host PE subsystem is {subsystem}, expected 2 (WINDOWS)")
+    icon = subprocess.run(
+        [sys.executable, "-B", str(ICON_HELPER), str(EXECUTABLE),
+         str(REPO / "aurora" / "aurora-host"), "aurora-host"],
+        capture_output=True, text=True, timeout=120,
+    )
+    if icon.returncode != 0:
+        raise CheckError(
+            "GUI host icon embedding failed\n" + icon.stdout + icon.stderr)
     imports = read_imports(EXECUTABLE)
     forbidden = sorted(
         dll for dll in imports if dll.startswith(FORBIDDEN_PREFIXES)
