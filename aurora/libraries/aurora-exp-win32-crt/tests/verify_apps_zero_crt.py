@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -122,6 +123,12 @@ def build_fixture(name: str, app_dir: Path) -> Path:
         if value not in versions:
             versions.append(value)
 
+    subsystem_flags: list[str] = []
+    for value in [*data.get("lflags-windows", []),
+                  *config.get("lflags-windows", [])]:
+        if value.startswith("/SUBSYSTEM:") and value not in subsystem_flags:
+            subsystem_flags.append(value)
+
     fixture_dir = OUTPUT / name
 
     dependencies: dict[str, dict[str, str]] = {}
@@ -170,7 +177,7 @@ def build_fixture(name: str, app_dir: Path) -> Path:
         "versions": versions,
         "libs-windows": libraries,
         "dflags-windows": [*dflags, "-mscrtlib=msvcrt"],
-        "lflags-windows": NODEFAULTLIB,
+        "lflags-windows": [*NODEFAULTLIB, *subsystem_flags],
         "buildTypes": {
             "portable-release": {
                 "buildOptions": ["releaseMode", "optimize", "inline"],
@@ -191,6 +198,13 @@ def build_fixture(name: str, app_dir: Path) -> Path:
     return fixture_dir
 
 
+def pe_subsystem(executable: Path) -> int:
+    data = executable.read_bytes()
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    optional = pe + 24
+    return struct.unpack_from("<H", data, optional + 68)[0]
+
+
 def verify_app(name: str, app_dir: Path, environment: dict[str, str]) -> list[str]:
     fixture = build_fixture(name, app_dir)
     result = subprocess.run(
@@ -208,6 +222,15 @@ def verify_app(name: str, app_dir: Path, environment: dict[str, str]) -> list[st
     executable = fixture / "build" / (name + "-zero-crt.exe")
     if not executable.is_file():
         raise CheckError(f"{name}: no executable produced")
+    fixture_data = json.loads(
+        (fixture / "dub.json").read_text(encoding="utf-8"))
+    expected = 2 if any(flag.startswith("/SUBSYSTEM:WINDOWS")
+                        for flag in fixture_data["lflags-windows"]) else 3
+    actual = pe_subsystem(executable)
+    if actual != expected:
+        raise CheckError(
+            f"{name}: PE subsystem {actual}, expected {expected}; "
+            "the app's /SUBSYSTEM flag was not propagated")
     imports = read_imports(executable)
     forbidden = sorted(
         dll for dll in imports if dll.startswith(FORBIDDEN_PREFIXES)

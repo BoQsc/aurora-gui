@@ -115,6 +115,11 @@ private string outputSectionName(string name)
     foreach (prefix; [".drectve", ".debug$", ".llvm_addrsig", ".note"])
         if (name.length >= prefix.length && name[0 .. prefix.length] == prefix)
             return "";
+    // druntime registers the image's ".data" section as the static GC root
+    // range; uninitialized globals must therefore live in ".data" too.
+    if (name.length >= 4 && name[0 .. 4] == ".bss"
+        && (name.length == 4 || name[4] == '$'))
+        return ".data";
     size_t dollar;
     while (dollar < name.length && name[dollar] != '$')
         ++dollar;

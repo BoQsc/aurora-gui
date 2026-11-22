@@ -69,6 +69,7 @@ Implemented:
 - `ADDR64` and `ADDR32NB` fixups with generated base-relocation entries;
 - COMDAT ANY/NODUPLICATES and ASSOCIATIVE selection from section aux records;
 - archive (`.lib`) member extraction for undefined symbols;
+- `/SUBSYSTEM:WINDOWS`/`CONSOLE` emission (GUI apps get no console window);
 - import-library short-object parsing, `.idata` descriptors/ILT/IAT, and
   per-symbol jump thunks;
 - TLS directory emission with `_tls_used`/`_tls_index` patching;

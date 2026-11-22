@@ -25,6 +25,7 @@
     "gdi32"
   ],
   "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
     "/NODEFAULTLIB:msvcrt",
     "/NODEFAULTLIB:libcmt",
     "/NODEFAULTLIB:oldnames",

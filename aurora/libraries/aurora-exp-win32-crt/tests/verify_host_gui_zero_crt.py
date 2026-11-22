@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import shutil
 import os
+import struct
 import subprocess
 import sys
 import time
@@ -71,6 +72,12 @@ def check() -> list[str]:
         )
     if not EXECUTABLE.is_file():
         raise CheckError("GUI host fixture produced no executable")
+    data = EXECUTABLE.read_bytes()
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    subsystem = struct.unpack_from("<H", data, pe + 24 + 68)[0]
+    if subsystem != 2:
+        raise CheckError(
+            f"GUI host PE subsystem is {subsystem}, expected 2 (WINDOWS)")
     imports = read_imports(EXECUTABLE)
     forbidden = sorted(
         dll for dll in imports if dll.startswith(FORBIDDEN_PREFIXES)
