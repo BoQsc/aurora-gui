@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy the opt-in default for in-chat suggested follow-ups (core setting default, one-time reset, UI contract) and publish the rebuilt app.",
+  "reason": "Record the committed source (c7511db) for the delivered goal-loop fix so the public update can publish with matching provenance.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-22 06:49:43.8876497 UTC",
-  "finishedAt": "2026-11-22 06:51:18.1906691 UTC",
-  "durationMs": 94303,
+  "startedAt": "2026-11-22 19:54:45.5693741 UTC",
+  "finishedAt": "2026-11-22 19:55:47.9648604 UTC",
+  "durationMs": 62406,
   "exitCode": 0,
   "errors": [],
   "publishStatus": "published",
-  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (3617488379bf).",
+  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (9179e6f1520d).",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

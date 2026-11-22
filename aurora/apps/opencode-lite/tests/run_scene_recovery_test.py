@@ -50,7 +50,9 @@ def main() -> int:
         environment["LOCALAPPDATA"] = str(temp)
         environment["APPDATA"] = str(temp)
         host = subprocess.Popen(
-            [str(HOST), "--external-controller", "--scene", str(scene)],
+            [str(HOST), "--external-controller", "--no-activate",
+             "--instance-group", "scene-recovery",
+             "--scene", str(scene)],
             cwd=str(APP), env=environment, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         lines: queue.Queue[str] = queue.Queue()

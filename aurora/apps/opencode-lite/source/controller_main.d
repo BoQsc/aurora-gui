@@ -26,8 +26,22 @@ final class HostLink
     this(ushort port)
     {
         _mutex = new Mutex();
-        _socket = new TcpSocket(AddressFamily.INET);
-        _socket.connect(new InternetAddress("127.0.0.1", port));
+        foreach (attempt; 0 .. 100)
+        {
+            try
+            {
+                _socket = new TcpSocket(AddressFamily.INET);
+                _socket.connect(new InternetAddress("127.0.0.1", port));
+                break;
+            }
+            catch (Exception)
+            {
+                _socket = null;
+                Thread.sleep(50.msecs);
+            }
+        }
+        if (_socket is null)
+            throw new Exception("could not connect to the host control port");
         auto reader = new Thread(&readLoop);
         reader.isDaemon = true;
         reader.start();
@@ -56,8 +70,26 @@ final class HostLink
                         line = line[0 .. $ - 1];
                     if (line.length != 0)
                     {
-                        synchronized (_mutex)
-                            _lines ~= line.idup;
+                        // Asynchronous action events arrive without a
+                        // request/response exchange. Queue them as events so
+                        // the controller loop sees them immediately.
+                        if (line.startsWith("EVENT "))
+                        {
+                            try
+                            {
+                                const event = parseJSON(line[6 .. $]);
+                                synchronized (_mutex)
+                                    _events ~= event;
+                            }
+                            catch (Exception)
+                            {
+                            }
+                        }
+                        else
+                        {
+                            synchronized (_mutex)
+                                _lines ~= line.idup;
+                        }
                     }
                 }
             }
@@ -223,7 +255,9 @@ int main(string[] args)
                 auto node = "node" in event.object;
                 auto action = "action" in event.object;
                 if (node !is null && action !is null)
+                {
                     controller.handleAction(node.str, action.str);
+                }
             }
             controller.service(0.016);
             Thread.sleep(16.msecs);

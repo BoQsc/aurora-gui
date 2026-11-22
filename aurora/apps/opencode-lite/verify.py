@@ -168,7 +168,8 @@ def main() -> int:
         encoding="utf-8"))
     scene_text = json.dumps(scene)
     for required in ("lite-transcript", "lite-send", "lite-input",
-                     "lite-status"):
+                     "lite-status", "lite-provider-opencode",
+                     "lite-provider-openai", "lite-key-state"):
         if required not in scene_text:
             raise RuntimeError(f"host scene is missing {required}")
     if "lite-stop" in scene_text:
@@ -206,6 +207,12 @@ def main() -> int:
     run([DUB, "build", "--config=host-lite", f"--compiler={COMPILER}"])
     run([DUB, "build", "--config=controller", f"--compiler={COMPILER}"])
     run([PYTHON, "-B", "tests/run_external_controller_test.py"])
+    run([PYTHON, "-B", "tests/run_external_failure_test.py"])
+    run([PYTHON, "-B", "tests/run_single_instance_test.py"])
+    run([PYTHON, "-B", "tests/run_intentional_duplicate_test.py"])
+    run([PYTHON, "-B", "tests/run_run_journal_test.py"])
+    run([PYTHON, "-B", "tests/run_controller_supervisor_test.py"])
+    run([PYTHON, "-B", "tests/run_command_menu_test.py"])
     run([DUB, "build", "--config=plugin", f"--compiler={COMPILER}"])
     run([DUB, "build", "--config=plugin-smoke", f"--compiler={COMPILER}"])
     run([DUB, "build", "--config=plugin-reload-test",

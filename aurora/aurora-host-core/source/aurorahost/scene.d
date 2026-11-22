@@ -86,6 +86,7 @@ struct SceneNode
     SurfaceSpec surface;
     MenuItemSpec[] menuItems;
     TabItem[] tabItems;
+    bool commandLine;
     SceneNode[] children;
 }
 
@@ -124,6 +125,7 @@ class NodeRegistry
     private string[string] _types;
     private string[string] _texts;
     private string[string] _tooltips;
+    private string[string] _actions;
     private bool[string] _quiet;
     private string[] _order;
     private SurfaceWidget[] _surfaces;
@@ -153,6 +155,7 @@ class NodeRegistry
         _types = null;
         _texts = null;
         _tooltips = null;
+        _actions = null;
         _quiet = null;
         _order.length = 0;
         _surfaces.length = 0;
@@ -214,6 +217,29 @@ class NodeRegistry
     {
         auto found = id in _widgets;
         return found is null ? null : *found;
+    }
+
+    string[] order()
+    {
+        return _order;
+    }
+
+    string type(string id)
+    {
+        auto found = id in _types;
+        return found is null ? "" : *found;
+    }
+
+    void setAction(string id, string action)
+    {
+        if (id in _widgets && action.length > 0)
+            _actions[id] = action;
+    }
+
+    string action(string id)
+    {
+        auto found = id in _actions;
+        return found is null ? "" : *found;
     }
 
     /** Attach an explanatory hover hint without changing widget layout. */
@@ -570,7 +596,7 @@ private bool isNodeSpecificField(string type, string name)
         case "button":
             return name == "text" || name == "action";
         case "menu":
-            return name == "text" || name == "items";
+            return name == "text" || name == "items" || name == "commandLine";
         case "tabs":
             return name == "items";
         case "separator":
@@ -1156,6 +1182,7 @@ private SceneNode parseNode(JSONValue value, ref int count, int depth,
             requireNoChildren(value, label);
             node.text = readString(value, "text", "", label);
             enforce(node.text.length > 0, label ~ ".text is required");
+            node.commandLine = readBool(value, "commandLine", false, label);
             if (auto items = "items" in value.object)
                 node.menuItems = parseMenuItems(*items, label ~ ".items");
             break;
@@ -1481,6 +1508,46 @@ private ContextMenuItem[] buildMenuItems(const(MenuItemSpec)[] specs,
     return items;
 }
 
+private ContextMenuItem[] buildCommandItems(NodeRegistry registry, string selfId)
+{
+    ContextMenuItem[] controls;
+    foreach (id; registry.order())
+    {
+        if (id == selfId)
+            continue;
+        auto widget = registry.widget(id);
+        if (widget is null)
+            continue;
+        ContextMenuItem[] actions;
+        if (widget.focusable() && widget.enabled() && widget.visible())
+        {
+            actions ~= ContextMenuItem.command("Focus", IconKind.none,
+                delegate() { widget.requestFocus(); }, "", true);
+        }
+        const action = registry.action(id);
+        if (action.length > 0)
+        {
+            actions ~= ContextMenuItem.command("Trigger " ~ action,
+                IconKind.none, delegate()
+                {
+                    registry.dispatchAction(id, action);
+                }, "", true);
+        }
+        if (actions.length == 0)
+            continue;
+        const label = registry.type(id) ~ " " ~ id;
+        controls ~= ContextMenuItem.submenuItem(label, IconKind.none,
+            actions, true);
+    }
+    if (controls.length == 0)
+    {
+        controls ~= ContextMenuItem.command("No active controls",
+            IconKind.none, null, "", false);
+    }
+    return [ContextMenuItem.submenuItem("Active controls", IconKind.none,
+        controls, true)];
+}
+
 Widget buildWidget(const SceneNode node, NodeRegistry registry)
 {
     switch (node.type)
@@ -1541,10 +1608,13 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
             applyHints(button, node);
             registry.registerNode(node.id, node.type, button, node.text);
             if (node.action.length > 0)
+            {
+                registry.setAction(node.id, node.action);
                 button.onClick = delegate()
                 {
                     registry.dispatchAction(node.id, node.action);
                 };
+            }
             else
                 button.onClick = delegate() { registry.notifyActivated(node.id); };
             return button;
@@ -1558,6 +1628,15 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
                 button.setTextColor(node.textColor);
             applyHints(button, node);
             registry.registerNode(node.id, node.type, button, node.text);
+            if (node.commandLine)
+            {
+                button.onClick = delegate()
+                {
+                    button.setItems(buildCommandItems(registry, node.id));
+                    button.open();
+                };
+                return button;
+            }
             auto items = buildMenuItems(node.menuItems, registry, node.id);
             button.setItems(items);
             button.onEmpty = delegate() { registry.notifyActivated(node.id); };

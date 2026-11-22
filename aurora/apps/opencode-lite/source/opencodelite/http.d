@@ -59,7 +59,7 @@ private ParsedUrl parseUrl(string url)
     if (scheme != "http" && scheme != "https")
         throw new Exception("unsupported URL scheme: " ~ scheme);
 
-    size_t colon = authority.lastIndexOf(':');
+    const colon = authority.lastIndexOf(':');
     if (colon >= 0)
     {
         parsed.host = authority[0 .. colon];
@@ -160,7 +160,22 @@ SseResult streamSse(string url, string headers, string body,
     result.status = status;
     if (status < 200 || status >= 300)
     {
-        result.error = "HTTP status " ~ to!string(status);
+        string detail;
+        for (size_t total; total < 4096;)
+        {
+            ubyte[1024] buffer;
+            DWORD read;
+            if (!WinHttpReadData(request, buffer.ptr,
+                    cast(DWORD) buffer.length, &read) || read == 0)
+                break;
+            detail ~= cast(string) buffer[0 .. read];
+            total += read;
+        }
+        detail = detail.strip;
+        if (detail.length > 600)
+            detail = detail[0 .. 600];
+        result.error = "HTTP status " ~ to!string(status)
+            ~ (detail.length > 0 ? ": " ~ detail : "");
         return result;
     }
 

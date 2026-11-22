@@ -68,7 +68,7 @@ def main() -> int:
         if "assistant=Hello world" not in result.stdout:
             print("session smoke failed: wrong assistant text", file=sys.stderr)
             return 1
-        if "done=true failed=false settings=true" not in result.stdout:
+        if "done=true failed=false settings=true defaults=true" not in result.stdout:
             print("session smoke failed: completion/settings mismatch",
                   file=sys.stderr)
             return 1

@@ -64,8 +64,58 @@ build\aurora-opencode-lite-controller.exe --port 8791
 
 The controller talks to the host over its TCP control channel. Edit, rebuild,
 and restart the controller without closing the host window. The host PID and
-scene stay alive. The production standalone keeps the embedded controller; the
-external controller is the live-code development path.
+scene stay alive.
+
+The host scene includes a **Commands** menu. It lists active scene controls and
+their actions; choosing Focus focuses a control, while Trigger dispatches its
+scene action. The menu is built from the host node registry, so it remains
+generic across apps and does not belong to the controller.
+
+The standalone defaults to this process-isolated controller when
+`aurora-opencode-lite-controller.exe` is beside it. A native fault in the
+controller or one of its network workers therefore leaves the host window alive.
+The host can reconnect a restarted controller. In-process plugins are an
+explicit `--plugin` live-development opt-in, not the production default.
+
+The reusable supervisor lives in
+`aurorahost.controller_supervisor.ControllerSupervisor` in host-core. Hostlite
+supplies only the executable, port, retry limit, and logging callback. If the
+controller exits, the host relaunches it without restarting the window, up to a
+bounded number of consecutive exits. `--controller-port <port>` isolates
+parallel test hosts and their controllers. The controller is a D executable and
+is spawned with its console suppressed, so only the app window is visible.
+
+## Single-window policy
+
+The host is a single-window application. `hostlite` acquires
+`aurorahost.single_instance.HostInstance` before creating the window. A second
+launch finds the running window by title, activates it, and exits without
+creating another window. Start with `--no-single-instance` only for isolated
+tests.
+
+Intentional parallel instances are explicit: give each test process a distinct
+`--instance-group <name>` (for example, `--instance-group test-a` and
+`--instance-group test-b`). `--allow-duplicate-instance` is the deliberate
+escape hatch. The default app launch has neither and remains single-instance.
+
+Each run writes `run-state.json` under the app's local data directory. A normal
+window close records `closed`; an unexpected process exit leaves
+`running`/`failed`, which the next launch reports as an unclean shutdown. This
+keeps host diagnostics from disappearing with the window.
+
+Future host apps should use the same host-core module:
+
+```d
+HostInstance instance;
+if (!instance.acquire("MyApp|" ~ scene.window.title))
+{
+    activateWindow(scene.window.title);
+    return 0;
+}
+```
+
+Live development should reuse the running instance and validator checks should
+use the live path. Do not repeatedly launch the standalone while iterating.
 
 This external-controller path is the safe isolation boundary. A controller
 process can crash, hang, or hit a native access violation without taking down

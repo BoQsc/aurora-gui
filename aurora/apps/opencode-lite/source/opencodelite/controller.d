@@ -1,7 +1,9 @@
 module opencodelite.controller;
 
 import opencodelite.session : ChatSession, SessionEventKind;
-import opencodelite.settings : LiteSettings, saveSettings;
+import opencodelite.settings : LiteSettings, openAiBaseUrl, openAiModel,
+    isOpenAiBaseUrl, isOpenCodeBaseUrl, openCodeBaseUrl, openCodeModel,
+    saveSettings;
 import std.string : strip;
 
 /// The small host-facing surface the controller needs. Implementations are the
@@ -45,17 +47,50 @@ final class LiteController
             stop();
         else if (action == "save")
             saveConnection();
+        else if (action == "preset-opencode")
+            applyPreset(openCodeBaseUrl, openCodeModel, "OpenCode API preset");
+        else if (action == "preset-openai")
+            applyPreset(openAiBaseUrl, openAiModel,
+                "OpenAI-compatible preset");
+    }
+
+    private void applyPreset(string baseUrl, string model, string label)
+    {
+        rememberKey();
+        _settings.baseUrl = baseUrl;
+        _settings.model = model;
+        _settings.apiKey = isOpenCodeBaseUrl(baseUrl)
+            ? _settings.openCodeKey
+            : isOpenAiBaseUrl(baseUrl) ? _settings.openAiKey : "";
+        _view.setText("lite-base", baseUrl);
+        _view.setText("lite-model", model);
+        _view.setText("lite-key", "");
+        updateKeyState();
+        setStatus(label);
+    }
+
+    private void rememberKey()
+    {
+        const entered = _view.text("lite-key").strip;
+        if (entered.length > 0)
+            _settings.apiKey = entered;
+        if (isOpenCodeBaseUrl(_settings.baseUrl))
+            _settings.openCodeKey = _settings.apiKey;
+        else if (isOpenAiBaseUrl(_settings.baseUrl))
+            _settings.openAiKey = _settings.apiKey;
     }
 
     private void saveConnection()
     {
         _settings.baseUrl = _view.text("lite-base").strip;
         _settings.model = _view.text("lite-model").strip;
-        _settings.apiKey = _view.text("lite-key").strip;
+        rememberKey();
         try
         {
             saveSettings(_settings);
             _session.updateSettings(_settings);
+            _view.setText("lite-key", "");
+            updateKeyState();
             setStatus("Settings saved");
         }
         catch (Exception error)
@@ -120,7 +155,8 @@ final class LiteController
     {
         _view.setText("lite-base", _settings.baseUrl);
         _view.setText("lite-model", _settings.model);
-        _view.setText("lite-key", _settings.apiKey);
+        _view.setText("lite-key", "");
+        updateKeyState();
         _view.setText("lite-transcript", _transcript);
         setStatus(_status);
         _view.setText("lite-send", _session.busy() ? "Stop" : "Send");
@@ -130,5 +166,11 @@ final class LiteController
     {
         _status = value;
         _view.setText("lite-status", value);
+    }
+
+    private void updateKeyState()
+    {
+        _view.setText("lite-key-state", _settings.apiKey.length > 0
+            ? "Key set" : "No key");
     }
 }

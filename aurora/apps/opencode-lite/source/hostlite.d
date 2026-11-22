@@ -3,6 +3,9 @@ module hostlite;
 import aurorahost.runtime : runHostWindow;
 import aurorahost.scene : createWindow, loadScene, NodeRegistry;
 import aurorahost.console : errLine;
+import aurorahost.controller_supervisor : ControllerSupervisor;
+import aurorahost.single_instance : HostInstance, activateWindow;
+import aurorahost.lifecycle : HostRunJournal;
 import opencodelite.controller : LiteController;
 import opencodelite.pluginloader : LitePlugin;
 import opencodelite.registryview : RegistryLiteView;
@@ -37,6 +40,11 @@ int main(string[] args)
     ushort listenPort;
     string pluginPath;
     bool pluginDisabled;
+    bool singleInstance = true;
+    bool allowDuplicateInstance;
+    string instanceGroup;
+    bool noActivate;
+    ushort controllerPort = 8791;
     for (size_t index = 1; index < args.length; ++index)
     {
         if (args[index] == "--scene" && index + 1 < args.length)
@@ -59,20 +67,78 @@ int main(string[] args)
         }
         else if (args[index] == "--no-plugin")
             pluginDisabled = true;
+        else if (args[index] == "--no-single-instance")
+            singleInstance = false;
+        else if (args[index] == "--allow-duplicate-instance")
+            allowDuplicateInstance = true;
+        else if (args[index] == "--instance-group" && index + 1 < args.length)
+        {
+            instanceGroup = args[index + 1];
+            ++index;
+        }
+        else if (args[index] == "--no-activate")
+            noActivate = true;
+        else if (args[index] == "--controller-port" && index + 1 < args.length)
+        {
+            controllerPort = to!ushort(args[index + 1]);
+            ++index;
+        }
     }
     if (scenePath.length == 0)
         scenePath = embeddedScenePath();
+    const journalAppId = "AuroraOpenCodeLite" ~
+        (instanceGroup.length > 0 ? "-" ~ instanceGroup : "");
 
     try
     {
         const scene = loadScene(scenePath);
+        HostInstance instance;
+        if (singleInstance)
+        {
+            const instanceKey = "AuroraOpenCodeLite|" ~ scene.window.title ~
+                (instanceGroup.length > 0 ? "|" ~ instanceGroup : "");
+            if (allowDuplicateInstance)
+                instance.release(); // Explicitly intentional multi-instance run.
+            else
+            if (!instance.acquire(instanceKey))
+            {
+                if (!activateWindow(scene.window.title))
+                    errLine("hostlite: existing instance has no visible window");
+                return 0;
+            }
+        }
+        HostRunJournal journal;
+        journal.begin(journalAppId);
+        if (journal.previousUnclean)
+            errLine("hostlite: previous run ended without an intentional close");
         auto registry = new NodeRegistry();
         const settings = loadSettings();
         environment["AURORA_RENDERER"] = "software";
-        auto window = createWindow(scene, registry);
+        auto window = createWindow(scene, registry, false, false, noActivate);
+        const controllerExe = buildPath(dirName(thisExePath()),
+            "aurora-opencode-lite-controller.exe");
+        // Production default: isolate the controller in its own process so a
+        // native fault in a network worker cannot take down the host window.
+        // In-process plugins remain an explicit `--plugin` live-dev opt-in.
+        if (!externalController && pluginPath.length == 0 &&
+            !pluginDisabled && exists(controllerExe))
+        {
+            auto supervisor = new ControllerSupervisor(controllerExe,
+                controllerPort, 10, 500,
+                delegate(string text) { errLine("hostlite: " ~ text); });
+            supervisor.start();
+            const result = runHostWindow(window, registry, true, scenePath,
+                watch, controllerPort);
+            journal.close("window closed");
+            return result;
+        }
         if (externalController)
-            return runHostWindow(window, registry, true, scenePath, watch,
-                listenPort);
+        {
+            const result = runHostWindow(window, registry, true, scenePath,
+                watch, listenPort);
+            journal.close("window closed");
+            return result;
+        }
         if (pluginPath.length == 0 && !pluginDisabled)
         {
             auto bundled = buildPath(dirName(thisExePath()),
@@ -93,6 +159,7 @@ int main(string[] args)
                     scenePath, watch);
                 errLine("hostlite: plugin host loop returned " ~
                     to!string(result));
+                journal.close("window closed");
                 return result;
             }
             catch (Exception error)
@@ -108,10 +175,13 @@ int main(string[] args)
         registry.onService = &controller.service;
         registry.onAfterApply = &controller.refreshView;
         controller.refreshView();
-        return runHostWindow(window, registry, false, scenePath, watch);
+        const result = runHostWindow(window, registry, false, scenePath, watch);
+        journal.close("window closed");
+        return result;
     }
     catch (Exception error)
     {
+        HostRunJournal.recordFailure(journalAppId, error.msg);
         errLine("hostlite: " ~ error.msg);
         return 1;
     }

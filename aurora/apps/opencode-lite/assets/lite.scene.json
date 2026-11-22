@@ -25,6 +25,12 @@
             "flex": 1
           },
           {
+            "id": "lite-commands",
+            "type": "menu",
+            "text": "Commands",
+            "commandLine": true
+          },
+          {
             "id": "lite-status",
             "type": "label",
             "text": "Ready",
@@ -45,6 +51,30 @@
         "children": [
           {
             "type": "label",
+            "text": "Provider",
+            "width": 72,
+            "textColor": "#a9b7c7"
+          },
+          {
+            "id": "lite-provider-opencode",
+            "type": "button",
+            "text": "OpenCode",
+            "action": "preset-opencode"
+          },
+          {
+            "id": "lite-provider-openai",
+            "type": "button",
+            "text": "OpenAI",
+            "action": "preset-openai"
+          }
+        ]
+      },
+      {
+        "type": "row",
+        "spacing": 8,
+        "children": [
+          {
+            "type": "label",
             "text": "Base URL",
             "width": 72,
             "textColor": "#a9b7c7"
@@ -52,7 +82,7 @@
           {
             "id": "lite-base",
             "type": "textField",
-            "text": "https://api.openai.com/v1",
+            "text": "https://opencode.ai/zen/go/v1",
             "flex": 1
           }
         ]
@@ -90,6 +120,13 @@
             "type": "textField",
             "text": "",
             "flex": 1
+          },
+          {
+            "id": "lite-key-state",
+            "type": "label",
+            "text": "No key",
+            "width": 64,
+            "textColor": "#9fb3c8"
           }
         ]
       },

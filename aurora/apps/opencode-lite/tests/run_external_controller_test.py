@@ -72,7 +72,9 @@ def main() -> int:
     environment["LOCALAPPDATA"] = str(temp)
     environment["APPDATA"] = str(temp)
     host = subprocess.Popen(
-        [str(HOST), "--external-controller", "--listen", str(PORT),
+        [str(HOST), "--external-controller", "--no-activate",
+         "--instance-group", "external-controller",
+         "--listen", str(PORT),
          "--scene", str(SCENE)],
         cwd=str(APP), env=environment, stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

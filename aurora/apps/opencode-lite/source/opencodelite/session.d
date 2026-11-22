@@ -2,10 +2,14 @@ module opencodelite.session;
 
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
+import std.conv : to;
+import std.datetime : Clock;
 import opencodelite.http : Cancellation, SseResult, streamSse;
 import opencodelite.settings : LiteSettings;
+
 import std.json : JSONType, JSONValue, parseJSON;
-import std.string : strip, stripRight;
+
+import std.string : indexOf, strip, stripRight, toLower;
 
 enum SessionEventKind
 {
@@ -36,11 +40,13 @@ final class ChatSession
     private Cancellation _cancellation;
     private Thread _worker;
     private bool _busy;
+    private string _sessionId;
 
     this(LiteSettings settings)
     {
         _settings = settings;
         _mutex = new Mutex();
+        _sessionId = "aurora-lite-" ~ to!string(Clock.currTime.stdTime);
     }
 
     LiteSettings settings() const
@@ -139,6 +145,25 @@ final class ChatSession
 
     private void runStream()
     {
+        try
+        {
+            runStreamGuarded();
+        }
+        catch (Throwable error)
+        {
+            synchronized (_mutex)
+            {
+                _busy = false;
+                _cancellation = null;
+            }
+
+            emit(SessionEventKind.failed, error.msg.length > 0
+                ? error.msg : "Request failed");
+        }
+    }
+
+    private void runStreamGuarded()
+    {
         ChatMessage[] history;
         LiteSettings settings;
         Cancellation cancellation;
@@ -163,9 +188,12 @@ final class ChatSession
         payload["messages"] = messages;
 
         string headers = "Content-Type: application/json\r\n"
-            ~ "Accept: text/event-stream\r\n";
+            ~ "Accept: text/event-stream\r\n"
+            ~ "User-Agent: AuroraOpenCodeLite/0.1\r\n";
         if (settings.apiKey.length != 0)
             headers ~= "Authorization: Bearer " ~ settings.apiKey ~ "\r\n";
+        if (settings.baseUrl.toLower.indexOf("opencode.ai") >= 0)
+            headers ~= "x-opencode-session: " ~ _sessionId ~ "\r\n";
         const url = settings.baseUrl.stripRight("/") ~ "/chat/completions";
 
         string assistant;
