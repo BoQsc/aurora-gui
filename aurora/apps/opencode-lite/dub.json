@@ -228,6 +228,7 @@
         "/ENTRY:mainCRTStartup"
       ]
     },
+
     {
       "name": "plugin-reload-test",
       "targetType": "executable",

@@ -155,10 +155,20 @@ def main() -> int:
     scene = json.loads((APP / "assets" / "lite.scene.json").read_text(
         encoding="utf-8"))
     scene_text = json.dumps(scene)
-    for required in ("lite-transcript", "lite-send", "lite-stop",
-                     "lite-input", "lite-status"):
+    for required in ("lite-transcript", "lite-send", "lite-input",
+                     "lite-status"):
         if required not in scene_text:
             raise RuntimeError(f"host scene is missing {required}")
+    if "lite-stop" in scene_text:
+        raise RuntimeError("host scene still has the separate lite-stop button")
+
+    if "--live" in sys.argv:
+        # Live workflow: update the controller DLL and validate the scene, but
+        # never rebuild the locked standalone EXE or disturb the running host.
+        run([DUB, "build", "--config=plugin", f"--compiler={COMPILER}"])
+        print("Lite live check passed: controller DLL rebuilt and scene "
+              "validated; running host untouched.")
+        return 0
 
     run([DUB, "build", "--config=http-smoke", f"--compiler={COMPILER}"])
     run([DUB, "build", "--config=session-smoke", f"--compiler={COMPILER}"])

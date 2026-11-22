@@ -30,7 +30,13 @@
             "type": "textField",
             "text": "https://api.openai.com/v1",
             "flex": 1
-          },
+          }
+        ]
+      },
+      {
+        "type": "row",
+        "spacing": 6,
+        "children": [
           {
             "type": "label",
             "text": "Model",
@@ -40,7 +46,7 @@
             "id": "lite-model",
             "type": "textField",
             "text": "gpt-4o-mini",
-            "width": 180
+            "flex": 1
           }
         ]
       },
@@ -58,7 +64,13 @@
             "type": "textField",
             "text": "",
             "flex": 1
-          },
+          }
+        ]
+      },
+      {
+        "type": "row",
+        "spacing": 6,
+        "children": [
           {
             "id": "lite-save",
             "type": "button",
@@ -69,7 +81,24 @@
             "id": "lite-status",
             "type": "label",
             "text": "Ready",
-            "width": 160
+            "flex": 1
+          }
+        ]
+      },
+      {
+        "type": "row",
+        "spacing": 6,
+        "children": [
+          {
+            "id": "lite-send",
+            "type": "button",
+            "text": "Send",
+            "action": "send"
+          },
+          {
+            "id": "lite-input",
+            "type": "textField",
+            "flex": 1
           }
         ]
       },
@@ -78,30 +107,7 @@
         "type": "textArea",
         "text": "No conversation yet.\n",
         "readOnly": true,
-        "flex": 1
-      },
-      {
-        "type": "row",
-        "spacing": 6,
-        "children": [
-          {
-            "id": "lite-input",
-            "type": "textField",
-            "flex": 1
-          },
-          {
-            "id": "lite-stop",
-            "type": "button",
-            "text": "Stop",
-            "action": "stop"
-          },
-          {
-            "id": "lite-send",
-            "type": "button",
-            "text": "Send",
-            "action": "send"
-          }
-        ]
+        "height": 240
       }
     ]
   }

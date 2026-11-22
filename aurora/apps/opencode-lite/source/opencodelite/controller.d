@@ -35,7 +35,12 @@ final class LiteController
     void handleAction(string node, string action)
     {
         if (action == "send")
-            send();
+        {
+            if (_session.busy())
+                stop();
+            else
+                send();
+        }
         else if (action == "stop")
             stop();
         else if (action == "save")
@@ -71,8 +76,7 @@ final class LiteController
         _view.setText("lite-input", "");
         _view.setText("lite-transcript", _transcript);
         setStatus("Waiting for response...");
-        _view.setEnabled("lite-send", false);
-        _view.setEnabled("lite-stop", true);
+        _view.setText("lite-send", "Stop");
         _session.send(prompt);
     }
 
@@ -97,15 +101,13 @@ final class LiteController
                         ? "\n[stopped]\n" : "\n";
                     _view.setText("lite-transcript", _transcript);
                     setStatus(event.text);
-                    _view.setEnabled("lite-send", true);
-                    _view.setEnabled("lite-stop", false);
+                    _view.setText("lite-send", "Send");
                     break;
                 case SessionEventKind.failed:
                     _transcript ~= "\n[error] " ~ event.text ~ "\n";
                     _view.setText("lite-transcript", _transcript);
                     setStatus("Error");
-                    _view.setEnabled("lite-send", true);
-                    _view.setEnabled("lite-stop", false);
+                    _view.setText("lite-send", "Send");
                     break;
                 default:
                     break;
@@ -121,8 +123,7 @@ final class LiteController
         _view.setText("lite-key", _settings.apiKey);
         _view.setText("lite-transcript", _transcript);
         setStatus(_status);
-        _view.setEnabled("lite-send", !_session.busy());
-        _view.setEnabled("lite-stop", _session.busy());
+        _view.setText("lite-send", _session.busy() ? "Stop" : "Send");
     }
 
     private void setStatus(string value)

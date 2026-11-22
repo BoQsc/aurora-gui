@@ -32,6 +32,19 @@ def relative(path: Path) -> str:
 
 
 def main() -> int:
+    running = subprocess.run(
+        ["tasklist", "/FI",
+         "IMAGENAME eq aurora-opencode-lite-standalone.exe",
+         "/FO", "CSV", "/NH"],
+        capture_output=True, timeout=30)
+    if b"aurora-opencode-lite-standalone.exe" in running.stdout.lower():
+        print(
+            "standalone is running; refusing to rebuild it in place. "
+            "Use `python verify.py --live` while the host is open, or close "
+            "it at an explicit restart point.",
+            file=sys.stderr)
+        return 1
+
     BUILD.mkdir(parents=True, exist_ok=True)
     linker = subprocess.run(
         ["dub", "build", "--config=link", "--compiler=dmd"],
