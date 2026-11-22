@@ -66,6 +66,16 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 reason = "tool_calls"
             else:
                 content = f"Short claim of completion {number}."
+        if mode == "goal-stall":
+            # One real action, then only prose. The goal has nothing left to
+            # execute, so every later turn is a stalled goal audit: the app must
+            # stop it instead of asking for another action forever.
+            if number == 1:
+                delta = {"tool_calls": [{"index": 0, "id": "goal-action", "type": "function", "function": {
+                    "name": "write", "arguments": json.dumps({"filePath": "goal-action.txt", "content": "recorded action"})}}]}
+                reason = "tool_calls"
+            else:
+                content = "No further action is warranted; pause the active goal instead."
         if mode == "plan-approval":
             plan_approval = {"reason": "Plan mode is blocking every write. The implementation plan is recorded, but only the user can approve it or turn Plan mode off.",
                              "required_fact": "Explicit approval to execute the recorded plan, or Plan mode turned off.",
@@ -118,8 +128,16 @@ try:
                              "actor_recovery_contracts"], cwd=package.parent, env=env, timeout=150)
     assert result.returncode == 0, "Actor recovery fixture failed"
     expected = {"retry": 2, "retry-stop": 1, "transient-cap": 3, "budget": 1,
-                "quota": 2, "bad-output": 4, "summary": 2, "summary-error": 2, "task-stall": 7, "unoffered": 4, "mixed-offer": 2}
+                "quota": 2, "bad-output": 4, "summary": 1, "summary-error": 1, "unoffered": 4, "mixed-offer": 2}
     expected["plan-approval"] = 4
+    # One real write, the continuation, three bounded recovery turns and the
+    # stopped turn: the goal stops instead of requesting another action.
+    expected["goal-stall"] = 6
+    # Task recovery is bounded, not a fixed count: the write turn plus the
+    # bounded completion-recovery turns, then the turn settles with the
+    # unfinished verification recorded.
+    assert 2 <= counts["task-stall"] <= 7, f"task-stall recovery left its bound: {counts['task-stall']}"
+    del counts["task-stall"]
     if only:
         assert set(counts) == set(only.split(",")), f"Unexpected recovery modes: {dict(counts)}"
     else:

@@ -5,9 +5,9 @@ the refusal as a normal completion, paused the goal, and the conversation looked
 finished even though the outcome was missing.
 
 This fixture drives the real headless loop with a provider that never acts. The
-goal turn, its execution-recovery turn and the bounded output recovery must all
-keep the goal active; when the retries are exhausted the turn is a visible
-stall, never a completion.
+goal turn and its bounded execution-recovery turns must keep the goal active and
+never claim completion; when the budget is spent the turn ends quietly with the
+recorded work preserved, so Start/Continue resumes it.
 """
 import argparse
 import hashlib
@@ -97,13 +97,18 @@ try:
     goals = [(s.get("goal"), s.get("goalStatus")) for s in index["sessions"] if s.get("goalStatus")]
     assert goals, index
     assert goals[0][0] == "Write deployment.md for the deployment environment.", goals
-    assert goals[0][1] == "active", f"a refused goal was not kept active: {goals[0]}"
+    assert goals[0][1] == "active", (
+        f"a refused goal was paused or completed instead of keeping its work: {goals[0]}")
     histories = [json.loads(p.read_text(encoding="utf-8"))
                  for p in (state / "threads").glob("*.json")]
     messages = [m for history in histories for m in history["messages"]]
-    stalls = [m for m in messages if m.get("failed") and
-              "Agent output stalled" in (m.get("error") or "")]
-    assert stalls, messages
+    # Recovery is bounded and quiet: the refusal is recorded, the execution
+    # recovery runs a limited number of times, and no failure row is painted.
+    recoveries = [m for m in messages if m.get("internal") and
+                  str(m.get("content", "")).startswith("Execution recovery:")]
+    assert 1 <= len(recoveries) <= 2, f"unbounded execution recovery: {len(recoveries)}"
+    assert not any(m.get("failed") for m in messages), messages
+    assert not any("Agent output stalled" in (m.get("error") or "") for m in messages), messages
     assert not any(m.get("toolName") == "goal_complete" for m in messages), messages
     (directory / "result.json").write_text(json.dumps({
         "status": "passed", "binarySha256": hashlib.sha256(args.executable.read_bytes()).hexdigest(),

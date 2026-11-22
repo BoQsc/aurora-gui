@@ -7,7 +7,7 @@ import auroraopencode.tools : buildSystemPrompt, nativeOnlyToolDefinitions;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.conv : to;
-import std.file : mkdirRecurse, exists, write;
+import std.file : mkdirRecurse, exists, write, tempDir;
 import std.json : JSONValue, JSONType, parseJSON;
 import std.path : absolutePath, buildPath;
 import std.process : environment;
@@ -21,20 +21,36 @@ int main()
     const directory = absolutePath("actor-recovery-" ~ to!string(MonoTime.currTime.ticks));
     mkdirRecurse(directory); setOpencodeStateDirectoryForTesting(buildPath(directory, "state"));
 
-    string[] modes = ["retry", "retry-stop", "transient-cap", "budget", "quota", "bad-output", "summary", "summary-error", "task-stall", "unoffered", "mixed-offer", "plan-approval"];
+    string[] modes = ["retry", "retry-stop", "transient-cap", "budget", "quota", "bad-output", "summary", "summary-error", "task-stall", "goal-stall", "unoffered", "mixed-offer", "plan-approval"];
     const only = environment.get("AURORA_ACTOR_RECOVERY_MODES", "");
     if (only.length) modes = only.split(",");
     foreach (mode; modes)
     {
-        const workspace = buildPath(directory, mode); mkdirRecurse(workspace);
+        // A goal-stall turn performs a real write, so its workspace lives
+        // outside the checkout: the filesystem host serializes work on one
+        // checkout and a concurrent source operation would stall the write.
+        const workspace = mode == "goal-stall"
+            ? buildPath(tempDir(), "aurora-goal-stall-" ~ to!string(MonoTime.currTime.ticks))
+            : buildPath(directory, mode);
+        mkdirRecurse(workspace);
         ChatSession initial; initial.id = "recovery-" ~ mode; initial.model = "actor-" ~ mode;
-        const persistent = mode == "budget" || mode == "transient-cap" || mode == "bad-output" || mode == "retry-stop" || mode == "unoffered";
-        if (persistent) { initial.goal = "Deliver the user's requested analysis"; initial.goalStatus = "active"; }
+        const persistent = mode == "budget" || mode == "transient-cap" || mode == "bad-output" ||
+            mode == "retry-stop" || mode == "unoffered" || mode == "goal-stall";
+        if (persistent)
+        {
+            // goal-stall needs an action-shaped goal: an analysis goal finishes
+            // on its reply and never reaches goal continuation.
+            initial.goal = mode == "goal-stall"
+                ? "Deliver the requested deployment change" : "Deliver the user's requested analysis";
+            initial.goalStatus = "active";
+        }
         initial.planMode = mode == "plan-approval";
         ActorConfiguration config; config.baseUrl = base; config.apiKey = "fixture";
         config.workspace = workspace; config.recordTrace = true;
         config.outageBudgetMs = mode == "budget" || mode == "quota" ? 250 : 15_000;
-        config.request.toolsEnabled = mode == "bad-output" || mode == "summary" || mode == "summary-error" || mode == "task-stall" || mode == "unoffered" || mode == "mixed-offer" || mode == "plan-approval";
+        config.request.toolsEnabled = mode == "bad-output" || mode == "summary" || mode == "summary-error" ||
+            mode == "task-stall" || mode == "goal-stall" || mode == "unoffered" ||
+            mode == "mixed-offer" || mode == "plan-approval";
         config.request.contextLimit = 64_000;
         config.request.baseSystemPrompt = buildSystemPrompt(config.request.toolsEnabled, workspace, "win32", "auto");
         config.request.availableTools = nativeOnlyToolDefinitions();
@@ -50,7 +66,7 @@ int main()
         JSONValue latest;
         bool sawWait, sawFailure, stopped;
         auto quietUntil = MonoTime.init;
-        const deadline = MonoTime.currTime + 20.seconds;
+        const deadline = MonoTime.currTime + (mode == "goal-stall" ? 60 : 20).seconds;
         bool settled;
         while (MonoTime.currTime < deadline)
         {
@@ -80,7 +96,7 @@ int main()
             {
                 const status = latest["turnStatus"].str;
                 if (mode == "retry-stop") settled = stopped && status == "interrupted" && MonoTime.currTime >= quietUntil;
-                else if (mode == "task-stall") settled = status == "completed";
+                else if (mode == "task-stall" || mode == "goal-stall") settled = status == "completed";
                 else if (mode == "budget" || mode == "transient-cap" || mode == "bad-output" || mode == "unoffered")
                     settled = status == "failed" && latest["execution"]["retryRemainingMs"].integer < 0;
                 else settled = status == "completed";
@@ -88,14 +104,28 @@ int main()
             if (settled) break;
             Thread.sleep(5.msecs);
         }
-        assert(settled, mode ~ " did not settle");
+        assert(settled, mode ~ " did not settle: " ~
+            (latest.type == JSONType.object ? latest.toString() : "no state"));
         if (mode == "retry" || mode == "retry-stop" || mode == "quota") assert(sawWait && sawFailure, mode);
         if (mode == "transient-cap" || mode == "budget") assert(!sawWait, "Exhausted transport recovery restarted an outer loop");
         actor.close(); assert(!actor.fault().length, actor.fault());
         const snapshot = actor.finalSnapshot();
         const state = parseJSON(snapshot);
-        if (persistent && mode != "retry-stop") assert(state["goalStatus"].str == "active", mode ~ " discarded the active goal");
+
+        if (persistent && mode != "retry-stop" && mode != "goal-stall")
+            assert(state["goalStatus"].str == "active", mode ~ " discarded the active goal");
         if (mode == "retry-stop") assert(state["goalStatus"].str == "paused");
+        if (mode == "goal-stall")
+        {
+            // Reported: a goal whose turns only answered with prose kept being
+            // re-prompted forever while the model asked the user to pause it.
+            // The bounded audit stops the goal and keeps its recorded work.
+            assert(state["goalStatus"].str == "paused",
+                "a goal that never acted kept looping instead of stopping");
+            assert(state["taskStatus"].str != "completed",
+                "stopping a stalled goal fabricated completion");
+            assert(!sawFailure, "the bounded goal stop painted a failure");
+        }
         if (mode == "task-stall")
         {
             assert(state["verificationStatus"].str == "required" && state["objective"].str.length,
@@ -119,9 +149,13 @@ int main()
         }
         if (mode == "summary" || mode == "summary-error")
         {
+            // Automatic summary rounds were removed: a truncated answer is
+            // delivered as the answer, and recorded completion evidence only
+            // finishes a handoff saved by an older build.
             assert(!exists(buildPath(workspace, "must-not-exist.txt")), "Summary executed an unavailable tool");
-            assert(state["messages"].array[$ - 1]["content"].str.length > 80, "Missing evidence fallback");
-            assert(latest["execution"]["phase"].str == "completed", "Summary fallback left execution in a tool phase");
+            assert(state["messages"].array[$ - 1]["content"].str.indexOf("A truncated analysis") == 0,
+                "An automatic summary round rewrote the delivered answer");
+            assert(latest["execution"]["phase"].str == "completed", "The delivered answer left execution in a tool phase");
         }
         if (mode == "plan-approval")
         {
