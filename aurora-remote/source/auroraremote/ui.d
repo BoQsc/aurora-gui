@@ -4,6 +4,7 @@ import aurora;
 import aurora.canvas : Canvas;
 import aurora.event : Event, Key, MouseButton;
 import aurora.image : RgbaImage;
+import auroraremote.appicon : applicationIconPath;
 import auroraremote.capsule : deviceIdText;
 import auroraremote.capsule : AccessPermission;
 import auroraremote.crypto : sha256;
@@ -862,6 +863,7 @@ WindowOptions remoteWindowOptions()
 {
     WindowOptions options;
     options.title = "Aurora Remote";
+    options.iconPath = applicationIconPath();
     options.width = 1040;
     options.height = 740;
     options.resizable = true;

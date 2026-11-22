@@ -8,6 +8,7 @@
   "targetName": "aurora-remote",
   "mainSourceFile": "source/app.d",
   "sourcePaths": ["source", "../vendor/aurora-d-0.4.5/source"],
+  "stringImportPaths": ["assets"],
   "libs-windows": ["user32", "gdi32", "shell32", "ole32", "advapi32", "crypt32", "bcrypt", "ws2_32"],
   "buildTypes": {
     "portable-release": {

@@ -13,6 +13,9 @@
     "source",
     "../vendor/aurora-d-0.4.5/source"
   ],
+  "stringImportPaths": [
+    "assets"
+  ],
   "libs-windows": [
     "user32",
     "gdi32",

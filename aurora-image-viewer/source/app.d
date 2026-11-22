@@ -1,6 +1,7 @@
 module app;
 
 import aurora;
+import auroraimageviewer.appicon : applicationIconPath;
 import auroraimageviewer.appui : ViewerRoot, imageViewerTheme;
 import core.thread : Thread;
 import core.time : msecs, seconds, MonoTime;
@@ -10,6 +11,7 @@ private int runScreenshot(string imagePath, string outputPath)
 {
     WindowOptions options;
     options.title = "Aurora Image Viewer";
+    options.iconPath = applicationIconPath();
     options.width = 1280;
     options.height = 800;
     options.darkTitleBar = true;
@@ -51,6 +53,7 @@ int main(string[] args)
 
     WindowOptions options;
     options.title = "Aurora Image Viewer";
+    options.iconPath = applicationIconPath();
     options.width = 1280;
     options.height = 800;
     options.darkTitleBar = true;
