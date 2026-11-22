@@ -1,18 +1,17 @@
 module aurorahost.runtime;
 
 import aurorahost.control : ControlServer;
+import aurorahost.console : errLine, outLine;
 import aurorahost.events : HostEvent;
 import aurorahost.scene : applyScene, describeScene, loadScene, NodeRegistry, Scene;
 import aurorahost.tcp_control : TcpControl;
 import aurora : GuiWindow;
+import std.conv : to;
 import std.datetime : SysTime;
 import std.file : timeLastModified;
-import std.stdio : stderr, stdout, writeln;
-
 private void reportService(string where, Throwable error)
 {
-    stderr.writeln("aurora-host: " ~ where ~ " failed: " ~ error.msg);
-    stderr.flush();
+    errLine("aurora-host: " ~ where ~ " failed: " ~ error.msg);
 }
 
 /**
@@ -41,20 +40,18 @@ final class SceneWatcher
             stamp = timeLastModified(_path);
         catch (Exception)
             return;
-        if (stamp <= _stamp)
+        if (stamp == _stamp)
             return;
         _stamp = stamp;
         try
         {
             const scene = loadScene(_path);
             applyScene(_window, scene, _registry);
-            stderr.writeln("reloaded: " ~ describeScene(scene));
-            stderr.flush();
+            errLine("reloaded: " ~ describeScene(scene));
         }
         catch (Exception error)
         {
-            stderr.writeln("aurora-host: reload failed: " ~ error.msg);
-            stderr.flush();
+            errLine("aurora-host: reload failed: " ~ error.msg);
         }
     }
 }
@@ -136,15 +133,13 @@ int runHostWindow(GuiWindow window, NodeRegistry registry, bool control,
     if (server !is null)
     {
         server.start();
-        writeln("READY");
+        outLine("READY");
         if (listenPort != 0)
-            writeln("LISTEN 127.0.0.1:", listenPort);
-        stdout.flush();
+            outLine("LISTEN 127.0.0.1:" ~ to!string(listenPort));
     }
-    stdout.writeln("aurora-host: renderer=", window.rendererName(),
-        " hardware=", window.hardwareAccelerated(),
-        " fallback=", window.rendererFallbackReason());
-    stdout.flush();
+    outLine("aurora-host: renderer=" ~ window.rendererName() ~
+        " hardware=" ~ to!string(window.hardwareAccelerated()) ~
+        " fallback=" ~ window.rendererFallbackReason());
     const result = window.run();
     if (tcp !is null)
         tcp.stop();

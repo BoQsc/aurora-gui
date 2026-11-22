@@ -2,6 +2,7 @@ module aurorahost.scene;
 
 import aurorahost.canvas : CanvasCommand, CanvasSpec, CanvasWidget,
     parseCanvasColor;
+import aurorahost.console : errLine;
 import aurorahost.app_icon : applicationIconPath;
 import aurorahost.caption : StandardCaptionBar;
 import aurorahost.component : ComponentContext, ComponentRegistry;
@@ -22,7 +23,6 @@ import std.file : readText;
 import std.format : format;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : absolutePath, buildPath, dirName, isAbsolute;
-import std.stdio : stderr;
 import std.utf : toUTF8;
 
 import aurora;
@@ -41,9 +41,7 @@ struct SceneWindow
 
 private void reportCallback(string where, Throwable error)
 {
-    stderr.writeln("aurora-host: " ~ where ~ " callback failed: " ~
-        error.msg);
-    stderr.flush();
+    errLine("aurora-host: " ~ where ~ " callback failed: " ~ error.msg);
 }
 
 struct SceneNode

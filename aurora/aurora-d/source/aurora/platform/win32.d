@@ -1202,6 +1202,33 @@ else version (Windows)
                         (options.startMinimized ? SW_SHOWMINIMIZED : SW_SHOWNORMAL)));
             ShowWindow(_hwnd, command);
             UpdateWindow(_hwnd);
+            if (!noActivate && !options.startMinimized)
+            {
+                // A normal launch must surface the app instead of leaving it
+                // behind the shell or another foreground application.
+                auto foreground = GetForegroundWindow();
+                auto foregroundThread = 0;
+                if (foreground !is null)
+                {
+                    uint processId;
+                    foregroundThread = cast(int) GetWindowThreadProcessId(
+                        foreground, &processId);
+                }
+                const currentThread = GetCurrentThreadId();
+                const attached = foregroundThread != 0 &&
+                    foregroundThread != currentThread &&
+                    AttachThreadInput(cast(DWORD) currentThread,
+                        cast(DWORD) foregroundThread, TRUE) != FALSE;
+                SetWindowPos(_hwnd, HWND_TOP, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+                BringWindowToTop(_hwnd);
+                SetForegroundWindow(_hwnd);
+                SetActiveWindow(_hwnd);
+                SetFocus(_hwnd);
+                if (attached)
+                    AttachThreadInput(cast(DWORD) currentThread,
+                        cast(DWORD) foregroundThread, FALSE);
+            }
             // Re-publish the icons after the window becomes visible so the
             // taskbar button (created at show time) picks up the application
             // icon instead of a generic class default, and schedule a second

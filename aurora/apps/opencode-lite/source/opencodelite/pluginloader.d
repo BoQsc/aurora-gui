@@ -1,13 +1,14 @@
 module opencodelite.pluginloader;
 
 import aurorahost.scene : NodeRegistry;
+import aurorahost.console : errLine;
 import core.sys.windows.windows : FreeLibrary, GetCurrentProcessId, GetProcAddress,
     HMODULE, LoadLibraryW, SetErrorMode;
 import std.conv : to;
 import std.datetime : SysTime;
 import std.file : copy, exists, read, remove, tempDir, timeLastModified;
 import std.path : buildPath;
-import std.stdio : stderr;
+
 import std.string : fromStringz, toStringz;
 import std.utf : toUTF16z;
 
@@ -249,23 +250,21 @@ final class LitePlugin
     private void stampAndReport()
     {
         _stamp = sourceStamp();
-        stderr.writeln("aurora-host: " ~ _lastError);
-        stderr.flush();
+        errLine("aurora-host: " ~ _lastError);
         registry.setText("lite-status", "Controller error: " ~ _lastError);
     }
 
     private void reportError(string where, Throwable error)
     {
-        stderr.writeln("aurora-host: controller " ~ where ~ " failed: " ~
+        errLine("aurora-host: controller " ~ where ~ " failed: " ~
             error.msg);
-        stderr.flush();
         registry.setText("lite-status", "Controller error: " ~ error.msg);
     }
 
     private void poll()
     {
         const stamp = sourceStamp();
-        if (stamp <= _stamp)
+        if (stamp == _stamp)
             return;
         loadCandidate();
     }

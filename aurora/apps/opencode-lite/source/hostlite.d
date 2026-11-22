@@ -2,6 +2,7 @@ module hostlite;
 
 import aurorahost.runtime : runHostWindow;
 import aurorahost.scene : createWindow, loadScene, NodeRegistry;
+import aurorahost.console : errLine;
 import opencodelite.controller : LiteController;
 import opencodelite.pluginloader : LitePlugin;
 import opencodelite.registryview : RegistryLiteView;
@@ -10,7 +11,7 @@ import std.conv : to;
 import std.file : exists, mkdirRecurse, thisExePath, write;
 import std.path : buildPath, dirName;
 import std.process : environment;
-import std.stdio : stderr;
+
 
 private enum EmbeddedScene = import("lite.scene.json");
 
@@ -83,17 +84,22 @@ int main(string[] args)
         {
             try
             {
-                stderr.writeln(
+                errLine(
                     "hostlite: loading in-process plugin (not process-isolated): " ~
                     pluginPath);
                 auto plugin = new LitePlugin(registry, pluginPath);
-                return runHostWindow(window, registry, false, scenePath, watch);
+                errLine("hostlite: plugin initialized");
+                const result = runHostWindow(window, registry, false,
+                    scenePath, watch);
+                errLine("hostlite: plugin host loop returned " ~
+                    to!string(result));
+                return result;
             }
             catch (Exception error)
             {
                 // A broken optional plugin must not prevent the embedded
                 // controller from starting.
-                stderr.writeln("hostlite: plugin fallback: " ~ error.msg);
+                errLine("hostlite: plugin fallback: " ~ error.msg);
             }
         }
         auto controller = new LiteController(
@@ -106,7 +112,7 @@ int main(string[] args)
     }
     catch (Exception error)
     {
-        stderr.writeln("hostlite: " ~ error.msg);
+        errLine("hostlite: " ~ error.msg);
         return 1;
     }
 }

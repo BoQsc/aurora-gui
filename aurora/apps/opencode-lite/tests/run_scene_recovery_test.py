@@ -67,6 +67,9 @@ def main() -> int:
             if before.get("root.0") != "Aurora OpenCode Lite":
                 raise RuntimeError("initial scene did not load")
 
+            original_stat = scene.stat()
+            original_atime = original_stat.st_atime_ns
+            original_mtime = original_stat.st_mtime_ns
             scene.write_text("{ broken json", encoding="utf-8")
             time.sleep(1.0)
             if host.poll() is not None:
@@ -79,6 +82,7 @@ def main() -> int:
                 '"text": "Aurora OpenCode Lite"',
                 '"text": "Aurora OpenCode Lite Recovered"', 1)
             scene.write_text(text, encoding="utf-8")
+            os.utime(scene, ns=(original_atime, original_mtime))
             time.sleep(1.2)
             if host.poll() is not None:
                 raise RuntimeError("host exited while recovering scene")

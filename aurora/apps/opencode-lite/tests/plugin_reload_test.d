@@ -6,7 +6,8 @@ import core.thread : Thread;
 import core.time : msecs;
 import opencodelite.pluginloader : LitePlugin;
 import std.datetime : Clock;
-import std.file : copy, exists, read, remove, tempDir, write;
+import std.file : copy, exists, read, remove, setTimes, tempDir,
+    timeLastModified, write;
 import std.path : buildPath;
 import std.stdio : stderr, writeln;
 import std.string : startsWith;
@@ -34,6 +35,7 @@ int main(string[] args)
             window.close();
             return 1;
         }
+        const originalStamp = timeLastModified(working);
 
         write(working, "not a controller dll");
         Thread.sleep(30.msecs);
@@ -41,6 +43,7 @@ int main(string[] args)
         const broken = registry.text("lite-status");
 
         write(working, read(args[2]));
+        setTimes(working, originalStamp, originalStamp);
         Thread.sleep(30.msecs);
         registry.onService(0.016);
         const restored = registry.text("lite-status");
