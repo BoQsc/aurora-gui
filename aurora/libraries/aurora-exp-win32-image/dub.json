@@ -1,0 +1,54 @@
+{
+  "name": "aurora-exp-win32-image",
+  "description": "Binary-format laboratory: parse a Windows PE image and re-emit every header field byte-exactly",
+  "authors": [
+    "Aurora libraries"
+  ],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
+  "version": "0.1.0",
+  "targetType": "library",
+  "sourcePaths": [
+    "source"
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
+  "configurations": [
+    {
+      "name": "library",
+      "targetType": "library",
+      "targetName": "aurora-exp-win32-image"
+    },
+    {
+      "name": "roundtrip",
+      "targetType": "executable",
+      "targetName": "pe-roundtrip",
+      "mainSourceFile": "tests/roundtrip.d"
+    },
+    {
+      "name": "load",
+      "targetType": "executable",
+      "targetName": "pe-load",
+      "mainSourceFile": "tools/load.d"
+    },
+    {
+      "name": "emit-load-test",
+      "targetType": "executable",
+      "targetName": "pe-emit-load-test",
+      "mainSourceFile": "tests/emit_load.d"
+    }
+  ]
+}
