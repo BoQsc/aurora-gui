@@ -102,6 +102,22 @@ The host passes these arguments to the module:
 
 ## Create an app
 
+`apps/base` is the reference live app. Generate a renamed copy from `aurora/`:
+
+```text
+python -B scripts/new_app.py my_app --title "My App"
+```
+
+The generator copies the dark shell, launcher, smoke test, interaction test, and
+README, then validates the generated app. It does not copy build output or the
+base previews.
+
+Add `--blank` to generate a single empty workbench page instead of the three
+reference pages. Folder names may contain hyphens; the D module name uses
+underscores.
+
+If you need to build from an example instead:
+
 1. Create `apps/<name>/`.
 2. For 2D UI, copy `apps/browser-mockup/module.d`; for geometry, copy
    `apps/pyramid-sample/module.d`.

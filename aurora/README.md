@@ -13,6 +13,12 @@ design-time tool.
 | `aurora-designer/` | The existing visual UI designer and design-time tool, with a hierarchy-aware canvas, Layers tree, inspector hierarchy controls, and a visible frameless titlebar. It depends on `aurora-d`; it is not a template for new applications. |
 | `aurora-host/` | The primary GUI application path: retained-scene host, runner, and live scene editor. It stays a separate executable and remains a leaf. |
 
+`libraries/` is the shelf for experimental, general-purpose library packages.
+It is deliberately outside the v2 verification gate: `verify.py` neither builds
+it nor treats its packages as foundation code, and no application links it by
+default. The manifest rules that still apply repository-wide are listed in
+[libraries/README.md](libraries/README.md).
+
 Aurora Designer is the first existing application moved into v2. The remaining
 applications in the parent `aurora-gui` repository keep their existing sources
 and continue to build against their current `vendor/aurora-d-0.4.5` copy until

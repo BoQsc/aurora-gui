@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parent
 LIBRARY = ROOT / "aurora-d"
 DESIGNER = ROOT / "aurora-designer"
 HOST = ROOT / "aurora-host"
+BASE = ROOT / "apps" / "base"
+SCRIPTS = ROOT / "scripts"
 DUB = os.environ.get("DUB", "dub")
 COMPILER = os.environ.get("DC", "dmd")
 PYTHON = sys.executable
@@ -36,6 +38,9 @@ def check_python_only() -> None:
         str(path.relative_to(ROOT))
         for path in ROOT.rglob("*")
         if path.is_file() and path.suffix.lower() in forbidden
+        # App folders ship convenience launchers; the Python-only rule covers
+        # verification and framework helper scripts.
+        and (path.relative_to(ROOT).parts[0] != "apps")
     )
     if found:
         raise RuntimeError(
@@ -111,6 +116,10 @@ def main() -> int:
     )
     run([PYTHON, "-B", "apps/breakout/dev_swap_test.py"], HOST)
     run([PYTHON, "-B", "apps/empty-app/live_reload_test.py"], HOST)
+
+    # ---- Aurora Base and generator ----
+    run([PYTHON, "-B", "smoke_test.py"], BASE)
+    run([PYTHON, "-B", "new_app_test.py"], SCRIPTS)
 
     print()
     print("Aurora v2 verification passed.")

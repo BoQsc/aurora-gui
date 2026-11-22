@@ -142,6 +142,10 @@ required. Live is on by default: edits apply after a short pause, and the Live
 button pauses or resumes automatic application. See
 [LIVE-BUILDING.md](LIVE-BUILDING.md).
 
+Double-clicking `aurora-host.exe` does the same thing: no arguments means
+`--dev` with the embedded starter in the current folder. The host has no
+argument-free mode that silently prints usage and exits.
+
 The host also exposes the JSON-lines control channel directly:
 
 ```text

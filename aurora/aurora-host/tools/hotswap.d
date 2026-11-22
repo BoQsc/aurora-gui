@@ -5,8 +5,9 @@ import core.sys.windows.windows : GetCurrentProcessId;
 import core.thread : Thread;
 import core.time : msecs, seconds;
 import std.conv : to;
-import std.file : exists, mkdirRecurse, read, readText, remove, rmdirRecurse,
-    rename, tempDir, write, thisExePath;
+import std.file : copy, dirEntries, exists, getSize, mkdirRecurse, read,
+    readText, remove, rmdirRecurse, rename, SpanMode, tempDir,
+    timeLastModified, write, thisExePath;
 import std.json : JSONValue, parseJSON, toJSON;
 import std.mmfile : MmFile;
 import std.path : buildPath, dirName;
@@ -504,13 +505,90 @@ private double buildLiveModule(string source, string exe)
     const auroraD = buildPath(hostDir, "..", "aurora-d", "source");
     const auroraStandard = buildPath(hostDir, "..", "aurora-standard",
         "source");
-    auto child = spawnProcess(["dmd", "-O", "-release", "-i",
+    auto child = spawnProcess(["dmd", "-i",
         "-I" ~ auroraD, "-I" ~ auroraStandard, "-of=" ~ exe, source]);
     const status = wait(child);
     watch.stop();
     if (status != 0)
         throw new Exception("live module build failed: " ~ source);
     return watch.peek.total!"msecs";
+}
+
+private ulong newestD(string root)
+{
+    ulong newest;
+    try
+    {
+        foreach (entry; dirEntries(root, SpanMode.depth))
+        {
+            if (!entry.isFile || entry.name.length < 2 ||
+                entry.name[$ - 2 .. $] != ".d")
+                continue;
+            try
+            {
+                const stamp = cast(ulong) timeLastModified(entry.name).stdTime;
+                if (stamp > newest) newest = stamp;
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+    catch (Exception)
+    {
+    }
+    return newest;
+}
+
+private ulong frameworkStamp()
+{
+    const hostDir = dirName(thisExePath());
+    const auroraD = buildPath(hostDir, "..", "aurora-d", "source");
+    const auroraStandard = buildPath(hostDir, "..", "aurora-standard",
+        "source");
+    const dStamp = newestD(auroraD);
+    const standardStamp = newestD(auroraStandard);
+    return standardStamp > dStamp ? standardStamp : dStamp;
+}
+
+private bool moduleCacheValid(string source, string cacheExe,
+    string cacheInfo)
+{
+    if (!exists(cacheExe) || !exists(cacheInfo)) return false;
+    try
+    {
+        auto info = parseJSON(readText(cacheInfo));
+        return info.object["source"].get!string == source &&
+            info.object["sourceTime"].get!ulong ==
+                cast(ulong) timeLastModified(source).stdTime &&
+            info.object["sourceSize"].get!ulong == getSize(source) &&
+            info.object["frameworkTime"].get!ulong == frameworkStamp();
+    }
+    catch (Exception)
+    {
+        return false;
+    }
+}
+
+private void saveModuleCache(string source, string exe, string cacheExe,
+    string cacheInfo)
+{
+    try
+    {
+        if (exists(cacheExe)) remove(cacheExe);
+        copy(exe, cacheExe);
+        auto info = JSONValue(string[string].init);
+        info.object["source"] = JSONValue(source);
+        info.object["sourceTime"] = JSONValue(cast(ulong)
+            timeLastModified(source).stdTime);
+        info.object["sourceSize"] = JSONValue(getSize(source));
+        info.object["frameworkTime"] = JSONValue(frameworkStamp());
+        write(cacheInfo, info.toJSON());
+    }
+    catch (Exception)
+    {
+        // A cache miss is always safe; the next launch rebuilds.
+    }
 }
 
 private JSONValue stateDocument(string path)
@@ -579,6 +657,16 @@ private void devMain(string[] args)
     if (!exists(hostPath)) throw new Exception("missing host: " ~ hostPath);
     if (!exists(source)) throw new Exception("missing live source: " ~ source);
 
+    import std.datetime.stopwatch : StopWatch, AutoStart;
+    auto startup = StopWatch(AutoStart.yes);
+    void trace(string stage)
+    {
+        stdout.writeln("[trace] ", startup.peek.total!"msecs",
+            " ms  ", stage);
+        stdout.flush();
+    }
+    trace("begin");
+
     string[] events;
     if (eventKind.length != 0)
         foreach (part; eventKind.split(","))
@@ -599,10 +687,57 @@ private void devMain(string[] args)
     const firstSurface = buildPath(temp, "dev-1.surface");
     writeScene(scenePath, firstSurface, title, events, customTitlebar,
         titlebarHeight);
+    trace("workspace ready");
+
+    auto firstExe = buildPath(temp, "dev-1.exe");
+    const cacheDir = buildPath(outDir.length ? outDir : temp, ".cache");
+    mkdirRecurse(cacheDir);
+    const cacheExe = buildPath(cacheDir, "module.exe");
+    const cacheInfo = buildPath(cacheDir, "module.json");
+    bool cacheHit;
+    double firstBuildMs;
+    if (moduleCacheValid(source, cacheExe, cacheInfo))
+    {
+        try
+        {
+            auto copyWatch = StopWatch(AutoStart.yes);
+            copy(cacheExe, firstExe);
+            copyWatch.stop();
+            firstBuildMs = copyWatch.peek.total!"msecs";
+            cacheHit = true;
+            trace("module cache hit");
+        }
+        catch (Exception)
+        {
+            cacheHit = false;
+        }
+    }
+    if (!cacheHit)
+    {
+        firstBuildMs = buildLiveModule(source, firstExe);
+        trace("module built");
+        saveModuleCache(source, firstExe, cacheExe, cacheInfo);
+    }
+
+    int build = 1;
+    Pid current;
+    Pid host;
+    HostLink link;
+    scope (exit)
+    {
+        stopQuietly(current);
+        if (link !is null) closeQuietly(link);
+        stopQuietly(host);
+    }
 
     const port = uniform(20000, 40000);
-    auto host = spawnProcess([hostPath, "--run", scenePath,
+    host = spawnProcess([hostPath, "--run", scenePath,
         "--listen", to!string(port)]);
+    trace("host spawned");
+
+    current = spawnProcess([firstExe, "--surface", firstSurface,
+        "--state", statePath, "--build", "1", "--seconds", "900"]);
+    trace("module spawned");
     Socket socket;
     foreach (i; 0 .. 200)
     {
@@ -619,45 +754,46 @@ private void devMain(string[] args)
         }
     }
     if (socket is null) throw new Exception("cannot connect to aurora-host");
-    auto link = new HostLink(socket);
+    link = new HostLink(socket);
+    trace("host control connected");
 
-    Pid current;
-    scope (exit)
-    {
-        stopQuietly(current);
-        closeQuietly(link);
-        stopQuietly(host);
-    }
-
-    int build = 1;
-    auto firstExe = buildPath(temp, "dev-1.exe");
-    const firstBuildMs = buildLiveModule(source, firstExe);
-    current = spawnProcess([firstExe, "--surface", firstSurface,
-        "--state", statePath, "--build", "1", "--seconds", "900"]);
     waitBuild(statePath, 1);
+    trace("module state published");
     waitSurface(link);
+    trace("surface mapped");
     capture(link, buildPath(artifacts, "build-1.ppm"));
+    trace("first frame captured");
     auto last = readText(source);
     stdout.writeln("[1] build=1 buildMs=", firstBuildMs,
+        " cache=", cacheHit ? "hit" : "miss",
+        " startupMs=", startup.peek.total!"msecs",
         " hostPid=", host.processID);
     stdout.writeln("host stays open; edit ", source, " to rebuild");
     stdout.flush();
 
     void swap()
     {
+        trace("rebuild started");
         build++;
         const surface = buildPath(temp, "dev-" ~ to!string(build) ~ ".surface");
         auto exe = buildPath(temp, "dev-" ~ to!string(build) ~ ".exe");
         const buildMs = buildLiveModule(source, exe);
+        trace("rebuild built");
+        saveModuleCache(source, exe, cacheExe, cacheInfo);
         auto next = spawnProcess([exe, "--surface", surface,
             "--state", statePath, "--build", to!string(build),
             "--seconds", "900"]);
+        trace("rebuild module spawned");
         waitBuild(statePath, build);
+        trace("rebuild state published");
         writeScene(scenePath, surface, title, events, customTitlebar,
             titlebarHeight);
         link.request("reload");
+        trace("rebuild scene reloaded");
         waitSurface(link);
+        trace("rebuild surface mapped");
         capture(link, buildPath(artifacts, "build-" ~ to!string(build) ~ ".ppm"));
+        trace("rebuild frame captured");
         stdout.writeln("[", build, "] buildMs=", buildMs,
             " hostPid=", host.processID);
         stdout.flush();

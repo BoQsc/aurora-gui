@@ -47,6 +47,7 @@ private void usage()
     writeln("  --run <scene> [--control] [--watch]");
     writeln("  --dev [scene] [--control] [--listen <port>]");
     writeln("  --run <scene> [--listen <port>]");
+    writeln("  (no arguments)  open the starter scene in --dev mode");
 }
 
 private string optionValue(string[] args, string name, string fallback)
@@ -185,10 +186,23 @@ int main(string[] args)
     void* avHandle = AvSetMmThreadCharacteristicsW(avTask.ptr, &avIndex);
     scope(exit)
         if (avHandle !is null) AvRevertMmThreadCharacteristics(avHandle);
-    if (args.length < 2 || args[1] == "--help" || args[1] == "-h")
+    // A double-click supplies no arguments. Opening the embedded starter in
+    // --dev mode is more useful than printing usage to a console that closes
+    // immediately with the process. The headless build keeps its usage path.
+    if (args.length < 2)
+    {
+        version (AuroraHeadless)
+        {
+            usage();
+            return 2;
+        }
+        else
+            args ~= "--dev";
+    }
+    if (args[1] == "--help" || args[1] == "-h")
     {
         usage();
-        return args.length < 2 ? 2 : 0;
+        return 0;
     }
 
     try

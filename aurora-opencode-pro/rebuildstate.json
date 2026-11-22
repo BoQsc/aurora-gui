@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Final source commit 0cacffd is on the maintainer branch. Rebuilding from it so provenance matches and the corrected goal evidence gate is published.",
+  "reason": "Deploy the opt-in default for in-chat suggested follow-ups (core setting default, one-time reset, UI contract) and publish the rebuilt app.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-19 20:14:21.9948649 UTC",
-  "finishedAt": "2026-11-19 20:15:23.3971656 UTC",
-  "durationMs": 61402,
+  "startedAt": "2026-11-22 06:49:43.8876497 UTC",
+  "finishedAt": "2026-11-22 06:51:18.1906691 UTC",
+  "durationMs": 94303,
   "exitCode": 0,
   "errors": [],
   "publishStatus": "published",
-  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (82d0b7c91097).",
+  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (3617488379bf).",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }
