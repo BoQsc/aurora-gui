@@ -35,6 +35,7 @@ int main(string[] args)
     bool externalController;
     ushort listenPort;
     string pluginPath;
+    bool pluginDisabled;
     for (size_t index = 1; index < args.length; ++index)
     {
         if (args[index] == "--scene" && index + 1 < args.length)
@@ -55,6 +56,8 @@ int main(string[] args)
             pluginPath = args[index + 1];
             ++index;
         }
+        else if (args[index] == "--no-plugin")
+            pluginDisabled = true;
     }
     if (scenePath.length == 0)
         scenePath = embeddedScenePath();
@@ -69,7 +72,7 @@ int main(string[] args)
         if (externalController)
             return runHostWindow(window, registry, true, scenePath, watch,
                 listenPort);
-        if (pluginPath.length == 0)
+        if (pluginPath.length == 0 && !pluginDisabled)
         {
             auto bundled = buildPath(dirName(thisExePath()),
                 "opencode-lite-controller.dll");
@@ -80,6 +83,9 @@ int main(string[] args)
         {
             try
             {
+                stderr.writeln(
+                    "hostlite: loading in-process plugin (not process-isolated): " ~
+                    pluginPath);
                 auto plugin = new LitePlugin(registry, pluginPath);
                 return runHostWindow(window, registry, false, scenePath, watch);
             }

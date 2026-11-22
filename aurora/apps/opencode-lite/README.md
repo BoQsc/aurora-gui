@@ -44,17 +44,25 @@ and restart the controller without closing the host window. The host PID and
 scene stay alive. The production standalone keeps the embedded controller; the
 external controller is the live-code development path.
 
+This external-controller path is the safe isolation boundary. A controller
+process can crash, hang, or hit a native access violation without taking down
+the host window; restart it and reconnect.
+
 For in-process controller reloads, build the optional controller DLL:
 
 ```bat
 dub build --config=plugin --compiler=dmd
 ```
 
-Place `opencode-lite-controller.dll` beside the host EXE or pass
-`--plugin <dll>`. The host loads it in place of the embedded controller and
-watches the DLL. Replacing the DLL reinitializes the controller without closing
-the host. The DLL is an optional extension artifact; the standalone EXE still
-contains the embedded controller when no plugin is present.
+The host automatically loads `opencode-lite-controller.dll` from beside the EXE
+and watches it. Pass `--plugin <dll>` to select another path, or `--no-plugin`
+to disable in-process loading. Replacing the DLL reinitializes the controller
+without closing the host. The standalone EXE still contains the embedded
+controller when no plugin is present.
+
+In-process plugins are **not** process-isolated. A native access violation or
+a deliberately blocking plugin can still affect the host process. Use the
+external controller when process isolation is required.
 
 ## Dependency boundary
 

@@ -2,10 +2,10 @@ module opencodelite.pluginloader;
 
 import aurorahost.scene : NodeRegistry;
 import core.sys.windows.windows : FreeLibrary, GetCurrentProcessId, GetProcAddress,
-    HMODULE, LoadLibraryW;
+    HMODULE, LoadLibraryW, SetErrorMode;
 import std.conv : to;
 import std.datetime : SysTime;
-import std.file : copy, exists, remove, tempDir, timeLastModified;
+import std.file : copy, exists, read, remove, tempDir, timeLastModified;
 import std.path : buildPath;
 import std.stdio : stderr;
 import std.string : fromStringz, toStringz;
@@ -76,6 +76,9 @@ final class LitePlugin
         _api.setText = &pluginSetText;
         _api.getText = &pluginGetText;
         _api.setEnabled = &pluginSetEnabled;
+        // A malformed DLL must be rejected without Windows showing a loader
+        // error dialog over the running host.
+        SetErrorMode(0x0001 | 0x8000);
         _stamp = sourceStamp();
         if (!loadCandidate())
             throw new Exception(_lastError);
@@ -134,6 +137,13 @@ final class LitePlugin
                 "aurora-lite-controller-" ~ to!string(GetCurrentProcessId()) ~
                 "-" ~ to!string(++_serial) ~ ".dll");
             copy(_path, cachePath);
+            if (!validImage(cachePath))
+            {
+                remove(cachePath);
+                _lastError = "controller plugin is not a valid DLL image";
+                stampAndReport();
+                return false;
+            }
             candidate = LoadLibraryW(toUTF16z(cachePath));
             if (candidate is null)
             {
@@ -141,6 +151,7 @@ final class LitePlugin
                 stampAndReport();
                 return false;
             }
+
             auto init = cast(PluginInit) GetProcAddress(candidate,
                 "aurora_lite_plugin_init".ptr);
             auto action = cast(PluginAction) GetProcAddress(candidate,
@@ -201,6 +212,36 @@ final class LitePlugin
                 remove(cachePath);
             _lastError = "controller plugin load failed: " ~ error.msg;
             stampAndReport();
+            return false;
+        }
+    }
+
+    private bool validImage(string path)
+    {
+        try
+        {
+            const bytes = cast(const(ubyte)[]) read(path);
+            if (bytes.length < 0x40 || bytes[0] != 'M' || bytes[1] != 'Z')
+                return false;
+            const pe = cast(size_t) bytes[0x3C] |
+                cast(size_t) bytes[0x3D] << 8 |
+                cast(size_t) bytes[0x3E] << 16 |
+                cast(size_t) bytes[0x3F] << 24;
+            if (pe + 24 + 2 > bytes.length ||
+                bytes[pe] != 'P' || bytes[pe + 1] != 'E' ||
+                bytes[pe + 2] != 0 || bytes[pe + 3] != 0)
+                return false;
+            const machine = cast(ushort) (bytes[pe + 4] |
+                bytes[pe + 5] << 8);
+            const characteristics = cast(ushort) (bytes[pe + 22] |
+                bytes[pe + 23] << 8);
+            const magic = cast(ushort) (bytes[pe + 24] |
+                bytes[pe + 25] << 8);
+            return machine == 0x8664 && (characteristics & 0x2000) != 0 &&
+                magic == 0x20B;
+        }
+        catch (Exception)
+        {
             return false;
         }
     }
