@@ -166,6 +166,105 @@ final class LiteController
         send();
     }
 
+    private string workspacePath()
+    {
+        return buildPath(dirName(defaultSettingsPath()), "workspace.json");
+    }
+
+    private void loadActive()
+    {
+        _transcript = _workspace[_activeSlot].transcript;
+        _messages = _workspace[_activeSlot].messages;
+        _lastPrompt = _workspace[_activeSlot].lastPrompt;
+        _lastFailed = _workspace[_activeSlot].failed;
+    }
+
+    private void syncActive()
+    {
+        _workspace[_activeSlot].transcript = _transcript;
+        _workspace[_activeSlot].messages = _messages;
+        _workspace[_activeSlot].lastPrompt = _lastPrompt;
+        _workspace[_activeSlot].failed = _lastFailed;
+    }
+
+    private void loadWorkspace()
+    {
+        const path = workspacePath();
+        if (!exists(path))
+            return;
+        try
+        {
+            const document = parseJSON(readText(path));
+            if (auto rows = "slots" in document.object)
+            {
+                size_t index;
+                foreach (row; rows.array)
+                {
+                    if (index >= _workspace.length)
+                        break;
+                    _workspace[index].transcript = row["transcript"].str;
+                    _workspace[index].messages =
+                        cast(uint) row["messages"].integer;
+                    _workspace[index].lastPrompt = row["lastPrompt"].str;
+                    _workspace[index].failed = row["failed"].get!bool;
+                    ++index;
+                }
+            }
+            if (auto active = "active" in document.object)
+                _activeSlot = cast(int) active.integer;
+            if (_activeSlot < 0 || _activeSlot >= _workspace.length)
+                _activeSlot = 0;
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private void saveWorkspace()
+    {
+        try
+        {
+            const path = workspacePath();
+            const directory = dirName(path);
+            if (!exists(directory))
+                mkdirRecurse(directory);
+            JSONValue document;
+            document["active"] = JSONValue(cast(long) _activeSlot);
+            JSONValue[] rows;
+            foreach (slot; _workspace)
+            {
+                JSONValue row;
+                row["transcript"] = slot.transcript;
+                row["messages"] = JSONValue(cast(long) slot.messages);
+                row["lastPrompt"] = slot.lastPrompt;
+                row["failed"] = JSONValue(slot.failed);
+                rows ~= JSONValue(row);
+            }
+            document["slots"] = JSONValue(rows);
+            write(path, document.toString() ~ "\n");
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private void activateSlot(int index)
+    {
+        if (index < 0 || index >= _workspace.length || index == _activeSlot)
+            return;
+        if (_session.busy())
+            _session.cancel();
+        syncActive();
+        _activeSlot = index;
+        loadActive();
+        _view.setText("lite-input", "");
+        _view.setText("lite-transcript", _transcript);
+        _view.setText("lite-send", "Send");
+        setStatus("Workspace " ~ to!string(index + 1));
+        updateSession();
+        persist();
+    }
+
     private void exportSession()
     {
         try
@@ -258,8 +357,12 @@ final class LiteController
     private void updateSession()
     {
         _view.setText("lite-session",
-            "Session - " ~ to!string(_messages) ~
+            "Workspace " ~ to!string(_activeSlot + 1) ~ " - " ~
+            to!string(_messages) ~
             (_messages == 1 ? " message" : " messages"));
+        foreach (i; 0 .. 3)
+            _view.setText("lite-slot-" ~ to!string(i + 1),
+                (i == _activeSlot ? "* " : "  ") ~ to!string(i + 1));
         _view.setEnabled("lite-retry", _lastFailed && !_session.busy());
         _view.setText("lite-usage",
             "Messages " ~ to!string(_messages) ~ "  |  " ~
@@ -269,6 +372,8 @@ final class LiteController
 
     private void persist()
     {
+        syncActive();
+        saveWorkspace();
         try
         {
             ConversationState state;
