@@ -2,195 +2,249 @@
   "schemaVersion": 2,
   "window": {
     "title": "Aurora OpenCode Lite V2",
-    "width": 960,
-    "height": 680,
-    "minWidth": 960,
+    "width": 1100,
+    "height": 760,
+    "minWidth": 980,
     "minHeight": 680,
     "theme": "dark"
   },
   "root": {
-    "type": "column",
-    "padding": 16,
-    "spacing": 8,
+    "type": "row",
+    "padding": 0,
+    "spacing": 0,
     "children": [
       {
-        "type": "row",
-        "height": 36,
-        "spacing": 10,
+        "type": "column",
+        "width": 310,
+        "padding": 16,
+        "spacing": 8,
         "children": [
           {
-            "type": "label",
-            "text": "Aurora OpenCode Lite V2",
-            "scale": 2,
-            "flex": 1
+            "type": "row",
+            "height": 38,
+            "spacing": 8,
+            "children": [
+              {
+                "type": "label",
+                "text": "Aurora OpenCode Lite V2",
+                "scale": 2,
+                "flex": 1
+              },
+              {
+                "id": "lite-version",
+                "type": "label",
+                "text": "v2",
+                "scale": 1,
+                "textColor": "#7d8ea3"
+              }
+            ]
           },
           {
-            "id": "lite-version",
             "type": "label",
-            "text": "v2",
+            "text": "CONNECTION",
             "scale": 1,
             "textColor": "#7d8ea3"
           },
-
           {
-            "id": "lite-status",
+            "type": "row",
+            "spacing": 6,
+            "children": [
+              {
+                "id": "lite-provider-opencode",
+                "type": "button",
+                "text": "OpenCode",
+                "action": "preset-opencode"
+              },
+              {
+                "id": "lite-provider-openai",
+                "type": "button",
+                "text": "OpenAI",
+                "action": "preset-openai"
+              }
+            ]
+          },
+          {
+            "type": "row",
+            "spacing": 8,
+            "children": [
+              {
+                "type": "label",
+                "text": "Base URL",
+                "width": 72,
+                "textColor": "#a9b7c7"
+              },
+              {
+                "id": "lite-base",
+                "type": "textField",
+                "text": "https://opencode.ai/zen/go/v1",
+                "flex": 1
+              }
+            ]
+          },
+          {
+            "type": "row",
+            "spacing": 8,
+            "children": [
+              {
+                "type": "label",
+                "text": "Model",
+                "width": 64,
+                "textColor": "#a9b7c7"
+              },
+              {
+                "id": "lite-model",
+                "type": "textField",
+                "text": "deepseek-v4.1-flash",
+                "flex": 1
+              }
+            ]
+          },
+          {
+            "type": "row",
+            "spacing": 8,
+            "children": [
+              {
+                "type": "label",
+                "text": "API key",
+                "width": 72,
+                "textColor": "#a9b7c7"
+              },
+              {
+                "id": "lite-key",
+                "type": "textField",
+                "flex": 1
+              },
+              {
+                "id": "lite-key-state",
+                "type": "label",
+                "text": "No key",
+                "width": 58,
+                "textColor": "#9fb3c8"
+              }
+            ]
+          },
+          {
+            "type": "row",
+            "spacing": 8,
+            "children": [
+              {
+                "type": "label",
+                "text": "Stored locally",
+                "scale": 1,
+                "flex": 1,
+                "textColor": "#7d8ea3"
+              },
+              {
+                "id": "lite-save",
+                "type": "button",
+                "text": "Save",
+                "action": "save"
+              }
+            ]
+          },
+          {
+            "type": "separator",
+            "orientation": "horizontal"
+          },
+          {
             "type": "label",
-            "text": "Ready",
-            "width": 260,
+            "text": "SESSION",
+            "scale": 1,
+            "textColor": "#7d8ea3"
+          },
+          {
+            "id": "lite-session",
+            "type": "label",
+            "text": "Session - 0 messages",
             "textColor": "#9fb3c8"
-          }
-        ]
-      },
-      {
-        "type": "label",
-        "text": "CONNECTION",
-        "scale": 1,
-        "textColor": "#7d8ea3"
-      },
-      {
-        "type": "row",
-        "spacing": 8,
-        "children": [
-          {
-            "type": "label",
-            "text": "Provider",
-            "width": 72,
-            "textColor": "#a9b7c7"
           },
           {
-            "id": "lite-provider-opencode",
-            "type": "button",
-            "text": "OpenCode",
-            "action": "preset-opencode"
+            "type": "row",
+            "spacing": 6,
+            "children": [
+              {
+                "id": "lite-clear",
+                "type": "button",
+                "text": "New session",
+                "action": "clear",
+                "flex": 1
+              },
+              {
+                "id": "lite-retry",
+                "type": "button",
+                "text": "Retry",
+                "action": "retry",
+                "flex": 1
+              }
+            ]
           },
-          {
-            "id": "lite-provider-openai",
-            "type": "button",
-            "text": "OpenAI",
-            "action": "preset-openai"
-          }
-        ]
-      },
-      {
-        "type": "row",
-        "spacing": 8,
-        "children": [
-          {
-            "type": "label",
-            "text": "Base URL",
-            "width": 72,
-            "textColor": "#a9b7c7"
-          },
-          {
-            "id": "lite-base",
-            "type": "textField",
-            "text": "https://opencode.ai/zen/go/v1",
-            "flex": 1
-          }
-        ]
-      },
-      {
-        "type": "row",
-        "spacing": 8,
-        "children": [
-          {
-            "type": "label",
-            "text": "Model",
-            "width": 64,
-            "textColor": "#a9b7c7"
-          },
-          {
-            "id": "lite-model",
-            "type": "textField",
-            "text": "gpt-4o-mini",
-            "flex": 1
-          }
-        ]
-      },
-      {
-        "type": "row",
-        "spacing": 8,
-        "children": [
-          {
-            "type": "label",
-            "text": "API key",
-            "width": 72,
-            "textColor": "#a9b7c7"
-          },
-          {
-            "id": "lite-key",
-            "type": "textField",
-            "text": "",
-            "flex": 1
-          },
-          {
-            "id": "lite-key-state",
-            "type": "label",
-            "text": "No key",
-            "width": 64,
-            "textColor": "#9fb3c8"
-          }
-        ]
-      },
-      {
-        "type": "row",
-        "spacing": 8,
-        "children": [
           {
             "type": "spacer",
             "flex": 1
           },
           {
             "type": "label",
-            "text": "Stored locally",
+            "text": "Command line: aurora-opencode-lite-v2-cli",
             "scale": 1,
-            "textColor": "#7d8ea3"
-          },
-          {
-            "id": "lite-save",
-            "type": "button",
-            "text": "Save",
-            "action": "save"
+            "textColor": "#566476"
           }
         ]
       },
       {
-        "type": "label",
-        "text": "MESSAGE",
-        "scale": 1,
-        "textColor": "#7d8ea3"
-      },
-      {
-        "type": "row",
+        "type": "column",
+        "padding": 16,
         "spacing": 8,
-        "height": 40,
+        "flex": 1,
         "children": [
           {
-            "id": "lite-input",
-            "type": "textField",
-            "width": 650,
-            "submitAction": "send"
+            "type": "row",
+            "height": 34,
+            "spacing": 8,
+            "children": [
+              {
+                "type": "label",
+                "text": "CONVERSATION",
+                "scale": 1,
+                "flex": 1,
+                "textColor": "#7d8ea3"
+              },
+              {
+                "id": "lite-status",
+                "type": "label",
+                "text": "Ready",
+                "width": 220,
+                "textColor": "#9fb3c8"
+              }
+            ]
           },
           {
-            "id": "lite-send",
-            "type": "button",
-            "text": "Send",
-            "action": "send"
+            "id": "lite-transcript",
+            "type": "textArea",
+            "text": "New session.\n",
+            "readOnly": true,
+            "flex": 1
+          },
+          {
+            "type": "row",
+            "spacing": 8,
+            "height": 44,
+            "children": [
+              {
+                "id": "lite-input",
+                "type": "textField",
+                "flex": 1,
+                "submitAction": "send"
+              },
+              {
+                "id": "lite-send",
+                "type": "button",
+                "text": "Send",
+                "action": "send",
+                "width": 92
+              }
+            ]
           }
         ]
-      },
-      {
-        "type": "label",
-        "text": "CONVERSATION",
-        "scale": 1,
-        "textColor": "#7d8ea3"
-      },
-      {
-        "id": "lite-transcript",
-        "type": "textArea",
-        "text": "No conversation yet.\n",
-        "readOnly": true,
-        "flex": 1
       }
     ]
   }

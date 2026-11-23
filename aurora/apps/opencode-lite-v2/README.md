@@ -1,5 +1,17 @@
 # Aurora OpenCode Lite V2
 
+## v2 rework
+
+V2 is a new host-rendered product surface:
+
+- two-pane layout with a connection/session sidebar and conversation pane
+- persistent conversation history under `AuroraOpenCodeLiteV2`
+- explicit **New session** and **Retry** controls
+- session message count and richer status
+- Enter-to-send from the message field
+- CLI `status`, `send`, `clear`, and `retry` commands
+- process-isolated supervised controller with hidden console
+
 A small, independent OpenCode client built from the Aurora v2 host core.
 
 ## Architecture

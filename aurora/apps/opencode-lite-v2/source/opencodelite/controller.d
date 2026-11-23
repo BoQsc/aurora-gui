@@ -1,9 +1,11 @@
 module opencodelite.controller;
 
+import opencodelite.history : ConversationState, loadConversation, saveConversation;
 import opencodelite.session : ChatSession, SessionEventKind;
 import opencodelite.settings : LiteSettings, openAiBaseUrl, openAiModel,
     isOpenAiBaseUrl, isOpenCodeBaseUrl, openCodeBaseUrl, openCodeModel,
     saveSettings;
+import std.conv : to;
 import std.string : strip;
 
 /// The small host-facing surface the controller needs. Implementations are the
@@ -16,22 +18,30 @@ interface LiteView
 }
 
 /**
- * Lite's entire GUI surface is host-owned. This controller owns only the
- * conversation/network/settings policy and updates host nodes by id.
+ * V2 is still host-rendered, but now owns a persistent conversation session,
+ * explicit new-session/retry controls, and a richer session status.
  */
 final class LiteController
 {
     private LiteView _view;
     private ChatSession _session;
     private LiteSettings _settings;
-    private string _transcript = "No conversation yet.\n";
+    private string _transcript;
     private string _status = "Ready";
+    private string _lastPrompt;
+    private uint _messages;
+    private bool _lastFailed;
 
     this(LiteView view, LiteSettings settings)
     {
         _view = view;
         _settings = settings;
         _session = new ChatSession(_settings);
+        const history = loadConversation();
+        _transcript = history.transcript;
+        _messages = history.messages;
+        _lastPrompt = history.lastPrompt;
+        _lastFailed = history.failed;
     }
 
     void handleAction(string node, string action)
@@ -47,6 +57,10 @@ final class LiteController
             stop();
         else if (action == "save")
             saveConnection();
+        else if (action == "clear")
+            clearSession();
+        else if (action == "retry")
+            retryLast();
         else if (action == "preset-opencode")
             applyPreset(openCodeBaseUrl, openCodeModel, "OpenCode API preset");
         else if (action == "preset-openai")
@@ -107,12 +121,41 @@ final class LiteController
         if (prompt.length == 0)
             return;
         saveConnection();
+        _lastPrompt = prompt;
+        _lastFailed = false;
+        ++_messages;
         _transcript ~= "\nYou: " ~ prompt ~ "\nAssistant: ";
         _view.setText("lite-input", "");
         _view.setText("lite-transcript", _transcript);
         setStatus("Waiting for response...");
         _view.setText("lite-send", "Stop");
+        updateSession();
+        persist();
         _session.send(prompt);
+    }
+
+    private void retryLast()
+    {
+        if (_lastPrompt.length == 0 || _session.busy())
+            return;
+        _view.setText("lite-input", _lastPrompt);
+        send();
+    }
+
+    private void clearSession()
+    {
+        if (_session.busy())
+            _session.cancel();
+        _transcript = "New session.\n";
+        _lastPrompt = "";
+        _lastFailed = false;
+        _messages = 0;
+        _view.setText("lite-input", "");
+        _view.setText("lite-transcript", _transcript);
+        _view.setText("lite-send", "Send");
+        setStatus("Ready");
+        updateSession();
+        persist();
     }
 
     private void stop()
@@ -137,12 +180,18 @@ final class LiteController
                     _view.setText("lite-transcript", _transcript);
                     setStatus(event.text);
                     _view.setText("lite-send", "Send");
+                    _lastFailed = false;
+                    updateSession();
+                    persist();
                     break;
                 case SessionEventKind.failed:
                     _transcript ~= "\n[error] " ~ event.text ~ "\n";
                     _view.setText("lite-transcript", _transcript);
                     setStatus("Error");
                     _view.setText("lite-send", "Send");
+                    _lastFailed = true;
+                    updateSession();
+                    persist();
                     break;
                 default:
                     break;
@@ -158,8 +207,34 @@ final class LiteController
         _view.setText("lite-key", "");
         updateKeyState();
         _view.setText("lite-transcript", _transcript);
-        setStatus(_status);
         _view.setText("lite-send", _session.busy() ? "Stop" : "Send");
+        setStatus(_status);
+        updateSession();
+    }
+
+    private void updateSession()
+    {
+        _view.setText("lite-session",
+            "Session - " ~ to!string(_messages) ~
+            (_messages == 1 ? " message" : " messages"));
+        _view.setEnabled("lite-retry", _lastFailed && !_session.busy());
+    }
+
+    private void persist()
+    {
+        try
+        {
+            ConversationState state;
+            state.transcript = _transcript;
+            state.messages = _messages;
+            state.lastPrompt = _lastPrompt;
+            state.failed = _lastFailed;
+            saveConversation(state);
+        }
+        catch (Exception)
+        {
+            // The host remains usable even if the history file is unwritable.
+        }
     }
 
     private void setStatus(string value)

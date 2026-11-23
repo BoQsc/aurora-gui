@@ -12,6 +12,10 @@ private void usage()
     stdout.writeln("usage: aurora-opencode-lite-v2-cli [--port N] <command>");
     stdout.writeln("  list");
     stdout.writeln("  ping");
+    stdout.writeln("  status");
+    stdout.writeln("  send <text>");
+    stdout.writeln("  clear");
+    stdout.writeln("  retry");
     stdout.writeln("  get <node>");
     stdout.writeln("  set <node> <text>");
     stdout.writeln("  trigger <node> <action>");
@@ -65,6 +69,44 @@ int main(string[] args)
             }
             case "ping":
                 client.request("ping");
+                stdout.writeln("ok");
+                return 0;
+            case "status":
+            {
+                const result = client.request("tree");
+                JSONValue[string] nodes;
+                foreach (node; result["nodes"].array)
+                    nodes[node["id"].str] = node;
+                foreach (id; ["lite-status", "lite-session", "lite-base",
+                              "lite-model", "lite-key-state", "lite-input"])
+                {
+                    if (id in nodes)
+                    {
+                        const value = "text" in nodes[id].object;
+                        const text = value !is null &&
+                            value.type == JSONType.string ? value.str : "";
+                        stdout.writeln(id, "\t", flat(text));
+                    }
+                }
+                return 0;
+            }
+            case "send":
+                if (command.length < 2)
+                    throw new Exception("send requires text");
+                client.request("setText",
+                    ["node": "lite-input", "text": command[1]]);
+                client.request("trigger",
+                    ["node": "lite-send", "action": "send"]);
+                stdout.writeln("ok");
+                return 0;
+            case "clear":
+                client.request("trigger",
+                    ["node": "lite-clear", "action": "clear"]);
+                stdout.writeln("ok");
+                return 0;
+            case "retry":
+                client.request("trigger",
+                    ["node": "lite-retry", "action": "retry"]);
                 stdout.writeln("ok");
                 return 0;
             case "get":

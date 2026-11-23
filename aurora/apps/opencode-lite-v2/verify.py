@@ -195,6 +195,8 @@ def main() -> int:
         # Live workflow: update the controller DLL and validate the scene, but
         # never rebuild the locked standalone EXE or disturb the running host.
         run([DUB, "build", "--config=plugin", f"--compiler={COMPILER}"])
+        run([PYTHON, "-B", "tools/check_no_desktop_automation.py"])
+        run([PYTHON, "-B", "tools/live_v2_check.py"])
         print("Lite live check passed: controller DLL rebuilt and scene "
               "validated; running host untouched.")
         return 0
@@ -216,6 +218,8 @@ def main() -> int:
     run([PYTHON, "-B", "tests/run_command_menu_test.py"])
     run([PYTHON, "-B", "tests/run_minimized_control_test.py"])
     run([PYTHON, "-B", "tests/run_enter_submit_test.py"])
+    run([PYTHON, "-B", "tests/run_v2_features_test.py"])
+    run([PYTHON, "-B", "tools/check_no_desktop_automation.py"])
     run([DUB, "build", "--config=host-cli", f"--compiler={COMPILER}"])
     run([PYTHON, "-B", "tests/run_cli_control_test.py"])
     run([DUB, "build", "--config=plugin", f"--compiler={COMPILER}"])
