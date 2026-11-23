@@ -7,12 +7,14 @@ import opencodelite.settings : LiteSettings, openAiBaseUrl, openAiModel,
     saveSettings, defaultSettingsPath;
 import std.conv : to;
 import core.time : seconds;
+import std.array : join, split;
 import std.datetime : Clock, SysTime;
 import std.file : exists, mkdirRecurse, write;
 import std.file : readText;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildPath, dirName;
-import std.string : indexOf, splitLines, strip, toLower;
+import std.process : environment;
+import std.string : indexOf, replace, splitLines, strip, toLower;
 
 /// The small host-facing surface the controller needs. Implementations are the
 /// embedded registry and an external host control client.
@@ -21,6 +23,7 @@ interface LiteView
     string text(string id);
     bool setText(string id, string text);
     bool setEnabled(string id, bool enabled);
+    bool setActive(string id, bool active);
 }
 
 private struct WorkspaceSlot
@@ -317,12 +320,12 @@ final class LiteController
         _lastPrompt = prompt;
         _lastFailed = false;
         ++_messages;
-        _view.setText("lite-export-status", "Not exported");
+
         const stamp = Clock.currTime().toString();
         _transcript ~= "\n[" ~ stamp ~ "] You: " ~ prompt ~
             "\n[" ~ stamp ~ "] Assistant: ";
         _view.setText("lite-input", "");
-        _view.setText("lite-transcript", _transcript);
+        _view.setText("lite-transcript", displayTranscript());
         setStatus("Waiting for response...");
         _view.setText("lite-send", "Stop");
         updateSession();
@@ -349,6 +352,39 @@ final class LiteController
         _messages = _workspace[_activeSlot].messages;
         _lastPrompt = _workspace[_activeSlot].lastPrompt;
         _lastFailed = _workspace[_activeSlot].failed;
+    }
+
+    private string displayTranscript()
+    {
+        const clean = _transcript
+            .replace("**", "")
+            .replace("```", "")
+            .replace("`", "")
+            .replace("*", "");
+        string[] wrapped;
+        foreach (line; clean.splitLines)
+        {
+            if (line.length <= 80)
+            {
+                wrapped ~= line;
+                continue;
+            }
+            string current;
+            foreach (word; line.split(" "))
+            {
+                if (current.length == 0)
+                    current = word;
+                else if (current.length + 1 + word.length <= 80)
+                    current ~= " " ~ word;
+                else
+                {
+                    wrapped ~= current;
+                    current = word;
+                }
+            }
+            wrapped ~= current;
+        }
+        return wrapped.join("\n");
     }
 
     private void syncActive()
@@ -446,7 +482,7 @@ final class LiteController
         _activeSlot = index;
         loadActive();
         _view.setText("lite-input", "");
-        _view.setText("lite-transcript", _transcript);
+        _view.setText("lite-transcript", displayTranscript());
         _view.setText("lite-send", "Send");
         setStatus("Workspace " ~ to!string(index + 1));
         updateSession();
@@ -551,7 +587,7 @@ final class LiteController
         _workspace[_activeSlot] = WorkspaceSlot();
         loadActive();
         _view.setText("lite-input", "");
-        _view.setText("lite-transcript", _transcript);
+        _view.setText("lite-transcript", displayTranscript());
         setStatus("Workspace " ~ to!string(_activeSlot + 1));
         updateSession();
         persist();
@@ -563,7 +599,7 @@ final class LiteController
         _workspaceNames[_activeSlot] = "Empty";
         loadActive();
         _view.setText("lite-input", "");
-        _view.setText("lite-transcript", _transcript);
+        _view.setText("lite-transcript", displayTranscript());
         setStatus("Workspace deleted");
         updateSession();
         persist();
@@ -579,8 +615,7 @@ final class LiteController
                 mkdirRecurse(directory);
             const path = buildPath(directory, "session.md");
             write(path, _transcript);
-            _view.setText("lite-export-status",
-                "Exported: session.md  ·  " ~ Clock.currTime().toString());
+
             setStatus("Session exported");
         }
         catch (Exception error)
@@ -602,9 +637,8 @@ final class LiteController
             }
             _transcript = readText(path);
             _messages = 0;
-            _view.setText("lite-transcript", _transcript);
-            _view.setText("lite-export-status",
-                "Imported: session.md  ·  " ~ Clock.currTime().toString());
+            _view.setText("lite-transcript", displayTranscript());
+
             setStatus("Session imported");
             updateSession();
             persist();
@@ -624,7 +658,7 @@ final class LiteController
         _lastFailed = false;
         _messages = 0;
         _view.setText("lite-input", "");
-        _view.setText("lite-transcript", _transcript);
+        _view.setText("lite-transcript", displayTranscript());
         _view.setText("lite-send", "Send");
         setStatus("Ready");
         updateSession();
@@ -647,12 +681,12 @@ final class LiteController
             {
                 case SessionEventKind.delta:
                     _transcript ~= event.text;
-                    _view.setText("lite-transcript", _transcript);
+                    _view.setText("lite-transcript", displayTranscript());
                     break;
                 case SessionEventKind.done:
                     _transcript ~= event.text == "Stopped"
                         ? "\n[stopped]\n" : "\n";
-                    _view.setText("lite-transcript", _transcript);
+                    _view.setText("lite-transcript", displayTranscript());
                     setStatus(event.text);
                     _view.setText("lite-send", "Send");
                     _lastFailed = false;
@@ -661,7 +695,7 @@ final class LiteController
                     break;
                 case SessionEventKind.failed:
                     _transcript ~= "\n[error] " ~ event.text ~ "\n";
-                    _view.setText("lite-transcript", _transcript);
+                    _view.setText("lite-transcript", displayTranscript());
                     setStatus("Error");
                     _view.setText("lite-send", "Send");
                     _lastFailed = true;
@@ -673,7 +707,7 @@ final class LiteController
             }
         }
         const now = Clock.currTime();
-        if (_lastRefresh == SysTime.init || now >= _lastRefresh + 1.seconds)
+        if (_lastRefresh == SysTime.init || now >= _lastRefresh + 5.seconds)
         {
             _lastRefresh = now;
             refreshView();
@@ -698,10 +732,103 @@ final class LiteController
         _view.setText("lite-model", _settings.model);
         _view.setText("lite-key", "");
         updateKeyState();
-        _view.setText("lite-transcript", _transcript);
+        _view.setText("lite-transcript", displayTranscript());
         _view.setText("lite-send", _session.busy() ? "Stop" : "Send");
         setStatus(_status);
         updateSession();
+        auditTextFit();
+    }
+
+    /// Report scene text/nodes whose declared box is too small to hold their
+    /// text. `allowTextClip: true` marks deliberate clipping and suppresses
+    /// the warning. This is a structural audit; it does not mutate the scene.
+    private void auditTextFit()
+    {
+        try
+        {
+            const scenePath = buildPath(environment.get("LOCALAPPDATA", ""),
+                "AuroraOpenCodeLiteV2", "lite.scene.json");
+            if (!exists(scenePath))
+                return;
+            const doc = parseJSON(readText(scenePath));
+            string[] warnings;
+            int intentional;
+
+            void inspect(JSONValue node)
+            {
+                if (node.type != JSONType.object)
+                    return;
+                bool allowClip;
+                if (auto flag = "allowTextClip" in node.object)
+                    allowClip = (*flag).type == JSONType.true_;
+                if (allowClip)
+                    ++intentional;
+                string id;
+                if (auto value = "id" in node.object)
+                    if ((*value).type == JSONType.string)
+                        id = (*value).str;
+                string type;
+                if (auto value = "type" in node.object)
+                    if ((*value).type == JSONType.string)
+                        type = (*value).str;
+                int height;
+                if (auto value = "height" in node.object)
+                    if ((*value).type == JSONType.integer)
+                        height = cast(int) (*value).integer;
+                int width;
+                if (auto value = "width" in node.object)
+                    if ((*value).type == JSONType.integer)
+                        width = cast(int) (*value).integer;
+
+                if (type == "component")
+                {
+                    int lines;
+                    int padding = 6;
+                    if (auto props = "props" in node.object)
+                        if ((*props).type == JSONType.object)
+                        {
+                            if (auto value = "padding" in (*props).object)
+                                if ((*value).type == JSONType.integer)
+                                    padding = cast(int) (*value).integer;
+                            foreach (key; ["kicker", "title", "subtitle"])
+                                if (auto value = key in (*props).object)
+                                    if ((*value).type == JSONType.string &&
+                                        (*value).str.length > 0)
+                                        ++lines;
+                        }
+                    if (lines > 0 && height > 0 &&
+                        height < padding * 2 + lines * 12 && !allowClip)
+                        warnings ~= (id.length ? id : "component");
+                }
+                else if (type == "label" || type == "button" || type == "menu")
+                {
+                    string text;
+                    if (auto value = "text" in node.object)
+                        if ((*value).type == JSONType.string)
+                            text = (*value).str;
+                    if (text.length > 0 && width > 2 && height > 0 &&
+                        height < 18 && !allowClip)
+                        warnings ~= (id.length ? id : type);
+                }
+
+                if (auto children = "children" in node.object)
+                    if ((*children).type == JSONType.array)
+                        foreach (child; (*children).array)
+                            inspect(child);
+            }
+
+            inspect(doc["root"]);
+            const message = warnings.length > 0
+                ? "TEXT WARN " ~ to!string(warnings.length) ~ " · " ~ warnings[0]
+                : intentional > 0
+                    ? "TEXT FIT OK · " ~ to!string(intentional) ~ " intentional"
+                    : "TEXT FIT OK";
+            _view.setText("text-audit", message);
+        }
+        catch (Exception)
+        {
+            _view.setText("text-audit", "TEXT AUDIT ERROR");
+        }
     }
 
     private void updateSession()
@@ -713,20 +840,16 @@ final class LiteController
         foreach (i; 0 .. 3)
         {
             _view.setText("lite-slot-" ~ to!string(i + 1),
-                (i == _activeSlot ? "> " : "  ") ~ _workspaceNames[i]);
-            _view.setText("header-tab-" ~ to!string(i + 1),
-                (i == _activeSlot ? "* " : "  ") ~ _workspaceNames[i]);
+                _workspaceNames[i]);
+            _view.setActive("lite-slot-" ~ to!string(i + 1),
+                i == _activeSlot);
         }
-        _view.setEnabled("lite-retry", _lastFailed && !_session.busy());
+
         _view.setText("lite-usage",
             "Messages " ~ to!string(_messages) ~ "  |  " ~
             (_session.busy() ? "working" : "idle") ~ "  |  " ~
             _settings.model);
-        _view.setText("header-active-badge",
-            _workspaceNames[_activeSlot] ~ "  |  " ~
-            to!string(_messages) ~
-            (_messages == 1 ? " message" : " messages") ~ "  |  " ~
-            (_session.busy() ? "working" : "idle"));
+
         _view.setText("transcript-meta",
             "MESSAGE ROLES  ·  TIMESTAMPS  ·  " ~
             Clock.currTime().toString());
@@ -745,9 +868,7 @@ final class LiteController
         _view.setText("last-prompt",
             "Last sent: " ~
             (_lastPrompt.length > 0 ? _lastPrompt : "none"));
-        const onOpenCode = isOpenCodeBaseUrl(_settings.baseUrl);
-        _view.setText("model-deepseek", onOpenCode ? "* DS" : "  DS");
-        _view.setText("model-gpt", onOpenCode ? "  GPT" : "* GPT");
+
         _view.setText("lite-provider-health",
             _settings.baseUrl.length > 0 && _settings.model.length > 0
                 ? (_settings.apiKey.length > 0 ? "Provider ready" : "No key")

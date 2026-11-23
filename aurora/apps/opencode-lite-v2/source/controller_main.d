@@ -167,6 +167,15 @@ final class HostLink
         exchange(payload);
     }
 
+    void setActive(string id, bool active)
+    {
+        JSONValue payload;
+        payload["command"] = JSONValue("setChrome");
+        payload["node"] = JSONValue(id);
+        payload["active"] = JSONValue(active);
+        exchange(payload);
+    }
+
     JSONValue[] takeEvents()
     {
         synchronized (_mutex)
@@ -207,6 +216,12 @@ final class RemoteLiteView : LiteView
     bool setEnabled(string id, bool enabled)
     {
         _link.setEnabled(id, enabled);
+        return true;
+    }
+
+    bool setActive(string id, bool active)
+    {
+        _link.setActive(id, active);
         return true;
     }
 }

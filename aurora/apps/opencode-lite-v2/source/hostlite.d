@@ -10,6 +10,7 @@ import opencodelite.controller : LiteController;
 import opencodelite.pluginloader : LitePlugin;
 import opencodelite.registryview : RegistryLiteView;
 import opencodelite.settings : LiteSettings, loadSettings;
+import opencodelite.widgets : universalWidgetFactory;
 import std.conv : to;
 import std.file : exists, mkdirRecurse, thisExePath, write;
 import std.path : buildPath, dirName;
@@ -125,6 +126,7 @@ int main(string[] args)
         if (journal.previousUnclean)
             errLine("hostlite: previous run ended without an intentional close");
         auto registry = new NodeRegistry();
+        registry.components.register("opencode.universal", universalWidgetFactory());
         const settings = loadSettings();
         environment["AURORA_RENDERER"] = "software";
         auto window = createWindow(scene, registry, startMinimized, false,

@@ -27,4 +27,9 @@ final class RegistryLiteView : LiteView
     {
         return _registry.setEnabled(id, enabled);
     }
+
+    bool setActive(string id, bool active)
+    {
+        return _registry.setChrome(id, "", "", active ? 1 : 0);
+    }
 }

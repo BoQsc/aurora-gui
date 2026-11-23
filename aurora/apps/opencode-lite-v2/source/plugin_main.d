@@ -33,6 +33,11 @@ final class PluginView : LiteView
         api.setEnabled(api.context, toStringz(id), enabled ? 1 : 0);
         return true;
     }
+
+    bool setActive(string id, bool active)
+    {
+        return false;
+    }
 }
 
 extern(C) export int aurora_lite_plugin_init(LitePluginApi* value)

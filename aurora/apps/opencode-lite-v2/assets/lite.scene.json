@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "window": {
     "title": "Aurora OpenCode Lite V50",
-    "width": 1280,
-    "height": 800,
-    "minWidth": 1000,
-    "minHeight": 640,
+    "width": 1911,
+    "height": 991,
+    "minWidth": 1280,
+    "minHeight": 800,
     "theme": "dark"
   },
   "root": {
@@ -15,82 +15,41 @@
     "children": [
       {
         "type": "row",
-        "height": 68,
+        "height": 80,
         "padding": 14,
         "spacing": 10,
         "background": "#0d151c",
         "border": "#263542",
         "children": [
           {
-            "type": "column",
+            "id": "brand-widget",
+            "type": "component",
+            "component": "opencode.universal",
             "width": 500,
-            "spacing": 2,
-            "children": [
-              {
-                "type": "label",
-                "text": "AURORA // OPENCODE",
-                "scale": 2,
-                "textColor": "#e6edf5"
-              },
-              {
-                "type": "label",
-                "text": "V50 COMMAND CENTER",
-                "scale": 1,
-                "textColor": "#69d2a8"
-              }
-            ]
+            "height": 64,
+            "props": {
+              "kicker": "",
+              "title": "AURORA // OPENCODE",
+              "subtitle": "V50 COMMAND CENTER",
+              "accent": "#69d2a8",
+              "background": "#111b24",
+              "border": "#2b3a48",
+              "radius": 8,
+              "shadow": true,
+              "accentBar": true,
+              "padding": 6
+            }
           },
           {
-            "type": "row",
-            "height": 34,
-            "spacing": 6,
-            "children": [
-              {
-                "id": "header-tab-1",
-                "type": "button",
-                "text": "Main",
-                "action": "session-1",
-                "width": 88,
-                "height": 30
-              },
-              {
-                "id": "header-tab-2",
-                "type": "button",
-                "text": "Research",
-                "action": "session-2",
-                "width": 88,
-                "height": 30
-              },
-              {
-                "id": "header-tab-3",
-                "type": "button",
-                "text": "Scratch",
-                "action": "session-3",
-                "width": 88,
-                "height": 30
-              }
-            ],
-            "width": 300
-          },
-          {
-            "id": "header-active-badge",
-            "type": "label",
-            "text": "Main | 0 messages | idle",
-            "width": 210,
-            "textColor": "#9fb3c8"
-          },
-          {
-            "id": "lite-status",
-            "type": "label",
-            "text": "Ready",
-            "width": 150,
-            "textColor": "#9fb3c8"
+            "type": "spacer",
+            "flex": 1
           },
           {
             "id": "lite-live-mode",
             "type": "label",
             "text": "LIVE",
             "width": 60,
+            "align": "right",
             "textColor": "#69d2a8"
           },
           {
@@ -98,7 +57,141 @@
             "type": "label",
             "text": "v50",
             "width": 50,
+            "align": "right",
             "textColor": "#7d8ea3"
+          }
+        ]
+      },
+      {
+        "type": "row",
+        "height": 42,
+        "padding": 6,
+        "spacing": 4,
+        "background": "#0b1117",
+        "border": "#263542",
+        "children": [
+          {
+            "id": "menu-session",
+            "type": "menu",
+            "text": "Session",
+            "items": [
+              {
+                "label": "New session",
+                "shortcut": "Ctrl+N",
+                "action": "clear"
+              },
+              {
+                "label": "Export session",
+                "shortcut": "Ctrl+E",
+                "action": "export"
+              },
+              {
+                "label": "Import session",
+                "action": "import"
+              },
+              {
+                "separator": true
+              },
+              {
+                "label": "Workspaces",
+                "children": [
+                  {
+                    "label": "Main",
+                    "action": "session-1"
+                  },
+                  {
+                    "label": "Research",
+                    "action": "session-2"
+                  },
+                  {
+                    "label": "Scratch",
+                    "action": "session-3"
+                  }
+                ]
+              },
+              {
+                "separator": true
+              },
+              {
+                "label": "Keyboard shortcuts",
+                "action": "help"
+              },
+              {
+                "label": "Retry last prompt",
+                "action": "retry"
+              },
+              {
+                "label": "Regenerate response",
+                "action": "regenerate"
+              }
+            ],
+            "height": 26,
+            "fontSize": 12
+          },
+          {
+            "id": "menu-model",
+            "type": "menu",
+            "text": "Model",
+            "items": [
+              {
+                "label": "OpenCode profile",
+                "action": "preset-opencode"
+              },
+              {
+                "label": "OpenAI profile",
+                "action": "preset-openai"
+              },
+              {
+                "separator": true
+              },
+              {
+                "label": "DeepSeek model",
+                "action": "model-deepseek"
+              },
+              {
+                "label": "GPT-4o mini model",
+                "action": "model-gpt"
+              },
+              {
+                "separator": true
+              },
+              {
+                "label": "Save connection",
+                "action": "save"
+              },
+              {
+                "label": "Save key",
+                "action": "save-key"
+              }
+            ],
+            "height": 26,
+            "fontSize": 12
+          },
+          {
+            "id": "menu-help",
+            "type": "menu",
+            "text": "Help",
+            "items": [
+              {
+                "label": "Keyboard shortcuts",
+                "shortcut": "F1",
+                "action": "help"
+              },
+              {
+                "label": "Dismiss banner",
+                "action": "dismiss-banner"
+              },
+              {
+                "label": "Clear key",
+                "action": "clear-key"
+              }
+            ],
+            "height": 26,
+            "fontSize": 12
+          },
+          {
+            "type": "spacer",
+            "flex": 1
           }
         ]
       },
@@ -110,7 +203,7 @@
         "children": [
           {
             "type": "column",
-            "width": 300,
+            "width": 280,
             "padding": 10,
             "spacing": 5,
             "background": "#151f29",
@@ -118,35 +211,50 @@
             "radius": 8,
             "children": [
               {
-                "type": "label",
-                "text": "SESSIONS",
-                "scale": 1,
-                "textColor": "#69d2a8"
+                "id": "sessions-widget",
+                "type": "component",
+                "component": "opencode.universal",
+                "width": 260,
+                "height": 64,
+                "props": {
+                  "kicker": "WORKSPACE",
+                  "title": "SESSIONS",
+                  "subtitle": "Local sessions and search",
+                  "accent": "#69d2a8",
+                  "background": "#111b24",
+                  "border": "#2b3a48",
+                  "radius": 8,
+                  "shadow": false,
+                  "accentBar": false,
+                  "padding": 6
+                }
               },
               {
                 "id": "lite-slot-1",
                 "type": "button",
                 "text": "Main",
                 "action": "session-1",
-                "height": 28
+                "height": 28,
+                "style": "toolbar",
+                "active": true
               },
               {
                 "id": "lite-slot-2",
                 "type": "button",
                 "text": "Research",
                 "action": "session-2",
-                "height": 28
+                "height": 28,
+                "style": "toolbar",
+                "active": false
               },
               {
                 "id": "lite-slot-3",
                 "type": "button",
                 "text": "Scratch",
                 "action": "session-3",
-                "height": 28
-              },
-              {
-                "type": "separator",
-                "orientation": "horizontal"
+                "height": 28,
+                "style": "toolbar",
+                "active": false
               },
               {
                 "id": "lite-session",
@@ -176,7 +284,7 @@
                   {
                     "id": "lite-search",
                     "type": "textField",
-                    "width": 190,
+                    "flex": 1,
                     "fontSize": 12
                   },
                   {
@@ -185,159 +293,46 @@
                     "text": "Find",
                     "action": "workspace-search",
                     "width": 70,
-                    "height": 26
+                    "height": 28
                   }
                 ]
               },
               {
                 "id": "search-result",
                 "type": "label",
-                "text": "no matches",
+                "text": "Enter a search term",
                 "scale": 1,
                 "textColor": "#7d8ea3"
               },
               {
-                "type": "row",
-                "height": 28,
-                "spacing": 5,
-                "children": [
-                  {
-                    "id": "search-prev",
-                    "type": "button",
-                    "text": "<",
-                    "action": "search-prev",
-                    "width": 40,
-                    "height": 26
-                  },
-                  {
-                    "id": "search-next",
-                    "type": "button",
-                    "text": ">",
-                    "action": "search-next",
-                    "width": 40,
-                    "height": 26
-                  },
-                  {
-                    "id": "search-clear",
-                    "type": "button",
-                    "text": "Reset",
-                    "action": "search-clear",
-                    "width": 70,
-                    "height": 26
-                  }
-                ]
-              },
-              {
-                "type": "separator",
-                "orientation": "horizontal"
-              },
-              {
-                "type": "row",
-                "height": 30,
-                "spacing": 5,
-                "children": [
-                  {
-                    "id": "lite-clear",
-                    "type": "button",
-                    "text": "New",
-                    "action": "clear",
-                    "width": 82,
-                    "height": 28
-                  },
-                  {
-                    "id": "lite-retry",
-                    "type": "button",
-                    "text": "Retry",
-                    "action": "retry",
-                    "width": 82,
-                    "height": 28
-                  },
-                  {
-                    "id": "lite-regenerate",
-                    "type": "button",
-                    "text": "Regen",
-                    "action": "regenerate",
-                    "width": 82,
-                    "height": 28
-                  }
-                ]
-              },
-              {
-                "type": "row",
-                "height": 30,
-                "spacing": 5,
-                "children": [
-                  {
-                    "id": "lite-export",
-                    "type": "button",
-                    "text": "Export",
-                    "action": "export",
-                    "width": 82,
-                    "height": 28
-                  },
-                  {
-                    "id": "lite-import",
-                    "type": "button",
-                    "text": "Import",
-                    "action": "import",
-                    "width": 82,
-                    "height": 28
-                  },
-                  {
-                    "id": "history-prev",
-                    "type": "button",
-                    "text": "< Hist",
-                    "action": "history-prev",
-                    "width": 82,
-                    "height": 28
-                  }
-                ]
-              },
-              {
-                "type": "row",
-                "height": 30,
-                "spacing": 5,
-                "children": [
-                  {
-                    "id": "history-next",
-                    "type": "button",
-                    "text": "Hist >",
-                    "action": "history-next",
-                    "width": 82,
-                    "height": 28
-                  },
-                  {
-                    "type": "label",
-                    "text": "Enter sends \u00b7 Shift+Enter newline",
-                    "scale": 1,
-                    "textColor": "#566476"
-                  }
-                ]
-              },
-              {
-                "id": "lite-export-status",
-                "type": "label",
-                "text": "Not exported",
-                "scale": 1,
-                "textColor": "#566476"
-              },
-              {
-                "id": "lite-help",
-                "type": "button",
-                "text": "Help",
-                "action": "help",
-                "width": 82,
-                "height": 28
-              },
-              {
                 "type": "spacer",
                 "flex": 1
+              },
+              {
+                "type": "row",
+                "height": 20,
+                "spacing": 6,
+                "children": [
+                  {
+                    "type": "label",
+                    "text": "STATUS",
+                    "scale": 1,
+                    "textColor": "#566476"
+                  },
+                  {
+                    "id": "lite-status",
+                    "type": "label",
+                    "text": "Ready",
+                    "scale": 1,
+                    "textColor": "#9fb3c8",
+                    "flex": 1
+                  }
+                ]
               }
             ]
           },
           {
             "type": "column",
-            "flex": 1,
             "padding": 10,
             "spacing": 6,
             "background": "#10161d",
@@ -352,26 +347,50 @@
                   {
                     "type": "label",
                     "text": "CONVERSATION",
-                    "flex": 1,
                     "textColor": "#69d2a8"
+                  },
+                  {
+                    "type": "label",
+                    "text": "MESSAGE ROLES \u00b7 TIMESTAMPS",
+                    "scale": 1,
+                    "textColor": "#7d8ea3"
                   },
                   {
                     "id": "transcript-meta",
                     "type": "label",
-                    "text": "MESSAGE ROLES \u00b7 TIMESTAMPS",
-                    "width": 330,
+                    "text": "",
+                    "width": 1,
+                    "height": 1,
                     "scale": 1,
-                    "textColor": "#7d8ea3"
+                    "textColor": "#10161d"
                   }
                 ]
               },
               {
                 "id": "lite-transcript",
                 "type": "textArea",
-                "height": 660,
+                "flex": 1,
                 "readOnly": true,
                 "lineNumbers": false,
-                "highlightCurrentLine": false
+                "highlightCurrentLine": false,
+                "menu": [
+                  {
+                    "label": "Export session",
+                    "action": "export"
+                  },
+                  {
+                    "label": "Search transcript",
+                    "action": "workspace-search"
+                  },
+                  {
+                    "label": "Clear session",
+                    "action": "clear"
+                  },
+                  {
+                    "label": "Keyboard shortcuts",
+                    "action": "help"
+                  }
+                ]
               },
               {
                 "type": "row",
@@ -391,6 +410,7 @@
                     "type": "label",
                     "text": "0 characters",
                     "width": 120,
+                    "align": "right",
                     "scale": 1,
                     "textColor": "#7d8ea3"
                   }
@@ -404,8 +424,22 @@
                   {
                     "id": "lite-input",
                     "type": "textField",
-                    "width": 460,
-                    "submitAction": "send"
+                    "flex": 1,
+                    "submitAction": "send",
+                    "menu": [
+                      {
+                        "label": "Send",
+                        "action": "send"
+                      },
+                      {
+                        "label": "Clear composer",
+                        "action": "composer-clear"
+                      },
+                      {
+                        "label": "Keyboard shortcuts",
+                        "action": "help"
+                      }
+                    ]
                   },
                   {
                     "id": "lite-send",
@@ -413,7 +447,9 @@
                     "text": "Send",
                     "action": "send",
                     "width": 90,
-                    "height": 30
+                    "height": 30,
+                    "background": "#2ea36d",
+                    "textColor": "#ffffff"
                   },
                   {
                     "id": "composer-clear",
@@ -424,22 +460,13 @@
                     "height": 30
                   }
                 ]
-              },
-              {
-                "type": "label",
-                "text": "Enter sends \u00b7 Shift+Enter newline \u00b7 Esc stops",
-                "scale": 1,
-                "textColor": "#566476"
-              },
-              {
-                "type": "spacer",
-                "flex": 1
               }
-            ]
+            ],
+            "flex": 1
           },
           {
             "type": "column",
-            "width": 340,
+            "width": 320,
             "padding": 10,
             "spacing": 4,
             "background": "#151f29",
@@ -447,33 +474,23 @@
             "radius": 8,
             "children": [
               {
-                "type": "label",
-                "text": "INSPECTOR",
-                "scale": 1,
-                "textColor": "#69d2a8"
-              },
-              {
-                "type": "row",
-                "height": 30,
-                "spacing": 6,
-                "children": [
-                  {
-                    "id": "lite-provider-opencode",
-                    "type": "button",
-                    "text": "OpenCode",
-                    "action": "preset-opencode",
-                    "width": 140,
-                    "height": 28
-                  },
-                  {
-                    "id": "lite-provider-openai",
-                    "type": "button",
-                    "text": "OpenAI",
-                    "action": "preset-openai",
-                    "width": 140,
-                    "height": 28
-                  }
-                ]
+                "id": "inspector-widget",
+                "type": "component",
+                "component": "opencode.universal",
+                "width": 300,
+                "height": 64,
+                "props": {
+                  "kicker": "CONNECTION",
+                  "title": "INSPECTOR",
+                  "subtitle": "Provider and key state",
+                  "accent": "#69d2a8",
+                  "background": "#111b24",
+                  "border": "#2b3a48",
+                  "radius": 8,
+                  "shadow": false,
+                  "accentBar": false,
+                  "padding": 6
+                }
               },
               {
                 "type": "label",
@@ -501,29 +518,6 @@
               },
               {
                 "type": "row",
-                "height": 28,
-                "spacing": 6,
-                "children": [
-                  {
-                    "id": "model-deepseek",
-                    "type": "button",
-                    "text": "* DS",
-                    "action": "model-deepseek",
-                    "width": 100,
-                    "height": 26
-                  },
-                  {
-                    "id": "model-gpt",
-                    "type": "button",
-                    "text": "  GPT",
-                    "action": "model-gpt",
-                    "width": 100,
-                    "height": 26
-                  }
-                ]
-              },
-              {
-                "type": "row",
                 "height": 22,
                 "spacing": 8,
                 "children": [
@@ -546,10 +540,22 @@
                 ]
               },
               {
+                "type": "label",
+                "text": "API key",
+                "scale": 1,
+                "textColor": "#a9b7c7"
+              },
+              {
                 "id": "lite-key",
                 "type": "textField",
                 "width": 310,
                 "fontSize": 12
+              },
+              {
+                "type": "label",
+                "text": "Enter a new key to replace it",
+                "scale": 1,
+                "textColor": "#7d8ea3"
               },
               {
                 "type": "row",
@@ -579,45 +585,10 @@
                 "type": "label",
                 "text": "",
                 "scale": 1,
-                "textColor": "#9fb3c8"
-              },
-              {
-                "id": "banner-key-hint",
-                "type": "label",
-                "text": "Esc / Stop dismisses banner",
-                "scale": 1,
-                "textColor": "#566476"
-              },
-              {
-                "type": "row",
-                "height": 28,
-                "spacing": 5,
-                "children": [
-                  {
-                    "id": "lite-clear-key",
-                    "type": "button",
-                    "text": "Clear key",
-                    "action": "clear-key",
-                    "width": 98,
-                    "height": 26
-                  },
-                  {
-                    "id": "lite-cancel-clear-key",
-                    "type": "button",
-                    "text": "Cancel",
-                    "action": "cancel-clear-key",
-                    "width": 98,
-                    "height": 26
-                  },
-                  {
-                    "id": "lite-dismiss-banner",
-                    "type": "button",
-                    "text": "Dismiss",
-                    "action": "dismiss-banner",
-                    "width": 98,
-                    "height": 26
-                  }
-                ]
+                "textColor": "#10161d",
+                "width": 1,
+                "height": 1,
+                "fontSize": 8
               },
               {
                 "type": "spacer",
@@ -629,8 +600,8 @@
       },
       {
         "type": "row",
-        "height": 38,
-        "padding": 12,
+        "height": 48,
+        "padding": 10,
         "spacing": 10,
         "background": "#0b1117",
         "children": [
@@ -639,6 +610,12 @@
             "text": "AURORA HOST",
             "scale": 1,
             "textColor": "#69d2a8"
+          },
+          {
+            "type": "label",
+            "text": "\u00b7",
+            "scale": 1,
+            "textColor": "#566476"
           },
           {
             "type": "label",
@@ -654,17 +631,29 @@
             "id": "command-palette-recent",
             "type": "label",
             "text": "Recent: none",
-            "width": 160,
+            "width": 1,
             "scale": 1,
-            "textColor": "#7d8ea3"
+            "textColor": "#10161d",
+            "height": 1,
+            "fontSize": 8
           },
           {
             "id": "command-palette-selected",
             "type": "label",
             "text": "Focus: Help",
-            "width": 140,
+            "width": 1,
             "scale": 1,
-            "textColor": "#7d8ea3"
+            "textColor": "#10161d",
+            "height": 1,
+            "fontSize": 8
+          },
+          {
+            "id": "text-audit",
+            "type": "label",
+            "text": "TEXT FIT PENDING",
+            "width": 260,
+            "scale": 1,
+            "textColor": "#69d2a8"
           }
         ]
       }
