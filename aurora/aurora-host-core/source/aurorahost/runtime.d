@@ -2,16 +2,19 @@ module aurorahost.runtime;
 
 import aurorahost.control : ControlServer;
 import aurorahost.console : errLine, outLine;
-import aurorahost.development_input : installDevelopmentInputGuard,
-    removeDevelopmentInputGuard;
+
 import aurorahost.events : HostEvent;
+import aurorahost.host_module : HostModule;
 import aurorahost.live_guard : liveGuardError, protectLiveWindow;
+import aurorahost.runtime_policy : FileRuntimePolicy;
 import aurorahost.scene : applyScene, describeScene, loadScene, NodeRegistry, Scene;
 import aurorahost.tcp_control : TcpControl;
 import aurora : GuiWindow;
 import std.conv : to;
 import std.datetime : SysTime;
-import std.file : timeLastModified;
+import std.file : dirEntries, exists, SpanMode, timeLastModified, write;
+import std.path : buildPath, extension;
+import std.process : environment;
 private void reportService(string where, Throwable error)
 {
     errLine("aurora-host: " ~ where ~ " failed: " ~ error.msg);
@@ -72,7 +75,8 @@ int runHostWindow(GuiWindow window, NodeRegistry registry, bool control,
     // refuses an external TerminateProcess while a normal window close still
     // exits. This is what makes "never kill the development window" enforceable
     // instead of a rule an automated tool can ignore.
-    if (!allowForcedTermination)
+    auto runtimePolicy = new FileRuntimePolicy();
+    if (!allowForcedTermination && runtimePolicy.current.protectHost)
     {
         if (protectLiveWindow())
             errLine("aurora-host: live window protected from forced termination");
@@ -80,20 +84,46 @@ int runHostWindow(GuiWindow window, NodeRegistry registry, bool control,
             errLine("aurora-host: live-window protection unavailable: " ~
                 liveGuardError());
     }
-    // Development automation uses the command channel. Discard OS-level
-    // pointer/keyboard injection aimed at this window, so an automation turn
-    // cannot move the user's cursor, click by coordinates, or type with
-    // SendKeys. Real user input passes through untouched.
-    if (!allowInjectedInput)
+    HostModule[] hostModules;
+    auto moduleRoot = environment.get("LOCALAPPDATA", ".");
+    if (moduleRoot.length == 0)
+        moduleRoot = ".";
+    const moduleDir = buildPath(moduleRoot, "AuroraHost", "modules");
+    if (exists(moduleDir))
     {
-        const surface = window.nativeWindow().nativeSurfaceInfo();
-        if (installDevelopmentInputGuard(cast(void*) surface.handleB))
-            errLine("aurora-host: injected pointer/keyboard input is disabled; " ~
-                "use the control channel");
-        else
-            errLine("aurora-host: injected-input guard unavailable");
+        foreach (entry; dirEntries(moduleDir, SpanMode.shallow))
+        {
+            if (extension(entry.name) != ".dll")
+                continue;
+            try
+            {
+                auto hostModule = new HostModule();
+                hostModule.load(entry.name);
+                auto abi = cast(int function() @system)
+                    hostModule.symbol("aurora_module_abi");
+                if (abi is null || abi() != 2)
+                {
+                    hostModule.unload();
+                    continue;
+                }
+                hostModules ~= hostModule;
+            }
+            catch (Exception error)
+                reportService("host module load", error);
+        }
     }
-    scope (exit) removeDevelopmentInputGuard();
+    scope (exit)
+        foreach (hostModule; hostModules)
+            hostModule.unload();
+    try
+        write(buildPath(moduleRoot, "AuroraHost", "host-modules.loaded"),
+            "loaded=" ~ to!string(hostModules.length) ~ "\n");
+    catch (Exception error)
+        reportService("host module marker", error);
+    // Do not install global low-level mouse/keyboard hooks. They run for every
+    // desktop input event and can make the whole computer's pointer feel slow.
+    // Input policy remains on the control channel; desktop injection is not
+    // part of the supported development path.
     ControlServer server;
     if (control || listenPort != 0)
     {
@@ -134,6 +164,17 @@ int runHostWindow(GuiWindow window, NodeRegistry registry, bool control,
     {
         window.applicationService = delegate(double delta)
         {
+            if (runtimePolicy.changed() && runtimePolicy.reload())
+            {
+                auto root = environment.get("LOCALAPPDATA", ".");
+                if (root.length == 0)
+                    root = ".";
+                try
+                    write(buildPath(root, "AuroraHost",
+                        "runtime-policy.reload"), "reloaded\n");
+                catch (Exception error)
+                    reportService("runtime policy marker", error);
+            }
             if (registry.onService !is null)
             {
                 try

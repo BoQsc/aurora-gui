@@ -1,248 +1,670 @@
 {
   "schemaVersion": 2,
   "window": {
-    "title": "Aurora OpenCode Lite V2",
-    "width": 1100,
-    "height": 760,
-    "minWidth": 980,
-    "minHeight": 680,
+    "title": "Aurora OpenCode Lite V50",
+    "width": 1280,
+    "height": 800,
+    "minWidth": 1000,
+    "minHeight": 640,
     "theme": "dark"
   },
   "root": {
-    "type": "row",
+    "type": "column",
     "padding": 0,
     "spacing": 0,
     "children": [
       {
-        "type": "column",
-        "width": 310,
-        "padding": 16,
-        "spacing": 8,
+        "type": "row",
+        "height": 68,
+        "padding": 14,
+        "spacing": 10,
+        "background": "#0d151c",
+        "border": "#263542",
         "children": [
           {
-            "type": "row",
-            "height": 38,
-            "spacing": 8,
+            "type": "column",
+            "width": 500,
+            "spacing": 2,
             "children": [
               {
                 "type": "label",
-                "text": "Aurora OpenCode Lite V2",
+                "text": "AURORA // OPENCODE",
                 "scale": 2,
-                "flex": 1
+                "textColor": "#e6edf5"
               },
               {
-                "id": "lite-version",
                 "type": "label",
-                "text": "v2",
+                "text": "V50 COMMAND CENTER",
                 "scale": 1,
-                "textColor": "#7d8ea3"
+                "textColor": "#69d2a8"
               }
             ]
           },
           {
-            "type": "label",
-            "text": "CONNECTION",
-            "scale": 1,
-            "textColor": "#7d8ea3"
-          },
-          {
             "type": "row",
+            "height": 34,
             "spacing": 6,
             "children": [
               {
-                "id": "lite-provider-opencode",
+                "id": "header-tab-1",
                 "type": "button",
-                "text": "OpenCode",
-                "action": "preset-opencode"
+                "text": "Main",
+                "action": "session-1",
+                "width": 88,
+                "height": 30
               },
               {
-                "id": "lite-provider-openai",
+                "id": "header-tab-2",
                 "type": "button",
-                "text": "OpenAI",
-                "action": "preset-openai"
+                "text": "Research",
+                "action": "session-2",
+                "width": 88,
+                "height": 30
+              },
+              {
+                "id": "header-tab-3",
+                "type": "button",
+                "text": "Scratch",
+                "action": "session-3",
+                "width": 88,
+                "height": 30
+              }
+            ],
+            "width": 300
+          },
+          {
+            "id": "header-active-badge",
+            "type": "label",
+            "text": "Main | 0 messages | idle",
+            "width": 210,
+            "textColor": "#9fb3c8"
+          },
+          {
+            "id": "lite-status",
+            "type": "label",
+            "text": "Ready",
+            "width": 150,
+            "textColor": "#9fb3c8"
+          },
+          {
+            "id": "lite-live-mode",
+            "type": "label",
+            "text": "LIVE",
+            "width": 60,
+            "textColor": "#69d2a8"
+          },
+          {
+            "id": "lite-live-version",
+            "type": "label",
+            "text": "v50",
+            "width": 50,
+            "textColor": "#7d8ea3"
+          }
+        ]
+      },
+      {
+        "type": "row",
+        "flex": 1,
+        "padding": 16,
+        "spacing": 16,
+        "children": [
+          {
+            "type": "column",
+            "width": 300,
+            "padding": 10,
+            "spacing": 5,
+            "background": "#151f29",
+            "border": "#2b3a48",
+            "radius": 8,
+            "children": [
+              {
+                "type": "label",
+                "text": "SESSIONS",
+                "scale": 1,
+                "textColor": "#69d2a8"
+              },
+              {
+                "id": "lite-slot-1",
+                "type": "button",
+                "text": "Main",
+                "action": "session-1",
+                "height": 28
+              },
+              {
+                "id": "lite-slot-2",
+                "type": "button",
+                "text": "Research",
+                "action": "session-2",
+                "height": 28
+              },
+              {
+                "id": "lite-slot-3",
+                "type": "button",
+                "text": "Scratch",
+                "action": "session-3",
+                "height": 28
+              },
+              {
+                "type": "separator",
+                "orientation": "horizontal"
+              },
+              {
+                "id": "lite-session",
+                "type": "label",
+                "text": "Workspace 1 - 0 messages",
+                "textColor": "#d5dee8"
+              },
+              {
+                "id": "lite-usage",
+                "type": "label",
+                "text": "Messages 0 | idle",
+                "scale": 1,
+                "textColor": "#9fb3c8"
+              },
+              {
+                "id": "last-prompt",
+                "type": "label",
+                "text": "Last sent: none",
+                "scale": 1,
+                "textColor": "#7d8ea3"
+              },
+              {
+                "type": "row",
+                "height": 28,
+                "spacing": 5,
+                "children": [
+                  {
+                    "id": "lite-search",
+                    "type": "textField",
+                    "width": 190,
+                    "fontSize": 12
+                  },
+                  {
+                    "id": "workspace-search",
+                    "type": "button",
+                    "text": "Find",
+                    "action": "workspace-search",
+                    "width": 70,
+                    "height": 26
+                  }
+                ]
+              },
+              {
+                "id": "search-result",
+                "type": "label",
+                "text": "no matches",
+                "scale": 1,
+                "textColor": "#7d8ea3"
+              },
+              {
+                "type": "row",
+                "height": 28,
+                "spacing": 5,
+                "children": [
+                  {
+                    "id": "search-prev",
+                    "type": "button",
+                    "text": "<",
+                    "action": "search-prev",
+                    "width": 40,
+                    "height": 26
+                  },
+                  {
+                    "id": "search-next",
+                    "type": "button",
+                    "text": ">",
+                    "action": "search-next",
+                    "width": 40,
+                    "height": 26
+                  },
+                  {
+                    "id": "search-clear",
+                    "type": "button",
+                    "text": "Reset",
+                    "action": "search-clear",
+                    "width": 70,
+                    "height": 26
+                  }
+                ]
+              },
+              {
+                "type": "separator",
+                "orientation": "horizontal"
+              },
+              {
+                "type": "row",
+                "height": 30,
+                "spacing": 5,
+                "children": [
+                  {
+                    "id": "lite-clear",
+                    "type": "button",
+                    "text": "New",
+                    "action": "clear",
+                    "width": 82,
+                    "height": 28
+                  },
+                  {
+                    "id": "lite-retry",
+                    "type": "button",
+                    "text": "Retry",
+                    "action": "retry",
+                    "width": 82,
+                    "height": 28
+                  },
+                  {
+                    "id": "lite-regenerate",
+                    "type": "button",
+                    "text": "Regen",
+                    "action": "regenerate",
+                    "width": 82,
+                    "height": 28
+                  }
+                ]
+              },
+              {
+                "type": "row",
+                "height": 30,
+                "spacing": 5,
+                "children": [
+                  {
+                    "id": "lite-export",
+                    "type": "button",
+                    "text": "Export",
+                    "action": "export",
+                    "width": 82,
+                    "height": 28
+                  },
+                  {
+                    "id": "lite-import",
+                    "type": "button",
+                    "text": "Import",
+                    "action": "import",
+                    "width": 82,
+                    "height": 28
+                  },
+                  {
+                    "id": "history-prev",
+                    "type": "button",
+                    "text": "< Hist",
+                    "action": "history-prev",
+                    "width": 82,
+                    "height": 28
+                  }
+                ]
+              },
+              {
+                "type": "row",
+                "height": 30,
+                "spacing": 5,
+                "children": [
+                  {
+                    "id": "history-next",
+                    "type": "button",
+                    "text": "Hist >",
+                    "action": "history-next",
+                    "width": 82,
+                    "height": 28
+                  },
+                  {
+                    "type": "label",
+                    "text": "Enter sends \u00b7 Shift+Enter newline",
+                    "scale": 1,
+                    "textColor": "#566476"
+                  }
+                ]
+              },
+              {
+                "id": "lite-export-status",
+                "type": "label",
+                "text": "Not exported",
+                "scale": 1,
+                "textColor": "#566476"
+              },
+              {
+                "id": "lite-help",
+                "type": "button",
+                "text": "Help",
+                "action": "help",
+                "width": 82,
+                "height": 28
+              },
+              {
+                "type": "spacer",
+                "flex": 1
               }
             ]
           },
           {
-            "type": "row",
-            "spacing": 8,
+            "type": "column",
+            "flex": 1,
+            "padding": 10,
+            "spacing": 6,
+            "background": "#10161d",
+            "border": "#263542",
+            "radius": 8,
+            "children": [
+              {
+                "type": "row",
+                "height": 22,
+                "spacing": 8,
+                "children": [
+                  {
+                    "type": "label",
+                    "text": "CONVERSATION",
+                    "flex": 1,
+                    "textColor": "#69d2a8"
+                  },
+                  {
+                    "id": "transcript-meta",
+                    "type": "label",
+                    "text": "MESSAGE ROLES \u00b7 TIMESTAMPS",
+                    "width": 330,
+                    "scale": 1,
+                    "textColor": "#7d8ea3"
+                  }
+                ]
+              },
+              {
+                "id": "lite-transcript",
+                "type": "textArea",
+                "height": 660,
+                "readOnly": true,
+                "lineNumbers": false,
+                "highlightCurrentLine": false
+              },
+              {
+                "type": "row",
+                "height": 22,
+                "spacing": 12,
+                "children": [
+                  {
+                    "id": "composer-state",
+                    "type": "label",
+                    "text": "Composer empty",
+                    "flex": 1,
+                    "scale": 1,
+                    "textColor": "#9fb3c8"
+                  },
+                  {
+                    "id": "composer-count",
+                    "type": "label",
+                    "text": "0 characters",
+                    "width": 120,
+                    "scale": 1,
+                    "textColor": "#7d8ea3"
+                  }
+                ]
+              },
+              {
+                "type": "row",
+                "height": 34,
+                "spacing": 6,
+                "children": [
+                  {
+                    "id": "lite-input",
+                    "type": "textField",
+                    "width": 460,
+                    "submitAction": "send"
+                  },
+                  {
+                    "id": "lite-send",
+                    "type": "button",
+                    "text": "Send",
+                    "action": "send",
+                    "width": 90,
+                    "height": 30
+                  },
+                  {
+                    "id": "composer-clear",
+                    "type": "button",
+                    "text": "Clear",
+                    "action": "composer-clear",
+                    "width": 80,
+                    "height": 30
+                  }
+                ]
+              },
+              {
+                "type": "label",
+                "text": "Enter sends \u00b7 Shift+Enter newline \u00b7 Esc stops",
+                "scale": 1,
+                "textColor": "#566476"
+              },
+              {
+                "type": "spacer",
+                "flex": 1
+              }
+            ]
+          },
+          {
+            "type": "column",
+            "width": 340,
+            "padding": 10,
+            "spacing": 4,
+            "background": "#151f29",
+            "border": "#2b3a48",
+            "radius": 8,
             "children": [
               {
                 "type": "label",
+                "text": "INSPECTOR",
+                "scale": 1,
+                "textColor": "#69d2a8"
+              },
+              {
+                "type": "row",
+                "height": 30,
+                "spacing": 6,
+                "children": [
+                  {
+                    "id": "lite-provider-opencode",
+                    "type": "button",
+                    "text": "OpenCode",
+                    "action": "preset-opencode",
+                    "width": 140,
+                    "height": 28
+                  },
+                  {
+                    "id": "lite-provider-openai",
+                    "type": "button",
+                    "text": "OpenAI",
+                    "action": "preset-openai",
+                    "width": 140,
+                    "height": 28
+                  }
+                ]
+              },
+              {
+                "type": "label",
                 "text": "Base URL",
-                "width": 72,
+                "scale": 1,
                 "textColor": "#a9b7c7"
               },
               {
                 "id": "lite-base",
                 "type": "textField",
-                "text": "https://opencode.ai/zen/go/v1",
-                "flex": 1
-              }
-            ]
-          },
-          {
-            "type": "row",
-            "spacing": 8,
-            "children": [
+                "width": 310,
+                "fontSize": 12
+              },
               {
                 "type": "label",
                 "text": "Model",
-                "width": 64,
+                "scale": 1,
                 "textColor": "#a9b7c7"
               },
               {
                 "id": "lite-model",
                 "type": "textField",
-                "text": "deepseek-v4.1-flash",
-                "flex": 1
-              }
-            ]
-          },
-          {
-            "type": "row",
-            "spacing": 8,
-            "children": [
+                "width": 310,
+                "fontSize": 12
+              },
               {
-                "type": "label",
-                "text": "API key",
-                "width": 72,
-                "textColor": "#a9b7c7"
+                "type": "row",
+                "height": 28,
+                "spacing": 6,
+                "children": [
+                  {
+                    "id": "model-deepseek",
+                    "type": "button",
+                    "text": "* DS",
+                    "action": "model-deepseek",
+                    "width": 100,
+                    "height": 26
+                  },
+                  {
+                    "id": "model-gpt",
+                    "type": "button",
+                    "text": "  GPT",
+                    "action": "model-gpt",
+                    "width": 100,
+                    "height": 26
+                  }
+                ]
+              },
+              {
+                "type": "row",
+                "height": 22,
+                "spacing": 8,
+                "children": [
+                  {
+                    "id": "lite-key-state",
+                    "type": "label",
+                    "text": "Key set",
+                    "flex": 1,
+                    "scale": 1,
+                    "textColor": "#9fb3c8"
+                  },
+                  {
+                    "id": "lite-provider-health",
+                    "type": "label",
+                    "text": "Provider ready",
+                    "width": 150,
+                    "scale": 1,
+                    "textColor": "#69d2a8"
+                  }
+                ]
               },
               {
                 "id": "lite-key",
                 "type": "textField",
-                "flex": 1
+                "width": 310,
+                "fontSize": 12
               },
               {
-                "id": "lite-key-state",
-                "type": "label",
-                "text": "No key",
-                "width": 58,
-                "textColor": "#9fb3c8"
-              }
-            ]
-          },
-          {
-            "type": "row",
-            "spacing": 8,
-            "children": [
+                "type": "row",
+                "height": 30,
+                "spacing": 6,
+                "children": [
+                  {
+                    "id": "lite-save-key",
+                    "type": "button",
+                    "text": "Save key",
+                    "action": "save-key",
+                    "width": 100,
+                    "height": 28
+                  },
+                  {
+                    "id": "lite-save",
+                    "type": "button",
+                    "text": "Save connection",
+                    "action": "save",
+                    "width": 210,
+                    "height": 28
+                  }
+                ]
+              },
               {
+                "id": "key-clear-toast",
                 "type": "label",
-                "text": "Stored locally",
+                "text": "",
                 "scale": 1,
-                "flex": 1,
-                "textColor": "#7d8ea3"
+                "textColor": "#9fb3c8"
               },
               {
-                "id": "lite-save",
-                "type": "button",
-                "text": "Save",
-                "action": "save"
+                "id": "banner-key-hint",
+                "type": "label",
+                "text": "Esc / Stop dismisses banner",
+                "scale": 1,
+                "textColor": "#566476"
+              },
+              {
+                "type": "row",
+                "height": 28,
+                "spacing": 5,
+                "children": [
+                  {
+                    "id": "lite-clear-key",
+                    "type": "button",
+                    "text": "Clear key",
+                    "action": "clear-key",
+                    "width": 98,
+                    "height": 26
+                  },
+                  {
+                    "id": "lite-cancel-clear-key",
+                    "type": "button",
+                    "text": "Cancel",
+                    "action": "cancel-clear-key",
+                    "width": 98,
+                    "height": 26
+                  },
+                  {
+                    "id": "lite-dismiss-banner",
+                    "type": "button",
+                    "text": "Dismiss",
+                    "action": "dismiss-banner",
+                    "width": 98,
+                    "height": 26
+                  }
+                ]
+              },
+              {
+                "type": "spacer",
+                "flex": 1
               }
             ]
-          },
-          {
-            "type": "separator",
-            "orientation": "horizontal"
-          },
+          }
+        ]
+      },
+      {
+        "type": "row",
+        "height": 38,
+        "padding": 12,
+        "spacing": 10,
+        "background": "#0b1117",
+        "children": [
           {
             "type": "label",
-            "text": "SESSION",
+            "text": "AURORA HOST",
             "scale": 1,
-            "textColor": "#7d8ea3"
+            "textColor": "#69d2a8"
           },
           {
-            "id": "lite-session",
             "type": "label",
-            "text": "Session - 0 messages",
-            "textColor": "#9fb3c8"
-          },
-          {
-            "type": "row",
-            "spacing": 6,
-            "children": [
-              {
-                "id": "lite-clear",
-                "type": "button",
-                "text": "New session",
-                "action": "clear",
-                "flex": 1
-              },
-              {
-                "id": "lite-retry",
-                "type": "button",
-                "text": "Retry",
-                "action": "retry",
-                "flex": 1
-              }
-            ]
+            "text": "control 127.0.0.1:8792",
+            "scale": 1,
+            "textColor": "#566476"
           },
           {
             "type": "spacer",
             "flex": 1
           },
           {
+            "id": "command-palette-recent",
             "type": "label",
-            "text": "Command line: aurora-opencode-lite-v2-cli",
+            "text": "Recent: none",
+            "width": 160,
             "scale": 1,
-            "textColor": "#566476"
-          }
-        ]
-      },
-      {
-        "type": "column",
-        "padding": 16,
-        "spacing": 8,
-        "flex": 1,
-        "children": [
-          {
-            "type": "row",
-            "height": 34,
-            "spacing": 8,
-            "children": [
-              {
-                "type": "label",
-                "text": "CONVERSATION",
-                "scale": 1,
-                "flex": 1,
-                "textColor": "#7d8ea3"
-              },
-              {
-                "id": "lite-status",
-                "type": "label",
-                "text": "Ready",
-                "width": 220,
-                "textColor": "#9fb3c8"
-              }
-            ]
+            "textColor": "#7d8ea3"
           },
           {
-            "id": "lite-transcript",
-            "type": "textArea",
-            "text": "New session.\n",
-            "readOnly": true,
-            "flex": 1
-          },
-          {
-            "type": "row",
-            "spacing": 8,
-            "height": 44,
-            "children": [
-              {
-                "id": "lite-input",
-                "type": "textField",
-                "flex": 1,
-                "submitAction": "send"
-              },
-              {
-                "id": "lite-send",
-                "type": "button",
-                "text": "Send",
-                "action": "send",
-                "width": 92
-              }
-            ]
+            "id": "command-palette-selected",
+            "type": "label",
+            "text": "Focus: Help",
+            "width": 140,
+            "scale": 1,
+            "textColor": "#7d8ea3"
           }
         ]
       }
