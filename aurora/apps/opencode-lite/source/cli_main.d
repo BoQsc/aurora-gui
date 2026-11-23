@@ -15,6 +15,8 @@ private void usage()
     stdout.writeln("  get <node>");
     stdout.writeln("  set <node> <text>");
     stdout.writeln("  trigger <node> <action>");
+    stdout.writeln("  click <node>");
+    stdout.writeln("  key <node> <key> [down|up]");
 }
 
 private string flat(string text)
@@ -22,6 +24,7 @@ private string flat(string text)
     return text.replace("\r", " ").replace("\n", " ");
 }
 
+version (HostCli)
 int main(string[] args)
 {
     ushort port = 8791;
@@ -85,6 +88,20 @@ int main(string[] args)
                         "trigger requires a node id and action");
                 client.request("trigger",
                     ["node": command[1], "action": command[2]]);
+                stdout.writeln("ok");
+                return 0;
+            case "click":
+                if (command.length < 2)
+                    throw new Exception("click requires a node id");
+                client.request("click", ["node": command[1]]);
+                stdout.writeln("ok");
+                return 0;
+            case "key":
+                if (command.length < 3)
+                    throw new Exception("key requires a node id and key name");
+                const kind = command.length > 3 ? command[3] : "down";
+                client.request("key",
+                    ["node": command[1], "key": command[2], "kind": kind]);
                 stdout.writeln("ok");
                 return 0;
             default:

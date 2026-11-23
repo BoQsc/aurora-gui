@@ -2,7 +2,10 @@ module aurorahost.runtime;
 
 import aurorahost.control : ControlServer;
 import aurorahost.console : errLine, outLine;
+import aurorahost.development_input : installDevelopmentInputGuard,
+    removeDevelopmentInputGuard;
 import aurorahost.events : HostEvent;
+import aurorahost.live_guard : liveGuardError, protectLiveWindow;
 import aurorahost.scene : applyScene, describeScene, loadScene, NodeRegistry, Scene;
 import aurorahost.tcp_control : TcpControl;
 import aurora : GuiWindow;
@@ -61,8 +64,36 @@ final class SceneWatcher
  * watcher. This is the one loop shared by the host CLI and embedded hosts.
  */
 int runHostWindow(GuiWindow window, NodeRegistry registry, bool control,
-    string scenePath, bool watch, ushort listenPort = 0)
+    string scenePath, bool watch, ushort listenPort = 0,
+    bool allowForcedTermination = false, bool allowInjectedInput = false)
 {
+    // Keep the live window owned by this process. Tests, isolated instance
+    // groups, and explicitly disposable sessions opt out; the production host
+    // refuses an external TerminateProcess while a normal window close still
+    // exits. This is what makes "never kill the development window" enforceable
+    // instead of a rule an automated tool can ignore.
+    if (!allowForcedTermination)
+    {
+        if (protectLiveWindow())
+            errLine("aurora-host: live window protected from forced termination");
+        else
+            errLine("aurora-host: live-window protection unavailable: " ~
+                liveGuardError());
+    }
+    // Development automation uses the command channel. Discard OS-level
+    // pointer/keyboard injection aimed at this window, so an automation turn
+    // cannot move the user's cursor, click by coordinates, or type with
+    // SendKeys. Real user input passes through untouched.
+    if (!allowInjectedInput)
+    {
+        const surface = window.nativeWindow().nativeSurfaceInfo();
+        if (installDevelopmentInputGuard(cast(void*) surface.handleB))
+            errLine("aurora-host: injected pointer/keyboard input is disabled; " ~
+                "use the control channel");
+        else
+            errLine("aurora-host: injected-input guard unavailable");
+    }
+    scope (exit) removeDevelopmentInputGuard();
     ControlServer server;
     if (control || listenPort != 0)
     {

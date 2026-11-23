@@ -33,6 +33,7 @@ class LiveHost:
             "--dev" if dev else "--run",
             str(scene),
             "--control",
+            "--allow-termination",
         ]
         if not dev:
             arguments.append("--watch")

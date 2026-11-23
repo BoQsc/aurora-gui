@@ -1,6 +1,6 @@
 {
   "name": "aurora-opencode-lite",
-  "description": "Minimal independent Aurora OpenCode shell built only from the Aurora v2 tree",
+  "description": "Minimal independent Aurora OpenCode shell built from the Aurora host-core tree",
   "authors": [
     "Aurora project"
   ],
@@ -137,6 +137,9 @@
       ],
       "libs-windows": [
         "ws2_32"
+      ],
+      "dflags-windows": [
+        "-version=HostCli"
       ],
       "lflags-windows": [
         "/SUBSYSTEM:CONSOLE",

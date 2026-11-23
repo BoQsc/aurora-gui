@@ -2144,6 +2144,62 @@ else version (Windows)
                         return 0;
                     }
                     break;
+                case WM_WINDOWPOSCHANGING:
+                    // A host window is not topmost unless the application asked
+                    // for it. An automation client that calls
+                    // SetWindowPos(hwnd, HWND_TOPMOST, ...) used to pin the
+                    // window above every other application permanently, so a
+                    // later click on another window left it covered. Refuse
+                    // that placement here; a normal top-of-stack placement still
+                    // lets the next click raise whichever window was clicked.
+                    if (!options.alwaysOnTop)
+                    {
+                        auto position = cast(WINDOWPOS*) lParam;
+                        if (position !is null &&
+                            position.hwndInsertAfter == HWND_TOPMOST)
+                            position.hwndInsertAfter = HWND_TOP;
+                    }
+                    break;
+                case WM_STYLECHANGING:
+                    // The same pin can be requested by writing WS_EX_TOPMOST
+                    // into the extended style. Strip it unless the application
+                    // explicitly opted into an always-on-top window.
+                    if (!options.alwaysOnTop && wParam == GWL_EXSTYLE)
+                    {
+                        auto style = cast(STYLESTRUCT*) lParam;
+                        if (style !is null)
+                            style.styleNew &= ~cast(DWORD) WS_EX_TOPMOST;
+                    }
+                    break;
+                case WM_WINDOWPOSCHANGED:
+                    // Some shell paths apply HWND_TOPMOST without letting the
+                    // pre-change hook veto it. Remove the pin after the fact so
+                    // a later click on another window is never covered by a
+                    // host window that an automation client pinned.
+                    if (!options.alwaysOnTop)
+                    {
+                        const extended = GetWindowLongPtr(_hwnd, GWL_EXSTYLE);
+                        if ((extended & WS_EX_TOPMOST) != 0)
+                        {
+                            SetWindowLongPtr(_hwnd, GWL_EXSTYLE,
+                                extended & ~cast(LONG_PTR) WS_EX_TOPMOST);
+                            SetWindowPos(_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                                SWP_NOOWNERZORDER);
+                        }
+                    }
+                    break;
+                case WM_STYLECHANGED:
+                    // A direct SetWindowLongPtr(GWL_EXSTYLE) is not covered by
+                    // the pre-change case above; clear a late topmost bit here.
+                    if (!options.alwaysOnTop && wParam == GWL_EXSTYLE)
+                    {
+                        const extended = GetWindowLongPtr(_hwnd, GWL_EXSTYLE);
+                        if ((extended & WS_EX_TOPMOST) != 0)
+                            SetWindowLongPtr(_hwnd, GWL_EXSTYLE,
+                                extended & ~cast(LONG_PTR) WS_EX_TOPMOST);
+                    }
+                    break;
                 case WM_NCCALCSIZE:
                     if (!options.decorated)
                         return 0;

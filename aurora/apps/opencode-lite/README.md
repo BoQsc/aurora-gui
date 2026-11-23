@@ -54,6 +54,16 @@ scene, controller, or policy change. A stopped host that is launched again is a
 new process and a new window; that is the duplicate-window/closed-window
 workflow failure.
 
+- A production launch rejects external force termination. `--allow-termination`
+  is the explicit opt-out for a disposable run.
+- The host window is never topmost. An external `SetWindowPos(HWND_TOPMOST)` or
+  `WS_EX_TOPMOST` write is removed by the host.
+- Development control is command-line only. The host ignores OS-injected
+  pointer and keyboard input (`SendKeys`, `SendInput`, `mouse_event`,
+  `SetCursorPos`, `keybd_event`) aimed at its window. Use the control channel
+  or `aurora-opencode-lite-cli`; the pointer and focus are never yours to move.
+  `--allow-injected-input` is the explicit opt-out for a disposable test.
+
 - Scene changes: use live reload.
 - Controller changes: rebuild the controller and restart only the controller.
 - Verification: use `verify.py --live`.
@@ -93,6 +103,8 @@ cursor, focus, restore, or visible window:
 build\aurora-opencode-lite-cli.exe --port 8791 list
 build\aurora-opencode-lite-cli.exe --port 8791 get lite-input
 build\aurora-opencode-lite-cli.exe --port 8791 set lite-input "hello"
+build\aurora-opencode-lite-cli.exe --port 8791 key lite-input enter
+build\aurora-opencode-lite-cli.exe --port 8791 click lite-send
 build\aurora-opencode-lite-cli.exe --port 8791 trigger lite-provider-openai preset-openai
 ```
 

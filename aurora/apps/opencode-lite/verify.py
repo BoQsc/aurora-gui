@@ -140,7 +140,8 @@ def warm_startup_ms() -> list[float]:
     for index in range(6):
         started = time.perf_counter()
         process = subprocess.Popen(
-            [str(EXE)], cwd=APP, stdout=subprocess.DEVNULL,
+            [str(EXE), "--instance-group", "verify-startup"], cwd=APP,
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL)
         hwnd = None
         deadline = started + 20
@@ -214,6 +215,7 @@ def main() -> int:
     run([PYTHON, "-B", "tests/run_controller_supervisor_test.py"])
     run([PYTHON, "-B", "tests/run_command_menu_test.py"])
     run([PYTHON, "-B", "tests/run_minimized_control_test.py"])
+    run([PYTHON, "-B", "tests/run_host_guard_test.py"])
     run([PYTHON, "-B", "tests/run_enter_submit_test.py"])
     run([DUB, "build", "--config=host-cli", f"--compiler={COMPILER}"])
     run([PYTHON, "-B", "tests/run_cli_control_test.py"])

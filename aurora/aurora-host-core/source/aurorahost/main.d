@@ -41,10 +41,12 @@ private void usage()
     writeln("  --capabilities");
     writeln("  --check <scene>");
     writeln("  --render <scene> [--out <file.ppm>]");
-    writeln("  --run <scene> [--control] [--watch]");
-    writeln("  --dev [scene] [--control] [--listen <port>]");
+    writeln("  --run <scene> [--control] [--watch] [--allow-termination]");
+    writeln("  --dev [scene] [--control] [--listen <port>] [--allow-termination]");
     writeln("  --run <scene> [--listen <port>]");
     writeln("  (no arguments)  open the starter scene in --dev mode");
+    writeln("  --allow-termination  disposable run: external force-kill allowed");
+    writeln("  --allow-injected-input  disposable run: accept OS mouse/key injection");
 }
 
 private string optionValue(string[] args, string name, string fallback)
@@ -159,7 +161,9 @@ int runCli(string[] args)
                     args.canFind("--minimized"), args.canFind("--maximized"),
                     args.canFind("--no-activate"));
                 return runHostWindow(window, registry, args.canFind("--control"),
-                    args[2], args.canFind("--watch"), listenPort);
+                    args[2], args.canFind("--watch"), listenPort,
+                    args.canFind("--allow-termination"),
+                    args.canFind("--allow-injected-input"));
             }
 
             case "--dev":
@@ -187,7 +191,9 @@ int runCli(string[] args)
                 };
                 panel.attach(window.root);
                 return runHostWindow(window, registry, args.canFind("--control"),
-                    scenePath, false, listenPort);
+                    scenePath, false, listenPort,
+                    args.canFind("--allow-termination"),
+                    args.canFind("--allow-injected-input"));
             }
 
 

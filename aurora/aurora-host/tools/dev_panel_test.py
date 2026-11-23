@@ -136,7 +136,8 @@ def main() -> int:
     original_scene = json.loads(scene.read_text(encoding="utf-8"))
 
     host = subprocess.Popen(
-        [str(exe), "--dev", str(scene), "--listen", str(args.port)],
+        [str(exe), "--dev", str(scene), "--listen", str(args.port),
+         "--allow-termination"],
         cwd=str(ROOT),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

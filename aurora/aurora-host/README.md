@@ -118,6 +118,12 @@ source rebuilds cannot close or block the visible window. Pass `--exe` to use an
 already-built host, and `--replace PID` to close the old window only after the
 new copy is running.
 
+A live window is protected from external force termination, refuses a
+`HWND_TOPMOST`/`WS_EX_TOPMOST` pin, and ignores OS-level mouse and keyboard
+injection aimed at it. Drive it through the control channel or CLI; do not move
+the pointer, synthesize clicks or keystrokes, or pin the window. A disposable
+run may opt out with `--allow-termination` and `--allow-injected-input`.
+
 For a persistent scene-building session with a host-native control socket, use
 [LIVE-BUILDING.md](LIVE-BUILDING.md):
 

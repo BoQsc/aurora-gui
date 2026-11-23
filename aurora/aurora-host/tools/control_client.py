@@ -43,7 +43,7 @@ class HostSession:
         if not EXE.is_file():
             raise RuntimeError(f"build the host first: {EXE}")
         self.process = subprocess.Popen(
-            [str(EXE), "--run", scene, "--control"],
+            [str(EXE), "--run", scene, "--control", "--allow-termination"],
             cwd=ROOT,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

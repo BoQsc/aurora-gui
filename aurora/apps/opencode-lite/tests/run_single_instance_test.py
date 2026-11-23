@@ -59,6 +59,7 @@ def main() -> int:
     environment["APPDATA"] = str(temp)
     environment["LOCALAPPDATA"] = str(temp)
     command = [str(HOST), "--no-plugin", "--no-activate",
+               "--instance-group", "single-instance-test",
                "--scene", str(scene_path)]
     first = subprocess.Popen(command, cwd=str(APP), env=environment,
                              stdout=subprocess.DEVNULL,

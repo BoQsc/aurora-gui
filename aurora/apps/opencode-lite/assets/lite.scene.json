@@ -25,6 +25,7 @@
             "flex": 1
           },
 
+
           {
             "id": "lite-status",
             "type": "label",

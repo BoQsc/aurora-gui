@@ -69,9 +69,16 @@ def main() -> int:
         if cli("trigger", "lite-provider-openai",
                "preset-openai").strip() != "ok":
             raise RuntimeError("CLI trigger did not return ok")
+        if cli("key", "lite-input", "enter").strip() != "ok":
+            raise RuntimeError("CLI key did not return ok")
+        # Enter submits through the same action as the Send button.
+        if cli("get", "lite-input").strip() != "from-cli":
+            raise RuntimeError("CLI key inserted text instead of submitting")
+        if cli("click", "lite-send").strip() != "ok":
+            raise RuntimeError("CLI click did not return ok")
         if host.poll() is not None:
             raise RuntimeError("host exited during CLI control")
-        print("cli control passed: list, set, get, trigger")
+        print("cli control passed: list, set, get, trigger, key, click")
         return 0
     finally:
         if host.poll() is None:

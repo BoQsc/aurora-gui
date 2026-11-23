@@ -46,6 +46,8 @@ int main(string[] args)
     bool noActivate;
     ushort controllerPort = 8791;
     bool startMinimized;
+    bool allowTermination;
+    bool allowInjectedInput;
     for (size_t index = 1; index < args.length; ++index)
     {
         if (args[index] == "--scene" && index + 1 < args.length)
@@ -86,11 +88,21 @@ int main(string[] args)
         }
         else if (args[index] == "--start-minimized")
             startMinimized = true;
+        else if (args[index] == "--allow-termination")
+            allowTermination = true;
+        else if (args[index] == "--allow-injected-input")
+            allowInjectedInput = true;
     }
     if (scenePath.length == 0)
         scenePath = embeddedScenePath();
     const journalAppId = "AuroraOpenCodeLite" ~
         (instanceGroup.length > 0 ? "-" ~ instanceGroup : "");
+    // The production single window rejects an external force-kill so a build
+    // or automation turn cannot silently close the developer's live host. Tests
+    // and isolated groups are disposable by construction; an explicit
+    // `--allow-termination` marks a deliberate disposable relaunch.
+    const allowForcedTermination = allowTermination || !singleInstance ||
+        allowDuplicateInstance || instanceGroup.length > 0;
 
     try
     {
@@ -132,14 +144,15 @@ int main(string[] args)
                 delegate(string text) { errLine("hostlite: " ~ text); });
             supervisor.start();
             const result = runHostWindow(window, registry, true, scenePath,
-                watch, controllerPort);
+                watch, controllerPort, allowForcedTermination,
+                allowInjectedInput);
             journal.close("window closed");
             return result;
         }
         if (externalController)
         {
             const result = runHostWindow(window, registry, true, scenePath,
-                watch, listenPort);
+                watch, listenPort, allowForcedTermination, allowInjectedInput);
             journal.close("window closed");
             return result;
         }
@@ -160,7 +173,8 @@ int main(string[] args)
                 auto plugin = new LitePlugin(registry, pluginPath);
                 errLine("hostlite: plugin initialized");
                 const result = runHostWindow(window, registry, false,
-                    scenePath, watch);
+                    scenePath, watch, 0, allowForcedTermination,
+                    allowInjectedInput);
                 errLine("hostlite: plugin host loop returned " ~
                     to!string(result));
                 journal.close("window closed");
@@ -179,7 +193,8 @@ int main(string[] args)
         registry.onService = &controller.service;
         registry.onAfterApply = &controller.refreshView;
         controller.refreshView();
-        const result = runHostWindow(window, registry, false, scenePath, watch);
+        const result = runHostWindow(window, registry, false, scenePath, watch,
+            0, allowForcedTermination, allowInjectedInput);
         journal.close("window closed");
         return result;
     }

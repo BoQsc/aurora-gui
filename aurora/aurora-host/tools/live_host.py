@@ -19,22 +19,48 @@ ROOT = Path(__file__).resolve().parents[1]
 EXE_NAME = "aurora-host.exe"
 
 
-def terminate_process(pid: int) -> None:
-    """Terminate one replacement window after the new copy is running."""
+def close_process(pid: int) -> None:
+    """Close one replaced window gracefully after the new copy is running.
+
+    A live host protects itself from external force termination, so replacement
+    must use the same normal window close the user would: post WM_CLOSE and wait
+    for the process to exit. This keeps the development cycle from turning a
+    rebuild into a killed window.
+    """
     if sys.platform != "win32":
         os.kill(pid, 15)
         return
     import ctypes
+    from ctypes import wintypes
 
-    process_terminate = 0x0001
-    handle = ctypes.windll.kernel32.OpenProcess(process_terminate, False, pid)
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    wm_close = 0x0010
+    synchronize = 0x00100000
+    posted = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def post_close(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid:
+            user32.PostMessageW(hwnd, wm_close, 0, 0)
+            posted.append(hwnd)
+        return True
+
+    user32.EnumWindows(post_close, 0)
+    if not posted:
+        raise OSError(f"old host process {pid} has no window to close")
+    handle = kernel32.OpenProcess(synchronize, False, pid)
     if not handle:
-        raise OSError(f"could not open old host process {pid}")
+        return
     try:
-        if not ctypes.windll.kernel32.TerminateProcess(handle, 0):
-            raise OSError(f"could not terminate old host process {pid}")
+        if kernel32.WaitForSingleObject(handle, 10000) != 0:
+            raise OSError(
+                f"old host {pid} did not close after WM_CLOSE; close its window "
+                "or launch it with --allow-termination for a disposable run")
     finally:
-        ctypes.windll.kernel32.CloseHandle(handle)
+        kernel32.CloseHandle(handle)
 
 
 def main() -> int:
@@ -47,7 +73,7 @@ def main() -> int:
     parser.add_argument("--exe", type=Path,
                         help="use an already-built host instead of running dub build")
     parser.add_argument("--replace", type=int,
-                        help="terminate this older host PID only after the new copy is up")
+                        help="close this older host window only after the new copy is up")
     parser.add_argument("host_args", nargs=argparse.REMAINDER,
                         help="extra host arguments after --")
     args = parser.parse_args()
@@ -96,7 +122,7 @@ def main() -> int:
 
     if args.replace is not None and args.replace != process.pid:
         time.sleep(0.5)
-        terminate_process(args.replace)
+        close_process(args.replace)
 
     print(f"RUNNING pid={process.pid}")
     print(f"runtime={runtime_exe}")

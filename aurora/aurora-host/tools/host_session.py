@@ -18,7 +18,8 @@ class Host:
     def __init__(self, scene: Path, exe: Path = EXE, watch: bool = False,
                  minimized: bool = True) -> None:
         self.exe = exe
-        arguments = [str(exe), "--run", str(scene), "--control"]
+        arguments = [str(exe), "--run", str(scene), "--control",
+                     "--allow-termination"]
         if watch:
             arguments.append("--watch")
         if minimized:
