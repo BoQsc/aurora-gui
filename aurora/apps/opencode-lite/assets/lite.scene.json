@@ -24,12 +24,7 @@
             "scale": 2,
             "flex": 1
           },
-          {
-            "id": "lite-commands",
-            "type": "menu",
-            "text": "Commands",
-            "commandLine": true
-          },
+
           {
             "id": "lite-status",
             "type": "label",
@@ -166,7 +161,8 @@
           {
             "id": "lite-input",
             "type": "textField",
-            "width": 650
+            "width": 650,
+            "submitAction": "send"
           },
           {
             "id": "lite-send",

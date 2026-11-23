@@ -87,6 +87,7 @@ struct SceneNode
     MenuItemSpec[] menuItems;
     TabItem[] tabItems;
     bool commandLine;
+    string submitAction;
     SceneNode[] children;
 }
 
@@ -498,6 +499,16 @@ class NodeRegistry
             surface.injectKey(kind, key, modifiers);
             return true;
         }
+        if (auto editor = cast(TextEditor) *widget)
+        {
+            Event event;
+            event.type = kind == "down" ? EventType.keyDown : EventType.keyUp;
+            event.key = key;
+            event.modifiers = modifiers;
+            if (kind == "down")
+                return editor.onKeyDown(event);
+            return editor.onKeyUp(event);
+        }
         return false;
     }
 
@@ -606,7 +617,8 @@ private bool isNodeSpecificField(string type, string name)
                 name == "lineNumbers" || name == "highlightCurrentLine" ||
                 name == "readOnly";
         case "textField":
-            return name == "text" || name == "events" || name == "menu";
+            return name == "text" || name == "events" || name == "menu" ||
+                name == "submitAction";
         case "titleBar":
             return name == "text";
         case "component":
@@ -1156,6 +1168,7 @@ private SceneNode parseNode(JSONValue value, ref int count, int depth,
         case "textField":
             requireNoChildren(value, label);
             node.text = readString(value, "text", "", label);
+            node.submitAction = readString(value, "submitAction", "", label);
             if (auto events = "events" in value.object)
                 node.events = parseEditorEvents(*events, label ~ ".events");
             if (auto menu = "menu" in value.object)
@@ -1698,6 +1711,11 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
             applyHints(field, node);
             registry.registerNode(node.id, node.type, field, node.text);
             wireEditorEvents(field, node, registry);
+            if (node.submitAction.length > 0)
+                field.onSubmitted = delegate()
+                {
+                    registry.dispatchAction(node.id, node.submitAction);
+                };
             return field;
         }
         case "titleBar":

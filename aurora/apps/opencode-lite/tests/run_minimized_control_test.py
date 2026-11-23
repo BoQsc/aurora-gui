@@ -83,8 +83,8 @@ def main() -> int:
         try:
             tree, buffer = exchange(sock, buffer, ids, "tree")
             nodes = {node["id"]: node for node in tree["nodes"]}
-            if "lite-commands" not in nodes:
-                raise RuntimeError("command menu missing while minimized")
+            if "lite-input" not in nodes:
+                raise RuntimeError("input missing while minimized")
             set_result, buffer = exchange(
                 sock, buffer, ids, "setText", node="lite-input",
                 text="minimized action")

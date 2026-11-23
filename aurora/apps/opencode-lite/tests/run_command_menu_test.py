@@ -61,6 +61,13 @@ def main() -> int:
     scene_path = temp / "commands.scene.json"
     scene = json.loads(SCENE.read_text(encoding="utf-8"))
     scene["window"]["title"] = TITLE
+    top_row = scene["root"]["children"][0]["children"]
+    top_row.insert(1, {
+        "id": "lite-commands",
+        "type": "menu",
+        "text": "Commands",
+        "commandLine": True,
+    })
     scene_path.write_text(json.dumps(scene), encoding="utf-8")
     environment = os.environ.copy()
     environment["APPDATA"] = str(temp)

@@ -47,6 +47,21 @@ Running `--full` while the host is open is refused. `tools/build_standalone.py`
 also refuses to rebuild while the standalone is running. Do not kill or
 relaunch the host just to apply scene/controller changes.
 
+### Live-development rule
+
+During development, never call `Stop-Process` on a healthy host to apply a
+scene, controller, or policy change. A stopped host that is launched again is a
+new process and a new window; that is the duplicate-window/closed-window
+workflow failure.
+
+- Scene changes: use live reload.
+- Controller changes: rebuild the controller and restart only the controller.
+- Verification: use `verify.py --live`.
+- Host-core changes: use one explicitly announced, controlled relaunch. Do not
+  quietly replace the live window.
+- Tests that need separate hosts: use a distinct `--instance-group`,
+  `--no-activate`, and `--start-minimized`; never the production instance group.
+
 ## Live code development
 
 For controller-code iteration, run the host without its embedded controller:
@@ -66,10 +81,27 @@ The controller talks to the host over its TCP control channel. Edit, rebuild,
 and restart the controller without closing the host window. The host PID and
 scene stay alive.
 
-The host scene includes a **Commands** menu. It lists active scene controls and
-their actions; choosing Focus focuses a control, while Trigger dispatches its
-scene action. The menu is built from the host node registry, so it remains
-generic across apps and does not belong to the controller.
+Pressing Enter in the message field submits it through the same `send` action
+as the Send button; it does not insert a newline.
+
+## Command-line host control
+
+`aurora-opencode-lite-cli.exe` connects to the running host and requires no
+cursor, focus, restore, or visible window:
+
+```bat
+build\aurora-opencode-lite-cli.exe --port 8791 list
+build\aurora-opencode-lite-cli.exe --port 8791 get lite-input
+build\aurora-opencode-lite-cli.exe --port 8791 set lite-input "hello"
+build\aurora-opencode-lite-cli.exe --port 8791 trigger lite-provider-openai preset-openai
+```
+
+The CLI uses the host control protocol, so it works while the app is minimized
+or behind other windows. It never creates another app window.
+
+Host-core supports optional `commandLine` menus that list active scene controls
+and dispatch their actions without pointer geometry. The app does not show this
+menu by default; the command-menu test injects it into a temporary test scene.
 
 The standalone defaults to this process-isolated controller when
 `aurora-opencode-lite-controller.exe` is beside it. A native fault in the
