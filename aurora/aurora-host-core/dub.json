@@ -39,6 +39,20 @@
       "stringImportPaths": [
         "assets"
       ]
+    },
+    {
+      "name": "enforcement-test",
+      "targetType": "executable",
+      "targetName": "aurora-host-core-enforcement-test",
+      "mainSourceFile": "tests/live_registry_test.d",
+      "sourcePaths": [
+        "source",
+        "generated"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:CONSOLE",
+        "/ENTRY:mainCRTStartup"
+      ]
     }
   ]
 }

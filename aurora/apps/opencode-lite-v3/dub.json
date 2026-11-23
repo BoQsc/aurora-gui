@@ -1,0 +1,82 @@
+{
+  "name": "aurora-opencode-lite-v3",
+  "description": "Aurora OpenCode Lite v3 stable-shell application",
+  "authors": [
+    "Aurora project"
+  ],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
+  "version": "3.0.0",
+  "targetType": "executable",
+  "targetName": "aurora-opencode-lite-v3-contract",
+  "targetPath": "build",
+  "mainSourceFile": "tests/contract_main.d",
+  "sourcePaths": [
+    "source"
+  ],
+  "configurations": [
+    {
+      "name": "contract",
+      "targetType": "executable",
+      "targetName": "aurora-opencode-lite-v3-contract",
+      "mainSourceFile": "tests/contract_main.d",
+      "excludedSourceFiles": [
+        "source/module_entry.d",
+        "source/module_main.d",
+        "source/v3_shell_main.d"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:CONSOLE",
+        "/ENTRY:mainCRTStartup"
+      ]
+    },
+    {
+      "name": "module-v1",
+      "targetType": "executable",
+      "targetName": "v3-module-v1",
+      "mainSourceFile": "source/module_main.d",
+      "versions": [
+        "ModuleV1"
+      ],
+      "excludedSourceFiles": [
+        "source/module_entry.d",
+        "source/v3_shell_main.d",
+        "tests/contract_main.d"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:CONSOLE",
+        "/ENTRY:mainCRTStartup"
+      ]
+    },
+    {
+      "name": "module-v2",
+      "targetType": "executable",
+      "targetName": "v3-module-v2",
+      "mainSourceFile": "source/module_main.d",
+      "excludedSourceFiles": [
+        "source/module_entry.d",
+        "source/v3_shell_main.d",
+        "tests/contract_main.d"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:CONSOLE",
+        "/ENTRY:mainCRTStartup"
+      ]
+    },
+    {
+      "name": "stable-shell",
+      "targetType": "executable",
+      "targetName": "aurora-opencode-lite-v3-shell",
+      "mainSourceFile": "source/v3_shell_main.d",
+      "excludedSourceFiles": [
+        "source/module_entry.d",
+        "source/module_main.d",
+        "tests/contract_main.d"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:CONSOLE",
+        "/ENTRY:mainCRTStartup"
+      ]
+    }
+  ]
+}

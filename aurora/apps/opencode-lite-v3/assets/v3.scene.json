@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 3,
+  "window": {
+    "title": "Aurora OpenCode Lite v3",
+    "width": 1180,
+    "height": 780,
+    "minWidth": 980,
+    "minHeight": 680,
+    "theme": "dark"
+  },
+  "root": {
+    "type": "row",
+    "padding": 0,
+    "spacing": 0,
+    "children": [
+      {
+        "type": "column",
+        "width": 300,
+        "padding": 14,
+        "spacing": 8,
+        "children": [
+          {
+            "type": "row",
+            "height": 36,
+            "spacing": 8,
+            "children": [
+              {
+                "type": "label",
+                "text": "Aurora OpenCode v3",
+                "scale": 2,
+                "flex": 1
+              },
+              {
+                "id": "v3-version",
+                "type": "label",
+                "text": "v3",
+                "scale": 1,
+                "textColor": "#7d8ea3"
+              }
+            ]
+          },
+          {
+            "type": "label",
+            "text": "SESSIONS",
+            "scale": 1,
+            "textColor": "#7d8ea3"
+          },
+          {
+            "id": "v3-session-list",
+            "type": "column",
+            "spacing": 4,
+            "children": [
+              {
+                "id": "v3-session-active",
+                "type": "button",
+                "text": "Session 1",
+                "action": "session-select-1"
+              },
+              {
+                "id": "v3-session-new",
+                "type": "button",
+                "text": "New session",
+                "action": "session-new"
+              }
+            ]
+          },
+          {
+            "type": "separator",
+            "orientation": "horizontal"
+          },
+          {
+            "type": "label",
+            "text": "COMMAND",
+            "scale": 1,
+            "textColor": "#7d8ea3"
+          },
+          {
+            "id": "v3-command-hint",
+            "type": "label",
+            "text": "aurora-opencode-lite-v3-cli",
+            "scale": 1,
+            "textColor": "#566476"
+          },
+          {
+            "type": "spacer",
+            "flex": 1
+          },
+          {
+            "id": "v3-sidebar-status",
+            "type": "label",
+            "text": "Ready",
+            "textColor": "#9fb3c8"
+          }
+        ]
+      },
+      {
+        "type": "column",
+        "padding": 16,
+        "spacing": 8,
+        "flex": 1,
+        "children": [
+          {
+            "type": "row",
+            "height": 34,
+            "spacing": 8,
+            "children": [
+              {
+                "id": "v3-session-title",
+                "type": "label",
+                "text": "Session 1",
+                "scale": 2,
+                "flex": 1
+              },
+              {
+                "id": "v3-status",
+                "type": "label",
+                "text": "Ready",
+                "width": 220,
+                "textColor": "#9fb3c8"
+              }
+            ]
+          },
+          {
+            "id": "v3-transcript",
+            "type": "textArea",
+            "text": "New session.\n",
+            "readOnly": true,
+            "flex": 1
+          },
+          {
+            "type": "row",
+            "height": 44,
+            "spacing": 8,
+            "children": [
+              {
+                "id": "v3-input",
+                "type": "textField",
+                "flex": 1,
+                "submitAction": "send"
+              },
+              {
+                "id": "v3-send",
+                "type": "button",
+                "text": "Send",
+                "action": "send",
+                "width": 96
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

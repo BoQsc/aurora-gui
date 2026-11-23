@@ -2,6 +2,7 @@ module aurorahost.single_instance;
 
 import core.thread : Thread;
 import core.time : msecs;
+import aurorahost.live_registry : registerLive, unregisterLive;
 import std.utf : toUTF16z;
 
 version (Windows)
@@ -24,6 +25,7 @@ struct HostInstance
     version (Windows)
         private HANDLE _mutex;
     private bool _owned;
+    private string _key;
 
     bool owned() const
     {
@@ -53,6 +55,8 @@ struct HostInstance
                 return false;
             }
             _owned = true;
+            _key = key;
+            registerLive(key);
             return true;
         }
         else
@@ -66,12 +70,19 @@ struct HostInstance
     {
         version (Windows)
         {
+            if (_key.length > 0)
+                unregisterLive(_key);
             if (_mutex is null)
                 return;
             if (_owned)
                 ReleaseMutex(_mutex);
             CloseHandle(_mutex);
             _mutex = null;
+        }
+        if (_key.length > 0)
+        {
+            unregisterLive(_key);
+            _key = null;
         }
         _owned = false;
     }
