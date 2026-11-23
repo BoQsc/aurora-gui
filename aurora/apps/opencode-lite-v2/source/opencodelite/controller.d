@@ -4,8 +4,12 @@ import opencodelite.history : ConversationState, loadConversation, saveConversat
 import opencodelite.session : ChatSession, SessionEventKind;
 import opencodelite.settings : LiteSettings, openAiBaseUrl, openAiModel,
     isOpenAiBaseUrl, isOpenCodeBaseUrl, openCodeBaseUrl, openCodeModel,
-    saveSettings;
+    saveSettings, defaultSettingsPath;
 import std.conv : to;
+import std.file : exists, mkdirRecurse, write;
+import std.file : readText;
+import std.json : JSONType, JSONValue, parseJSON;
+import std.path : buildPath, dirName;
 import std.string : strip;
 
 /// The small host-facing surface the controller needs. Implementations are the
@@ -15,6 +19,14 @@ interface LiteView
     string text(string id);
     bool setText(string id, string text);
     bool setEnabled(string id, bool enabled);
+}
+
+private struct WorkspaceSlot
+{
+    string transcript = "New session.\n";
+    uint messages;
+    string lastPrompt;
+    bool failed;
 }
 
 /**
@@ -31,6 +43,8 @@ final class LiteController
     private string _lastPrompt;
     private uint _messages;
     private bool _lastFailed;
+    private WorkspaceSlot[3] _workspace;
+    private int _activeSlot;
 
     this(LiteView view, LiteSettings settings)
     {
@@ -38,10 +52,10 @@ final class LiteController
         _settings = settings;
         _session = new ChatSession(_settings);
         const history = loadConversation();
-        _transcript = history.transcript;
-        _messages = history.messages;
-        _lastPrompt = history.lastPrompt;
-        _lastFailed = history.failed;
+        _workspace[0] = WorkspaceSlot(history.transcript, history.messages,
+            history.lastPrompt, history.failed);
+        loadWorkspace();
+        loadActive();
     }
 
     void handleAction(string node, string action)
@@ -61,6 +75,16 @@ final class LiteController
             clearSession();
         else if (action == "retry")
             retryLast();
+        else if (action == "regenerate")
+            retryLast();
+        else if (action == "export")
+            exportSession();
+        else if (action == "session-1")
+            activateSlot(0);
+        else if (action == "session-2")
+            activateSlot(1);
+        else if (action == "session-3")
+            activateSlot(2);
         else if (action == "preset-opencode")
             applyPreset(openCodeBaseUrl, openCodeModel, "OpenCode API preset");
         else if (action == "preset-openai")
@@ -142,6 +166,25 @@ final class LiteController
         send();
     }
 
+    private void exportSession()
+    {
+        try
+        {
+            const directory = buildPath(dirName(defaultSettingsPath()),
+                "exports");
+            if (!exists(directory))
+                mkdirRecurse(directory);
+            const path = buildPath(directory, "session.md");
+            write(path, _transcript);
+            _view.setText("lite-export-status", "Exported: session.md");
+            setStatus("Session exported");
+        }
+        catch (Exception error)
+        {
+            setStatus("Export error: " ~ error.msg);
+        }
+    }
+
     private void clearSession()
     {
         if (_session.busy())
@@ -218,6 +261,10 @@ final class LiteController
             "Session - " ~ to!string(_messages) ~
             (_messages == 1 ? " message" : " messages"));
         _view.setEnabled("lite-retry", _lastFailed && !_session.busy());
+        _view.setText("lite-usage",
+            "Messages " ~ to!string(_messages) ~ "  |  " ~
+            (_session.busy() ? "working" : "idle") ~ "  |  " ~
+            _settings.model);
     }
 
     private void persist()

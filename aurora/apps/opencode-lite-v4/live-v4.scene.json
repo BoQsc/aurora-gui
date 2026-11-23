@@ -89,6 +89,19 @@
                 "action": "retry"
               },
               {
+                "id": "lite-export",
+                "type": "button",
+                "text": "Export session",
+                "action": "export"
+              },
+              {
+                "id": "lite-export-status",
+                "type": "label",
+                "text": "Not exported",
+                "scale": 1,
+                "textColor": "#566476"
+              },
+              {
                 "type": "spacer",
                 "flex": 1
               },
