@@ -4,8 +4,7 @@ import auroraopencode.core : ChatMessage, ChatSession, Settings, TaskStep,
     ensureMessageGraph, goalHistoryFromJson, goalHistoryToJson, newMessageId;
 import auroraopencode.goalmode;
 import auroraopencode.goalmutation : resetTaskForNewGoal;
-import auroraopencode.outputrecovery : goalAuditStalled, goalAuditRecoveryCount,
-    maxGoalAuditRecoveries;
+import auroraopencode.outputrecovery : goalAuditStalled, goalAuditRecoveryCount;
 import auroraopencode.outputguard : outputRecoveryMarker;
 import auroraopencode.turnpolicy : decideTurn, TurnPolicy, TurnAction;
 import std.json : JSONValue, parseJSON;
@@ -439,24 +438,24 @@ int main()
         require(goalAuditRecoveryCount(retried) == 1,
             "stalled goal recovery turns were not counted");
         ChatSession spent = retried;
-        foreach (_; 0 .. maxGoalAuditRecoveries - 1)
+        foreach (_; 0 .. 2)
         {
             appendLinked(spent, msg("user",
                 outputRecoveryMarker ~ goalAuditRecoveryInstruction, true));
             appendLinked(spent, msg("assistant", "Pause the goal yourself."));
         }
-        require(goalAuditRecoveryCount(spent) == maxGoalAuditRecoveries,
-            "the goal recovery budget did not reach its bound");
+        require(goalAuditRecoveryCount(spent) == 3,
+            "the goal recovery turns were not counted");
         appendLinked(spent, msg("user", "New request while stalled."));
         require(goalAuditRecoveryCount(spent) == 0,
             "a new user request did not start a fresh recovery budget");
         require(goalAuditRecoveryCount(progressed) == 0,
             "useful tool progress did not reset the goal recovery budget");
     }
-    // A stalled goal is bounded in the turn decision itself: the reported chat
-    // answered every recovery with "pause the active goal; this session cannot
-    // invoke goal_complete" while the app queued another turn, so the goal
-    // never stopped and the prompt grew past 386k tokens.
+    // A stalled goal keeps running in the turn decision itself. The app never
+    // pauses or completes the user's goal on the model's behalf: the directive
+    // escalates, and the goal stays active until it validates complete or the
+    // user pauses it.
     {
         ChatSession stalled;
         stalled.goal = "Deliver every requested outcome";
@@ -467,26 +466,28 @@ int main()
             "Pause the active goal; this session cannot invoke goal_complete."));
         TurnPolicy policy;
         policy.toolsEnabled = true;
-        foreach (attempt; 0 .. maxGoalAuditRecoveries)
+        foreach (attempt; 0 .. 6)
         {
             auto recovering = decideTurn(stalled, policy);
             require(recovering.action == TurnAction.request && recovering.advanceGoal,
-                "a stalled goal lost a bounded recovery turn");
+                "a stalled goal lost its recovery turn");
+            require(recovering.settleGoal.length == 0,
+                "a stalled goal was recorded as settled or paused");
+            require(recovering.guidance.length > 0,
+                "a stalled goal did not receive another directive");
             appendLinked(stalled, msg("user", recovering.guidance, true));
             appendLinked(stalled, msg("assistant",
                 "Pause the active goal; this session cannot invoke goal_complete."));
         }
-        auto stopped = decideTurn(stalled, policy);
-        require(stopped.action == TurnAction.settle && stopped.settleGoal == "paused",
-            "a goal that never acted kept the chat looping instead of stopping");
-        require(stopped.guidance.length == 0,
-            "the stopped goal still queued another turn");
-        require(stopped.taskStatus != "completed",
-            "stopping a stalled goal fabricated completion of its work");
-        require(stopped.status.indexOf("without progress") >= 0,
-            "the stopped goal did not explain why it stopped");
+        auto escalated = decideTurn(stalled, policy);
+        require(escalated.action == TurnAction.request && escalated.advanceGoal,
+            "a long-stalled goal was parked instead of receiving an action turn");
+        require(escalated.guidance.indexOf("Progress audit") >= 0,
+            "the repeated stall did not escalate the directive");
+        require(escalated.taskStatus != "completed",
+            "a stalled goal fabricated completion of its work");
     }
-    writeln("PASS prose-only goal turns remain stalled until a useful action, within a bounded recovery budget");
+    writeln("PASS prose-only goal turns keep running with an escalating directive until a useful action");
 
     foreach (definitions; [nativeOnlyToolDefinitions(), builtinToolDefinitions()])
     {

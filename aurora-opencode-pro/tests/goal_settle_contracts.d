@@ -6,10 +6,11 @@ module goal_settle_contracts;
 // reported states: "the goal keeps stopping without reaching the goal, the goal
 // is active but doing nothing".
 
-import auroraopencode.core : ChatMessage, ChatSession, TaskStep,
+import auroraopencode.core : ChatMessage, ChatSession, TaskStep, TaskWorkItem,
     ensureMessageGraph;
 import auroraopencode.contextpolicy : durableTaskPrompt;
-import auroraopencode.goalmode : goalAnswerDelivered;
+import auroraopencode.executioncontrol : executionRecoveryMarker, executionState;
+import auroraopencode.goalmode : goalAnswerDelivered, goalCompletionError;
 import auroraopencode.outputguard : outputRecoveryMarker;
 import auroraopencode.requestintent : workRestrictionRequest;
 import auroraopencode.taskflow : taskInvestigation;
@@ -237,9 +238,9 @@ int main()
     // Reported: the referenced "Aurora Designer Check" chat answered its goal
     // continuation with prose only while a checklist outcome and verification
     // were still open. The turn settled and the chat sat idle while the goal
-    // still advertised itself as active. The app spends bounded recovery turns
-    // on real work; a goal that never acts is then stopped instead of being
-    // re-prompted forever.
+    // still advertised itself as active. The app spends recovery turns on real
+    // work and never parks the goal: a model that keeps answering with prose
+    // gets an escalated directive, not a pause.
     {
         auto session = sessionWith(actionGoal);
         session.contract.currentIntent = "analysis";
@@ -259,18 +260,78 @@ int main()
             "the goal recovery also paused or completed the goal");
         require(session.goalStatus == "active",
             "the goal recovery changed the user's goal state");
-        foreach (_; 0 .. 3)
+        foreach (_; 0 .. 5)
             appendLinked(session, msg("user",
                 outputRecoveryMarker ~ " keep going", true));
         appendLinked(session, msg("assistant", "Still summarizing."));
-        const exhausted = decide(session);
-        require(exhausted.action == TurnAction.settle &&
-            exhausted.settleGoal == "paused",
-            "a goal that never acted kept the chat looping instead of stopping");
-        require(exhausted.guidance.length == 0,
-            "the stopped goal still queued another recovery turn");
-        require(exhausted.taskStatus != "completed",
+        const escalated = decide(session);
+        require(escalated.action == TurnAction.request && escalated.advanceGoal,
+            "a goal that never acted was parked instead of receiving another action turn");
+        require(escalated.guidance.length > 0,
+            "the stalled goal did not queue an escalated directive");
+        require(escalated.settleGoal.length == 0,
+            "the stalled goal was recorded as settled or paused");
+        require(escalated.guidance.indexOf("Progress audit") >= 0,
+            "the repeated stall did not change strategy");
+        require(session.goalStatus == "active",
+            "a stalled goal no longer owns its work");
+        require(escalated.taskStatus != "completed",
             "stopping a stalled goal fabricated completion of its work");
+    }
+
+    // The shared execution-recovery budget bounds ordinary retries. It must not
+    // settle an active goal with open outcomes: that used to end the turn with
+    // "Press Continue", parking the user's goal between attempts.
+    {
+        auto session = sessionWith(actionGoal);
+        session.taskSteps ~= TaskStep("Implement the fix", "in_progress",
+            "step-impl", "", "Behavior fixed", []);
+        const state = executionState(session, false);
+        require(state.remaining.length > 0,
+            "the recovery fixture must have an open outcome");
+        appendLinked(session, msg("user", executionRecoveryMarker ~
+            `{"fingerprint":"` ~ state.fingerprint ~ `","attempts":2}`, true));
+        const decision = decide(session);
+        require(decision.action == TurnAction.request && decision.continues(),
+            "the execution-recovery budget settled an active goal");
+        require(decision.advanceGoal,
+            "the escalated recovery was not recorded as a goal turn");
+        require(decision.guidance.indexOf("Persistent goal recovery") >= 0,
+            "the goal recovery did not escalate the approach");
+        require(decision.settleGoal.length == 0,
+            "the execution-recovery boundary paused the goal");
+    }
+
+    // A goal never completes with deferred work, including an optional
+    // follow-up that an ordinary task may park.
+    {
+        auto session = sessionWith("Explain why goals stop early");
+        session.verificationStatus = "not_required";
+        TaskWorkItem item;
+        item.step = TaskStep("Run the remaining platform check", "deferred",
+            "work-deferred", "verify", "Check passes", []);
+        item.origin = "discovery";
+        item.reason = "optional follow-up";
+        item.required = false;
+        session.contract.workItems ~= item;
+        const error = goalCompletionError(session,
+            `{"summary":"The explanation is complete."}`);
+        require(error.indexOf("deferred") >= 0,
+            "goal_complete accepted a deferred work item: " ~ error);
+    }
+    {
+        auto session = sessionWith(actionGoal);
+        session.verificationStatus = "not_required";
+        ChatMessage edit = msg("tool", "Edited the turn policy", false, "edit");
+        edit.toolCallId = "edit-1";
+        appendLinked(session, edit);
+        session.taskSteps ~= TaskStep("Fix the stop", "completed", "step-fix",
+            "edit", "Goal runs", ["edit-1"]);
+        const error = goalCompletionError(session,
+            `{"summary":"The fix is in; the documentation update is deferred to a later turn.",` ~
+            `"evidence":["edit-1"]}`);
+        require(error.indexOf("deferred") >= 0,
+            "goal_complete accepted deferred completion prose: " ~ error);
     }
 
     // The reported refusal: the user pauses an unmet goal, asks why the agent

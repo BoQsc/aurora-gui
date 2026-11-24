@@ -6,8 +6,8 @@ import auroraopencode.executioncontrol : executionState, executionShouldContinue
 import auroraopencode.taskflow : taskInvestigation;
 import auroraopencode.worktracking : requiredWorkRemaining;
 import auroraopencode.goalmode : goalActive, goalNeedsHumanInput, goalContinuationInstruction,
-    goalAuditRecoveryInstruction, goalInputContinuesInstruction, goalIsAnswerTurn,
-    goalAnswerDelivered;
+    goalInputContinuesInstruction, goalIsAnswerTurn, goalAnswerDelivered,
+    goalOutstandingWork, goalStallInstruction, goalExecutionEscalation;
 import auroraopencode.completionhandoff : completionHandoffNeeded, completionHandoffPending,
     recordedCompletionHandoff;
 import auroraopencode.orchestrator : experimentalOrchestratorIsRouter, experimentalOrchestratorAgentName;
@@ -16,8 +16,7 @@ import auroraopencode.requestintent : RequestIntent, actionApprovalRequest,
     requestIntent, workRestrictionRequest;
 import auroraopencode.planmode : planModeProposalPending;
 import auroraopencode.outputguard : outputRecoveryMarker;
-import auroraopencode.outputrecovery : goalAuditStalled, goalAuditRecoveryCount,
-    maxGoalAuditRecoveries;
+import auroraopencode.outputrecovery : goalAuditStalled, goalAuditRecoveryCount;
 import std.string : strip;
 
 enum TurnAction { settle, failed, interrupted, applySteering, request, waitInput, waitChildren, reportChild }
@@ -37,10 +36,9 @@ struct TurnDecision
 {
     TurnAction action;
     string turnStatus, taskStatus, guidance, recordedSummary, status, nextSpeaker;
-    /// Outcome an active goal takes when this settle starts no further turn:
-    /// "completed" for an answer goal whose reply is delivered, "paused" when a
-    /// goal spent its whole recovery budget without a useful action. Routine
-    /// settles never pause the goal: the user's pause stays the normal control.
+    /// Outcome an active goal takes when this settle starts no further turn.
+    /// Only "completed" is ever set: an answer goal whose reply is delivered.
+    /// Work never parks an active goal; the user's pause stays the only stop.
     string settleGoal;
     bool advanceHop, clearNextSpeaker, clearDiagnostic, clearBlocker, advanceGoal;
     int diagnosticRequests;
@@ -210,6 +208,20 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
             result.status = "Answer complete · the paused goal's remaining work waits for Start.";
             return result;
         }
+        // An active goal owns this work. The shared attempt budget bounds
+        // provider retries for ordinary tasks; it must not settle a goal into
+        // an idle chat while its outcomes are open. Escalate the approach and
+        // keep requesting real work instead.
+        if (goalKeepsRunning)
+        {
+            result.advanceGoal = true;
+            request(state.guidance() ~ goalExecutionEscalation(session, state.attempts),
+                state.attempts ? "Recovering the goal's unresolved outcome…" :
+                    "Completing the requested outcome…");
+            if (state.attempts && policy.diagnosticAvailable)
+                result.diagnosticRequests = 1;
+            return result;
+        }
         if (state.attempts >= 2)
         {
             // A host fault is not a substantive failure. The answer already
@@ -252,9 +264,9 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     // A goal continuation answered with prose only has not advanced the goal.
     // Requesting the same continuation again replayed the refusal, and settling
     // left the active goal with no running turn. Spend the output recovery turn
-    // on a concrete action instead, within a bounded budget. A goal that spends
-    // that budget without a useful action is stopped and paused: repeating the
-    // request only replayed the same refusal while the goal kept running.
+    // on a concrete action instead. There is no final stop: the directive
+    // escalates and the goal keeps running, because active goal work is never
+    // parked.
     if (goalKeepsRunning)
     {
         if (goalNeedsHumanInput(session))
@@ -274,23 +286,14 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
             request(goalContinuationInstruction(session), "Continuing toward the goal…");
             return result;
         }
-        // Recovery is bounded. Once the model has answered a stalled goal turn
-        // without any useful action for the whole budget, another "take an
-        // action" request only replays the same refusal: the reported thread
-        // answered "pause the active goal, this session cannot call
-        // goal_complete" four times while the app queued the next recovery,
-        // growing the prompt to 386k tokens. Stop the goal and keep its
-        // recorded work for Start instead of looping without progress.
-        if (goalAuditRecoveryCount(session) >= maxGoalAuditRecoveries)
-        {
-            result.turnStatus = "completed";
-            result.taskStatus = "active";
-            result.status = "Goal stopped after repeated turns without progress · press Start to resume.";
-            result.settleGoal = "paused";
-            return result;
-        }
+        // A goal that keeps answering with prose has not advanced. The app
+        // never pauses or completes the user's goal on the model's behalf, so
+        // the directive changes strategy and the goal keeps running. Nothing is
+        // parked: the goal is active until it validates complete or the user
+        // pauses it.
         result.advanceGoal = true;
-        request(outputRecoveryMarker ~ goalAuditRecoveryInstruction,
+        request(outputRecoveryMarker ~ goalStallInstruction(session,
+                goalAuditRecoveryCount(session)),
             "Recovering the goal…");
         return result;
     }
@@ -315,16 +318,14 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     }
     else result.taskStatus = "completed";
     // This settle starts no further turn. An answer goal finished by its
-    // delivered reply is complete. Every other goal keeps its recorded work
-    // active: the app and the agent never pause the user's goal, so Continue is
-    // the explicit way back and only the user can pause it. A queued follow-up
-    // opens the next turn immediately, so that chat is not idle and the goal
-    // keeps owning the follow-up's work.
+    // delivered reply is complete and has nothing outstanding. Every other goal
+    // keeps its recorded work active: the app and the agent never pause the
+    // user's goal, so only the user can pause it. A queued follow-up opens the
+    // next turn immediately, so that chat is not idle and the goal keeps owning
+    // the follow-up's work.
     if (goalActive(session) && !session.queuedFollowUps.length)
     {
-        const outstanding = hasIncompleteTaskSteps(session) ||
-            session.verificationStatus == "required" ||
-            session.verificationStatus == "failed";
+        const outstanding = goalOutstandingWork(session);
         result.settleGoal = goalIsAnswerTurn(session.goal) && !outstanding &&
             goalAnswerDelivered(session) ? "completed" : "";
     }

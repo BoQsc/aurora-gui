@@ -38,12 +38,14 @@ import auroraopencode.tools : ChangeContext, ToolCancellation;
 import auroraopencode.taskflow : acceptTaskRequest, taskInvestigation, restoreBranchTask, executionRecoveryDue, executionDiagnosisMarker;
 import auroraopencode.taskmutation : applyTaskPlan, applyTaskSubplan;
 import auroraopencode.taskpolicy : verificationScope;
-import auroraopencode.goalmode : goalActive, recordGoalSet, recordGoalOutcome, clampGoalText, goalContinuationInstruction;
+import auroraopencode.goalmode : goalActive, recordGoalSet, recordGoalOutcome, clampGoalText,
+    goalContinuationInstruction, goalIsAnswerTurn, goalStallInstruction;
 import auroraopencode.planhistory : recordPlanHistory;
 // experimental: planmode - delete with source/auroraopencode/planmode.d
 import auroraopencode.planmode : experimentalPlanModeEnabled, planModePromptBlock;
 import auroraopencode.goalmutation : resetTaskForNewGoal, restoreGoalTask;
-import auroraopencode.outputrecovery : outputRecoveryCount, maxOutputRecoveries;
+import auroraopencode.outputrecovery : outputRecoveryCount, maxOutputRecoveries,
+    goalAuditRecoveryCount;
 import auroraopencode.outputguard : outputRecoveryMarker;
 import auroraopencode.imagehistory : pruneHistoryImages, completedReplyImageIds;
 import core.sync.mutex : Mutex;
@@ -1253,8 +1255,7 @@ public final class ConversationActor
         if (event.cancelled) { applyStop(); return; }
         if (diagnosticActive) { finishDiagnostic(); applySteering(); request(); return; }
         // A prose-only goal continuation is not a failure: decideTurn recovers
-        // it and, once the bounded budget is spent, settles it and pauses the
-        // goal, so an internal audit can never leave the chat looping.
+        // it with an escalated directive and never pauses or idles the goal.
         auto policy = config.turn; policy.toolsEnabled = config.request.toolsEnabled; policy.finishReason = event.finishReason;
         policy.diagnosticAvailable = config.diagnosticModel.length > 0;
         policy.pendingChildren = waitingChildren;
@@ -1271,13 +1272,10 @@ public final class ConversationActor
         if (decision.clearNextSpeaker) session.nextSpeakerId = "";
         if (decision.nextSpeaker.length) session.activeAgentId = decision.nextSpeaker;
         session.taskStatus = decision.taskStatus; session.turnStatus = decision.turnStatus;
-        // The settle starts no further request, so an active goal must not stay
-        // "active" with nothing running. The actor has no goal bar to refresh; it
-        // records the same outcome the UI applies.
+        // The settle starts no further request. Only an answer goal whose reply
+        // was delivered completes here; the actor never pauses the user's goal.
         if (decision.settleGoal == "completed")
         { session.goalStatus = "completed"; recordGoalOutcome(session, "completed", frameUnix); }
-        else if (decision.settleGoal == "paused")
-        { session.goalStatus = "paused"; recordGoalOutcome(session, "paused", frameUnix); }
         if (decision.action == TurnAction.reportChild) session.turnStatus = "completed";
         if (decision.continues()) { metadata(); request(); return; }
         running = false; engine.activeRequestId = 0;
@@ -1317,10 +1315,17 @@ public final class ConversationActor
         {
             ensureAssistant(); session.messages[$ - 1].failed = true;
             session.messages[$ - 1].error = event.text; updateLast();
-            if (outputRecoveryCount(session) >= maxOutputRecoveries)
+            // An active goal's work is never parked. The provider-retry budget
+            // only stops ordinary tasks; a goal keeps a changed directive until
+            // it validates complete or the user pauses it.
+            const goalRecovers = goalActive(session) &&
+                !goalIsAnswerTurn(session.goal);
+            if (!goalRecovers && outputRecoveryCount(session) >= maxOutputRecoveries)
             { fail("Provider output repeatedly failed protocol validation. Retry continues the preserved task and goal."); return; }
             if (outputRecoveryCount(session) > 0) beginDiagnostic();
-            internalNote(outputRecoveryMarker ~ "The provider returned unusable output. Use the structured tool protocol and take a different useful action; do not repeat the rejected output.");
+            internalNote(outputRecoveryMarker ~ (goalRecovers
+                ? goalStallInstruction(session, goalAuditRecoveryCount(session))
+                : "The provider returned unusable output. Use the structured tool protocol and take a different useful action; do not repeat the rejected output."));
             request(); return;
         }
         if (outageStartedMs < 0) outageStartedMs = frameMs;

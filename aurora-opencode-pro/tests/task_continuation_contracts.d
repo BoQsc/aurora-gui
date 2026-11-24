@@ -6,6 +6,7 @@ import auroraopencode.requestintent;
 import auroraopencode.turnpolicy : decideTurn, TurnPolicy, TurnAction;
 import std.conv : to;
 import std.stdio : writeln;
+import std.string : indexOf;
 
 void append(ref ChatSession session, string role, string content, bool internal = false,
     string name = "", string arguments = "{}", bool failed = false)
@@ -62,6 +63,8 @@ int main()
     assert(taskBlockerError(`{"reason":"Verification pending","required_fact":"Permission","question":"Should I run tests?","checked":["Tests exist"],"independent_work_complete":true}`).length);
     assert(taskBlockerError(`{"reason":"Implementation choice unresolved","required_fact":"Preferred implementation approach","question":"Which approach should I use?","checked":["Source inspected"],"independent_work_complete":true}`).length,
         "A routine implementation choice was accepted as missing user information");
+    assert(taskBlockerError(`{"reason":"UI verification is pending","required_fact":"Whether the app window must be in the foreground before verification","question":"Does the test need the app window in the foreground?","checked":["A programmatic check is available"],"independent_work_complete":true}`).indexOf("foreground") >= 0,
+        "Foreground placement was accepted as missing user information");
     assert(taskBlockerError(`{"kind":"input","reason":"Deployment address missing"}`).length);
     assert(taskBlockerError(`{"kind":"external","reason":""}`).length);
     assert(taskBlockerError("broken").length);

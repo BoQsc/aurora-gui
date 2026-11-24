@@ -9,13 +9,6 @@ import std.string : startsWith, strip;
 /// This bounds consecutive unusable provider responses, never useful task work.
 enum maxOutputRecoveries = 3;
 
-/// A goal that keeps answering without a useful action is stopped after this
-/// many recovery turns. An unbounded audit replayed the same refusal, grew the
-/// transcript on every retry (a real thread reached 386k prompt tokens while it
-/// announced "pause the goal" instead of acting) and left the chat running with
-/// no way for the model to end it.
-enum maxGoalAuditRecoveries = 3;
-
 private bool usefulTool(string name)
 {
     return name != "update_plan" && name != "update_subplan" &&
@@ -23,7 +16,9 @@ private bool usefulTool(string name)
 }
 
 /// Recovery turns spent on a stalled goal since the last real progress. A user
-/// message or a useful tool action starts a fresh budget.
+/// message or a useful tool action resets the count. The count only selects a
+/// stronger directive for the next goal turn; it never ends or pauses the goal,
+/// because active goal work is never parked.
 int goalAuditRecoveryCount(const ref ChatSession session)
 {
     int count;

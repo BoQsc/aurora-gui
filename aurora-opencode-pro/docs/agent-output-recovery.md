@@ -14,8 +14,10 @@ A goal continuation that answers with prose only is not a provider failure. It
 keeps spending recovery turns on a concrete action: take a useful tool action,
 call `goal_complete`, or record a genuinely user-owned fact with `request_input`
 and continue. The goal stays active and running throughout, because only the
-user can pause it. The recovery budget never settles an active goal chat; it
-never adds a failure bubble. An ordinary task audit keeps its bounded recovery.
+user can pause it. The recovery budget never settles, stops or pauses an active
+goal chat, and it never adds a failure bubble: each stalled round escalates the
+directive (take one concrete action, change route, reduce the next step) and
+keeps the work running. An ordinary task audit keeps its bounded recovery.
 The session server reports an
 unexpected post-start idle state as `turn_stalled`, not `turn_not_started`.
 

@@ -5,7 +5,7 @@ import auroraopencode.requestintent : answerOnlyRequest, requestIntent,
     RequestIntent;
 import std.array : appender, join, split;
 import std.json : JSONType, JSONValue, parseJSON;
-import std.regex : matchFirst, regex;
+import std.regex : matchAll, matchFirst, regex;
 import std.string : indexOf, replace, splitLines, startsWith, strip, toLower;
 import std.utf : toUTF32, toUTF8;
 
@@ -210,6 +210,23 @@ public bool goalActive(const ref ChatSession session)
     return session.goal.length > 0 && session.goalStatus == "active";
 }
 
+/// Every durable outcome a goal still owns. A goal is never finished while a
+/// recorded plan step, nested plan, work item or required check is open. A
+/// deferred item is open work, not completion: the goal contract does not allow
+/// parking work for a later turn.
+public bool goalOutstandingWork(const ref ChatSession session)
+{
+    foreach (step; session.taskSteps)
+        if (step.status != "completed") return true;
+    foreach (plan; session.nestedPlans)
+        foreach (step; plan.steps)
+            if (step.status != "completed") return true;
+    foreach (item; session.contract.workItems)
+        if (item.step.status != "completed") return true;
+    return session.verificationStatus == "required" ||
+        session.verificationStatus == "failed";
+}
+
 /// The goal block is dynamic request context, deliberately outside the cached
 /// system prompt. Paused and completed goals stay visible to the model for
 /// continuity but never drive an automatic turn.
@@ -226,18 +243,28 @@ public string goalPromptBlock(const ref ChatSession session)
     switch (status)
     {
         case "active":
-            output.put("Complete this explicit goal while preserving the user's acceptance and newer corrections. " ~
-                "Use a short plan for substantial work and continue until the requested outcome and relevant checks are complete. " ~
-                "Call goal_complete with a concise summary and accepted toolCallId evidence for action goals; an answer-only goal needs no receipt. " ~
-                "A goal whose requested outcome is still unmet or failed is not complete: never call goal_complete to record a failure, " ~
-                "a blocker or a failed audit. Keep working on the unfinished outcome. " ~
-                "Do not stop this goal for a question: decide routine implementation, testing and design choices yourself. " ~
-                "If an essential user-owned fact is missing, finish independent work, record it once with request_input and continue with the best supported default; the app keeps the goal running until it is complete. " ~
+            output.put("This goal is a standing work contract, not a chat topic. It is complete only when the " ~
+                "requested outcome exists and every recorded outcome, plan step, work item and required check is finished. " ~
+                "Never mark it complete while anything remains, is deferred, postponed or left for later. " ~
+                "The goal is not complete until all of it is complete. " ~
+                "Work through every plan: finish planned outcomes, close discovered work, and resolve blockers with the available tools. " ~
+                "No part of this work may be put on hold while the goal is active: after each result, continue with the next real action. " ~
+                "Do not stop to hand the goal back, replace action with a summary, or wait for the app to prompt you again. " ~
+                "Testing is ordinary authorized work. Verifying a change never requires the user to bring a window to the " ~
+                "foreground, focus it, click it or be present: use the app's programmatic checks, a detached or background run, " ~
+                "or the available computer-use tools. Never stop or ask for that. " ~
+                "Decide routine implementation, testing, tool, file and design choices yourself. " ~
+                "If a genuinely user-owned fact is missing, finish the independent work, continue with the best supported " ~
+                "default, record the assumption once with request_input, and keep the goal running. " ~
+                "Call goal_complete with a concise summary and accepted toolCallId evidence only when everything is done; " ~
+                "an answer-only goal needs no receipt. Its validator refuses pending, deferred or unverified items. " ~
+                "Never call goal_complete to record a failure, a blocker or a failed audit. " ~
                 "Don't add hypothetical future work or repeat passing checks for completion bookkeeping.\n");
             break;
         case "paused":
-            // Settling a turn pauses the goal automatically, so this state is
-            // not evidence that the user stopped the work. Telling the model
+            // The user paused this goal; the app never pauses it on the model's
+            // behalf. This state is not evidence that the user stopped the
+            // current request. Telling the model
             // "the user paused this goal" made it refuse the next request
             // ("the goal is paused, so I'm not running another test or
             // changing the build") while the task state still recorded an
@@ -246,9 +273,10 @@ public string goalPromptBlock(const ref ChatSession session)
             output.put("The goal's automatic continuation is paused; its recorded work waits for " ~
                 "the user to press Start. The pause stops self-started goal turns only. " ~
                 "It is not a stop of the user's current message: answer it, investigate with " ~
-                "the available tools, and make the changes it asks for. Never use the paused " ~
+                "the available tools, and finish every outcome it asks for. Never use the paused " ~
                 "goal, its checklist or its required verification as a reason to refuse, defer " ~
-                "or narrow that work.\n");
+                "or narrow that work. Do not carry the paused goal's remaining work into a later " ~
+                "turn by calling it deferred: finish it now or state the exact unresolved outcome.\n");
             break;
         case "completed":
             output.put("This goal was completed. Do not resume it unless the user edits " ~
@@ -266,11 +294,17 @@ public string goalContinuationInstruction(const ref ChatSession session)
 {
     const answerGoal = goalIsAnswerOnly(session.goal);
     return "Persistent goal continuation: " ~ session.goal ~ "\n" ~
+        "The goal stays active until the requested outcome is complete or the user pauses it. " ~
         "Continue from the recorded work and current evidence. Do work rather than " ~
-        "restating the goal. If the plan only covers a local symptom, widen it to the " ~
+        "restating the goal. Finish every recorded outcome, plan step and required check; " ~
+        "nothing may be deferred, postponed or left for later, and no part of the work may be put on hold. " ~
+        "If the plan only covers a local symptom, widen it to the " ~
         "general cause and the whole objective before the next action; generalize the " ~
         "fix and its checks rather than patching one instance. Reconcile update_plan with the remaining work before " ~
-        "continuing, explaining any changed path. If the goal is now demonstrably complete, call " ~
+        "continuing, explaining any changed path. Testing never requires the user to bring a window " ~
+        "to the foreground, focus it, click it or be present; use programmatic checks, a detached or " ~
+        "background run, or the available computer-use tools. Do not stop for a test, a window, " ~
+        "a routine tool, file or design choice. If the goal is now demonstrably complete, call " ~
         "`goal_complete` with a concise summary" ~
         (answerGoal
             ? "; no tool receipt is required for this answer goal. Otherwise keep "
@@ -285,8 +319,9 @@ public string goalContinuationInstruction(const ref ChatSession session)
 }
 
 /// Text appended after a goal continuation that replied with prose only. The
-/// app never pauses the goal on the agent's behalf; it spends one bounded
-/// recovery turn on a concrete action or an explicit completion instead.
+/// app never pauses the goal on the agent's behalf; it spends the next turn on a
+/// concrete action or an explicit completion instead. There is no stop after a
+/// fixed number of attempts: the work is never parked while the goal is active.
 public enum goalAuditRecoveryInstruction = " The previous goal continuation " ~
     "replied with prose only and took no action. Do not restate the goal, the " ~
     "summary, or the remaining work. Take one concrete action with the " ~
@@ -295,8 +330,48 @@ public enum goalAuditRecoveryInstruction = " The previous goal continuation " ~
     "accepted evidence: that tool is offered in this request, so never answer " ~
     "that it is unavailable and never ask the user to pause or stop the goal. " ~
     "Do not stop for a question: decide routine choices yourself and continue " ~
-    "with the best supported default. The goal runs until it is complete or " ~
-    "the app stops it after repeated turns without progress.";
+    "with the best supported default. Testing never requires the user to bring a " ~
+    "window to the foreground. The app keeps this goal active until it is " ~
+    "validated complete or the user pauses it.";
+
+/// Directive for a goal that keeps replying without a useful action. The app
+/// never pauses or completes the user's goal on the model's behalf, so the
+/// strategy changes and the goal keeps running. `round` is the number of
+/// recovery turns already spent on this stall.
+public string goalStallInstruction(const ref ChatSession session, int round)
+{
+    if (round < 2) return goalAuditRecoveryInstruction;
+    if (round < 4)
+        return " Progress audit: this goal turn again produced no useful action. " ~
+            "Restating or summarizing the work is not progress, and the app will not " ~
+            "pause or complete the goal for you. Either call `goal_complete` with " ~
+            "validated evidence for the whole goal, or make one concrete tool call that " ~
+            "advances the smallest open outcome. If the current route is blocked, change " ~
+            "route: a different tool, file, command or smaller verifiable step. Reduce the " ~
+            "next step until it can be finished and verified now. Never answer that " ~
+            "completion is impossible and never ask the user to pause the goal. Testing " ~
+            "never requires the user to bring a window to the foreground.";
+    return " Progress audit after repeated turns without an action: act now on the " ~
+        "smallest unfinished outcome. Use the tools this request offers, including " ~
+        "`goal_complete` when the whole goal is genuinely finished; its validator names " ~
+        "the exact remaining item when it is not. If a tool is failing, read its error and " ~
+        "use a different one. Nothing may be deferred or left for a later turn, and the " ~
+        "goal stays active until it validates complete or the user pauses it.";
+}
+
+/// Added to ordinary execution recovery while an active goal still owns
+/// unresolved outcomes. The shared attempt budget bounds provider retries, not
+/// the user's goal: the decision keeps requesting work instead of settling.
+public string goalExecutionEscalation(const ref ChatSession session, int attempts)
+{
+    if (attempts < 2) return "";
+    return " Persistent goal recovery: the same unresolved outcome has now failed " ~
+        "repeated completion attempts. Do not end this turn with a summary and do not " ~
+        "defer any part of the work. Change the approach, take the smallest concrete " ~
+        "action that advances the open outcome, and verify it on the actual execution " ~
+        "path. Testing never requires the user to bring a window to the foreground. " ~
+        "The goal stays active until every outcome is finished and validated.";
+}
 
 /// Added when the agent asked for input inside an active goal. The request
 /// stays in the transcript as recorded context, but a goal chat never settles
@@ -318,6 +393,9 @@ public enum goalCompletionAuditMarker = "Persistent goal completion audit:\n";
 private enum unfinishedWorkLabels = [
     "remaining work", "remaining limitations", "remaining issues",
     "known limitations", "known issues", "outstanding work", "unfinished work",
+    "deferred", "deferred work", "deferred items", "deferred tasks",
+    "postponed", "postponed work", "future work", "pending work",
+    "open items", "known gaps", "unresolved work", "unfinished items",
     "next steps", "follow-ups", "follow ups", "followup", "followups",
     "follow-up", "follow up", "limitations", "limitation",
     "remaining", "outstanding", "unfinished", "not done", "todo", "to-do",
@@ -333,6 +411,8 @@ private bool statesNoOutstandingWork(string body)
             "no further work", "no remaining work", "no known issues",
             "no known limitations", "no outstanding work", "no limitations",
             "no follow-up", "no follow-ups", "no open work",
+            "none deferred", "nothing deferred", "no deferred work",
+            "no pending work", "no open items", "no known gaps",
             "all done", "all complete", "all addressed",
             "complete", "completed", "done", "resolved", "none recorded",
             "none remaining"])
@@ -397,6 +477,31 @@ private string declaredUnfinishedWork(string text)
     if (!declared.length) return "";
     import auroraopencode.taskcontext : taskExcerpt;
     return taskExcerpt(declared.replace("\n", " ").replace("\r", " "), 180);
+}
+
+/// Completion prose that still reports work as deferred, postponed or not yet
+/// implemented. A goal may not close while its own final answer says part of it
+/// waits for later.
+private bool declaresDeferredWork(string text)
+{
+    const plain = text.toLower.replace("*", "").replace("_", " ").splitLines.join(" ");
+    enum pattern =
+        `\b(?:is|are|remains?|stays?|left|kept|still) (?:currently |still )?(?:deferred|postponed|shelved|on hold)\b|` ~
+        `\b(?:deferred|postponed|shelved) (?:to|until|for) (?:a |the )?(?:later|next|future|follow-up|follow up)\b|` ~
+        `\b(?:left|kept|put|held) (?:for|to|until) later\b|` ~
+        `\bnot (?:yet )?(?:implemented|done|addressed|verified)\b|` ~
+        `\b(?:future work|pending work|deferred work|unresolved work)\b`;
+    foreach (found; matchAll(plain, regex(pattern)))
+    {
+        // "Nothing was deferred to a later turn" is a completion statement, not
+        // a declaration of remaining work.
+        const start = found.pre.length;
+        const before = start > 40 ? plain[start - 40 .. start] : plain[0 .. start];
+        if (matchFirst(before, regex(`\b(?:not|never|no|nothing|without|none)\b`)).length)
+            continue;
+        return true;
+    }
+    return false;
 }
 
 /// A completion summary that reports the requested outcome as unmet is not a
@@ -535,10 +640,23 @@ public string goalCompletionError(const ref ChatSession session, string argument
             if (step.status != "completed")
                 return "A nested plan still has unfinished steps. Finish them before completing the goal.";
     foreach (item; session.contract.workItems)
-        if (item.required && item.step.status != "completed")
-            return "Required work remains open. Finish it before completing the goal.";
+        if (item.step.status != "completed")
+        {
+            import auroraopencode.taskcontext : taskExcerpt;
+            const label = taskExcerpt(item.step.text, 120);
+            if (item.step.status == "deferred")
+                return "A work item is deferred (" ~ label ~ "). A deferred item is unfinished work: " ~
+                    "complete it and record its evidence before calling goal_complete. " ~
+                    "The persistent goal never completes with deferred work.";
+            return "Work remains open (" ~ label ~ "). Finish it before completing the goal.";
+        }
     if (!answerGoal)
     {
+        if (declaresDeferredWork(field("summary") ~ "\n" ~ currentAnswerProse(session)))
+            return "goal_complete cannot complete a goal whose summary or answer leaves work " ~
+                "deferred, postponed or not yet implemented. Finish that work with tools and " ~
+                "verify it, then call goal_complete again. The persistent goal never completes " ~
+                "with deferred work.";
         string declared = declaredUnfinishedWork(field("summary"));
         if (!declared.length)
             declared = declaredUnfinishedWork(currentAnswerProse(session));

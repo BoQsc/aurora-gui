@@ -1,11 +1,11 @@
 module goal_hold_contracts;
 
-// Progress audits recover and never paint a failure row. The goal's recovery
-// budget is bounded: a goal that keeps answering without a useful action is
-// stopped and paused instead of re-prompting the same refusal forever. The
-// reported chat replied "pause the active goal, this session cannot call
-// goal_complete" on every retry while the app queued another turn and grew the
-// prompt past 386k tokens.
+// Progress audits recover and never paint a failure row. An active goal is
+// never parked: a goal that keeps answering without a useful action receives an
+// escalated directive and keeps running until it validates complete or the
+// user pauses it. The reported chat replied "pause the active goal, this
+// session cannot call goal_complete" on every retry; the app must not adopt
+// that refusal as its own stop.
 
 import aurora;
 import auroraopencode.appui : OpenCodeRoot;
@@ -71,25 +71,26 @@ int main()
         foreach (i; 0 .. root.totalMessageCountForTesting())
             if (root.messageContentForTesting(i).indexOf("Agent output recovery:") >= 0) recovery = true;
         assert(recovery);
-        foreach (_; 0 .. 3)
+        foreach (_; 0 .. 6)
         {
             root.addConversationForTesting(["assistant"], ["Still done without a check."]);
-            root.startTurnClockForTesting(); root.injectOutputFailureForTesting(issue);
+            root.startTurnClockForTesting();
+            root.injectOutputFailureForTesting(issue);
+            assert(root.goalStatusForTesting() == "active",
+                "A repeated goal audit paused the user's goal");
+            assert(root.turnStatusForTesting() == "running",
+                "A repeated goal audit left the active goal idle");
         }
-        assert(root.goalStatusForTesting() == "paused",
-            "Exhausted goal recovery left the goal running without progress");
-        assert(root.turnStatusForTesting() == "completed",
-            "Exhausted goal recovery kept requesting turns");
         assert(root.taskStatusForTesting() != "completed",
-            "Exhaustion fabricated completion of the unfinished task");
+            "Repeated recovery fabricated completion of the unfinished task");
         assert(root.failedMessageCountForTesting() == 0,
-            "Exhaustion painted a failure over the delivered answer");
+            "Repeated recovery painted a failure over the delivered answer");
         bool visible;
         foreach (i; 0 .. root.totalMessageCountForTesting())
             if (root.messageContentForTesting(i).indexOf("Agent output stalled") >= 0) visible = true;
-        assert(!visible, "Audit exhaustion leaked a failure notice into the transcript");
+        assert(!visible, "Repeated recovery leaked a failure notice into the transcript");
         pump();
     }
-    writeln("PASS goal audits recover, then stop a goal that never acts");
+    writeln("PASS goal audits keep recovering without a failure row or a goal pause");
     return 0;
 }

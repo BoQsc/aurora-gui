@@ -25,8 +25,16 @@ owners. It is not a complete actor-engine rewrite or a guarantee of model qualit
   goals settle after their reply and are recorded completed. Every other settle
   keeps the goal active: the app and the agent never pause or idle the user's
   goal. A continuation answered with prose only keeps spending recovery turns on
-  a concrete action instead of settling silently; exhaustion never ends a goal
-  chat. A queued follow-up keeps the goal active for its own turn.
+  a concrete action instead of settling silently; the directive escalates and no
+  attempt limit ever ends or pauses a goal chat. A queued follow-up keeps the
+  goal active for its own turn.
+- The goal contract is completion by exhaustion of the work, not by summary. A
+  goal is complete only when every recorded outcome, nested plan step, work item
+  and required check is finished and verified. Deferred, postponed, pending or
+  "not yet implemented" work blocks `goal_complete`, including optional
+  follow-ups that an ordinary task may park. Testing never requires the user to
+  bring a window to the foreground, focus it, click it or be present, and never
+  pauses the work.
 - A goal's reply completes it only when the goal asks a question or records a
   note. An outcome-shaped goal ("ensure 60 fps", "bring the terrain to 60 fps",
   "perfectly placed elements") is action work even when its prose is

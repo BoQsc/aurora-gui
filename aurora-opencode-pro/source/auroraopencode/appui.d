@@ -117,7 +117,7 @@ import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationActio
     taskBlockerError, taskInputError, taskAwaitingInput, unfinishedTask;
 import auroraopencode.goalmode : GoalCommand, GoalCommandKind, goalActive,
     clampGoalText, goalCompletionError,
-    goalContinuationInstruction,
+    goalContinuationInstruction, goalStallInstruction,
     goalNeedsHumanInput, automaticGoalRequest, goalPromptBlock, maxGoalLength,
     goalIsAnswerTurn,
     parseGoalCommand,
@@ -138,7 +138,6 @@ import auroraopencode.outputguard : agentOutputIssue, outputFailurePrefix,
     outputRecoveryMarker, outputIssueDescription;
 import auroraopencode.outputrecovery : answerReplayed, outputRecoveryCount,
     maxOutputRecoveries, auditStallIssue, goalAuditRecoveryCount,
-    maxGoalAuditRecoveries,
     outputRecoveryAllowed, unfinishedTaskRecoveryInstruction;
 import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow,
     transcriptVirtualThreshold;
@@ -23471,18 +23470,10 @@ private void pollButtonSuggestionRequest()
         publishThreadUpdated(*session);
         markDirty();
         // A settle that starts no further turn completes an answer goal whose
-        // reply was delivered. A goal that spent its whole recovery budget
-        // without a useful action is paused here so the chat actually stops;
-        // all other unfinished work stays active for Continue.
+        // reply was delivered. Nothing else changes the goal: unfinished work
+        // stays active and the app never pauses the user's goal.
         if (decision.settleGoal == "completed")
             applyGoalCompletion(*session, "");
-        else if (decision.settleGoal == "paused")
-        {
-            pauseActiveGoal(*session);
-            publishThreadUpdated(*session);
-            markDirty();
-            updateGoalBar();
-        }
         if (decision.status.length) updateStatus(decision.status);
         if (!decision.continues())
         {
@@ -23991,14 +23982,12 @@ private void pollButtonSuggestionRequest()
         const explanationOnly =
             explanationOnlyRequest(latestActualUserRequest(*session));
         const taskAudit = auditStallIssue(event.outputIssue);
-        // A goal keeps recovering past the ordinary budget while it still owns
-        // work, but that audit is bounded too: an unbounded one replayed the
-        // same prose-only refusal on every retry and left the goal running
-        // forever. Once the goal's own recovery budget is spent, settle it and
-        // keep the recorded work for Start.
+        // An active goal keeps recovering while it still owns work. The shared
+        // budget bounds provider retries for ordinary tasks; it never parks a
+        // goal, because active goal work is never put on hold. Each recovery
+        // changes the directive instead of replaying one refusal.
         const goalKeepsRunning = taskAudit && goalActive(*session) &&
-            !goalIsAnswerTurn(session.goal) && !explanationOnly &&
-            goalAuditRecoveryCount(*session) < maxGoalAuditRecoveries;
+            !goalIsAnswerTurn(session.goal) && !explanationOnly;
         const recover = goalKeepsRunning
             ? toolsEnabledForSession(*session) && !_stopPending &&
                 !computerUseAbortActive()
@@ -24047,7 +24036,9 @@ private void pollButtonSuggestionRequest()
         guidance.role = "user";
         guidance.internal = true;
         guidance.content = outputRecoveryMarker ~ (taskAudit
-            ? unfinishedTaskRecoveryInstruction
+            ? (goalKeepsRunning
+                ? goalStallInstruction(*session, goalAuditRecoveryCount(*session))
+                : unfinishedTaskRecoveryInstruction)
             :
             " the previous response failed to produce a usable action. Its text was " ~
             "preserved for diagnosis and excluded from this request. Resume the latest " ~
@@ -24070,19 +24061,12 @@ private void pollButtonSuggestionRequest()
 
     /// End an exhausted progress audit without a failure row or another
     /// request. The reply and recorded work stay. An ordinary task stays active
-    /// for Continue; a goal that spent its whole recovery budget without a
-    /// useful action is paused so the chat actually stops.
+    /// for Continue. An active goal is never paused here: its recovery branch
+    /// keeps requesting work while the goal owns unfinished outcomes.
     private void settleStalledAudit(int sessionIndex)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
         auto session = &_sessions[sessionIndex];
-        const stopGoal = goalActive(*session) &&
-            goalAuditRecoveryCount(*session) >= maxGoalAuditRecoveries;
-        if (stopGoal)
-        {
-            session.goalStatus = "paused";
-            recordGoalOutcome(*session, "paused", Clock.currTime.toUnixTime());
-        }
         // Same typed-order rule as the ordinary settle: guidance first, then a
         // queued follow-up. This drain sets taskStatus to active, so the audit's
         // own settled status is assigned afterwards and stays authoritative.
@@ -24090,9 +24074,7 @@ private void pollButtonSuggestionRequest()
         session.turnStatus = "completed";
         session.taskStatus = session.verificationStatus == "required" ||
             session.verificationStatus == "failed" ? "verifying" : "active";
-        updateStatus(stopGoal
-            ? "Goal stopped after repeated turns without progress · press Start to resume."
-            : "Unfinished work remains recorded. Press Continue to resume it.");
+        updateStatus("Unfinished work remains recorded. Press Continue to resume it.");
         setTurnInFlight(false);
         freezeTurnTiming();
         markUnreadIfBackground(sessionIndex);
@@ -24100,7 +24082,6 @@ private void pollButtonSuggestionRequest()
         markDirty();
         rebuildMessageColumn();
         refreshBubbleActions();
-        if (stopGoal) updateGoalBar();
         startNextQueuedFollowUp(sessionIndex);
     }
 
@@ -25825,6 +25806,9 @@ private void pollButtonSuggestionRequest()
         updateStatus("Goal complete" ~ (summary.length ? ": " ~ summary : "."));
     }
 
+    /// Explicit lifecycle stops only: the user pressed Stop, or a plain
+    /// relaunch found a stale running turn. Turn settlement and output
+    /// recovery never call this; they never park an active goal.
     private void pauseActiveGoal(ref ChatSession session)
     {
         if (session.goal.length == 0 || session.goalStatus != "active") return;

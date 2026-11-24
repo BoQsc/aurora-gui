@@ -140,6 +140,12 @@ string taskBlockerError(string arguments, bool planMode = false)
         const need = field("required_fact").toLower().split().join(" ");
         const context = (field("reason") ~ " " ~ need ~ " " ~ field("question")).toLower().split().join(" ");
         if (planMode && planApprovalRequest(context)) return "";
+        // Focus and foreground placement are verification details, not missing
+        // user information. A goal never stops or asks the user because a test
+        // would need a window in front.
+        if (matchFirst(context, `\b(?:bring|brought|foreground|focus|focused|unfocused|minimi[sz]ed|in front)\b`) &&
+            matchFirst(context, `\b(?:window|app|application|test|verify|verification|screen|desktop)\b`))
+            return "Recover internally: foreground, focus and window placement are routine verification details, not missing user information. Verify with the available programmatic path and keep working; never ask the user to bring a window forward.";
         // Committing and publishing a completed delivery is authorized work,
         // not an essential missing fact. A dirty worktree is a delivery
         // constraint to handle or report, so do not let a permission question
