@@ -54,10 +54,12 @@ in the logs, so inspect them before sharing. Tracing is off by default.
 ## Validation
 
 Local HTTP/SSE tests cover native calls, paired results, streamed argument bursts,
-cancellation, four-round normal settlement, and bounded task/goal recovery.
-A prose-only goal continuation now uses three recovery requests after the fifth
-round, preserves the reply and keeps the goal active, with no failure row. The
-ordinary task uses four requests; the stalled goal uses eight.
+cancellation, four-round normal settlement, and generated goal recovery. The
+ordinary task settles in four requests. A prose-only goal continuation keeps
+escalating past the old three-recovery limit: the fixture waits for six prose
+turns, confirms the goal is still active and running with no failure row, then
+stops it explicitly. The actor fixture proves the same path and that only the
+explicit user stop pauses the goal.
 
 ```text
 python aurora-opencode-pro/tests/test_provider_roundtrip.py --actor --stream-tools
