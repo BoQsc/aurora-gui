@@ -35,11 +35,11 @@ owners. It is not a complete actor-engine rewrite or a guarantee of model qualit
   follow-ups that an ordinary task may park. Testing never requires the user to
   bring a window to the foreground, focus it, click it or be present, and never
   pauses the work.
-- A control surface may not offer `goal_complete`. An active goal then closes
-  from durable state only when a recorded plan exists, every outcome is
-  supported by evidence, verification is not outstanding, no deferred item
-  exists, and the delivered answer names no remaining work. Any gap keeps the
-  goal running with an escalated directive.
+- Starting or resuming a goal is not completion. A resumed goal reuses its
+  recorded plan and verification, so `goal_complete` is refused until that start
+  interval records a substantive action or a plan change. The app never closes a
+  goal from inferred state: only a validated completion call, or an answer
+  goal's delivered reply, ends it.
 - A goal's reply completes it only when the goal asks a question or records a
   note. An outcome-shaped goal ("ensure 60 fps", "bring the terrain to 60 fps",
   "perfectly placed elements") is action work even when its prose is

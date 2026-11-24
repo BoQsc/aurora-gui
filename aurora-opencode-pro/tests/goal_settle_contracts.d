@@ -334,9 +334,9 @@ int main()
             "goal_complete accepted deferred completion prose: " ~ error);
     }
 
-    // A control surface may not offer goal_complete at all. When every recorded
-    // outcome is complete and supported, the answer names no gap, and nothing is
-    // deferred, the goal closes from durable state instead of prompting forever.
+    // A completed prior plan must not certify a goal by itself. The app never
+    // closes a goal from inferred state: a stalled continuation keeps working
+    // until an explicit completion call validates the whole goal.
     {
         auto session = sessionWith(actionGoal);
         session.verificationStatus = "passed";
@@ -350,10 +350,53 @@ int main()
         appendLinked(session, msg("assistant",
             "All recorded outcomes are complete and the checks passed."));
         const done = decide(session);
-        require(done.settleGoal == "completed" && !done.continues(),
-            "a fully supported goal without a completion call kept running");
-        require(done.taskStatus == "completed",
-            "the completed goal did not close its task state");
+        require(done.continues() && done.settleGoal.length == 0,
+            "a completed prior plan certified the goal without a completion call");
+        require(done.taskStatus != "completed",
+            "the stalled goal closed its task state from a prior plan");
+    }
+    // Pressing Start reuses the recorded plan and verification, so a completion
+    // call in that turn used to certify work that predates the resume. The
+    // start interval must record new work first.
+    {
+        auto session = sessionWith(actionGoal);
+        session.verificationStatus = "passed";
+        ChatMessage edit = msg("tool", "Edited the turn policy", false, "edit");
+        edit.toolCallId = "edit-done";
+        appendLinked(session, edit);
+        session.taskSteps ~= TaskStep("Fix the stop", "completed", "step-fix",
+            "edit", "Goal runs", ["edit-done"]);
+        appendLinked(session, msg("user",
+            "The user resumed the saved persistent goal.\nPersistent goal " ~
+            "continuation: " ~ actionGoal, true));
+        appendLinked(session, msg("assistant",
+            "The recorded policy work and checks are complete."));
+        const error = goalCompletionError(session,
+            `{"summary":"All recorded outcomes are complete and verified.",` ~
+            `"evidence":["edit-done"]}`);
+        require(error.indexOf("started or resumed") >= 0,
+            "completion was accepted in the start turn without new work: " ~ error);
+    }
+    {
+        auto session = sessionWith(actionGoal);
+        session.verificationStatus = "passed";
+        ChatMessage edit = msg("tool", "Edited the turn policy", false, "edit");
+        edit.toolCallId = "edit-done";
+        appendLinked(session, edit);
+        session.taskSteps ~= TaskStep("Fix the stop", "completed", "step-fix",
+            "edit", "Goal runs", ["edit-done"]);
+        appendLinked(session, msg("user",
+            "The user resumed the saved persistent goal.\nPersistent goal " ~
+            "continuation: " ~ actionGoal, true));
+        ChatMessage check = msg("tool", "The behavior checks passed.", false, "verify");
+        check.toolCallId = "verify-resume";
+        check.verificationCheck = "verify:tests";
+        appendLinked(session, check);
+        const error = goalCompletionError(session,
+            `{"summary":"All recorded outcomes are complete and verified.",` ~
+            `"evidence":["verify-resume"]}`);
+        require(error.indexOf("started or resumed") < 0,
+            "new work after the resume was still refused as a start: " ~ error);
     }
     {
         auto session = sessionWith(actionGoal);

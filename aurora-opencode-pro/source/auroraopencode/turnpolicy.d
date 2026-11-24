@@ -1,14 +1,13 @@
 module auroraopencode.turnpolicy;
 
 import auroraopencode.core : ChatSession, ChatMessage, activeMessagePath;
-import auroraopencode.taskcontinuation : taskAwaitingInput, unfinishedTask;
+import auroraopencode.taskcontinuation : taskAwaitingInput;
 import auroraopencode.executioncontrol : executionState, executionShouldContinue;
 import auroraopencode.taskflow : taskInvestigation;
 import auroraopencode.worktracking : requiredWorkRemaining;
 import auroraopencode.goalmode : goalActive, goalNeedsHumanInput, goalContinuationInstruction,
     goalInputContinuesInstruction, goalIsAnswerTurn, goalAnswerDelivered,
-    goalOutstandingWork, goalStallInstruction, goalExecutionEscalation,
-    goalAnswerDeclaresUnfinishedWork;
+    goalOutstandingWork, goalStallInstruction, goalExecutionEscalation;
 import auroraopencode.completionhandoff : completionHandoffNeeded, completionHandoffPending,
     recordedCompletionHandoff;
 import auroraopencode.orchestrator : experimentalOrchestratorIsRouter, experimentalOrchestratorAgentName;
@@ -279,27 +278,6 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
             result.clearBlocker = true;
             request(goalInputContinuesInstruction,
                 "Continuing the goal without stopping for the question…");
-            return result;
-        }
-        // A goal continuation answered with prose is not automatically
-        // incomplete. When every recorded outcome is complete and supported,
-        // the answer names no deferred work, and the request did not offer a
-        // completion call, the goal is finished: looping there left a fully
-        // delivered goal active forever on control surfaces without
-        // goal_complete. Any remaining or deferred item still continues.
-        const recordedPlan = session.taskSteps.length > 0 ||
-            session.nestedPlans.length > 0 ||
-            session.contract.workItems.length > 0;
-        if (goalAuditStalled(session) && session.contract.id.length &&
-            recordedPlan && goalAnswerDelivered(session) &&
-            !goalOutstandingWork(session) &&
-            !unfinishedTask(session, policy.strictPlan) &&
-            !goalAnswerDeclaresUnfinishedWork(session))
-        {
-            result.turnStatus = "completed";
-            result.taskStatus = "completed";
-            result.status = "Goal complete";
-            result.settleGoal = "completed";
             return result;
         }
         if (!goalAuditStalled(session))
