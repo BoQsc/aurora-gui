@@ -32,6 +32,7 @@ git_executable = resolve_git()
 # instead of failing on a missing AURORA_CONTRACT_PROVIDER_BASE.
 provider_harnesses = {
     'resume_tool_handoff_contracts': 'test_resume_tool_handoff.py',
+    'recovery_graceful_ui_contracts': 'recovery_graceful_fixture.py',
 }
 parser = argparse.ArgumentParser()
 parser.add_argument('--release', action='store_true', help='Measure optimized fixtures using release compiler flags')
