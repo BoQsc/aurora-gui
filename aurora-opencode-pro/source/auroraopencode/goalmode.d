@@ -258,6 +258,8 @@ public string goalPromptBlock(const ref ChatSession session)
                 "default, record the assumption once with request_input, and keep the goal running. " ~
                 "Call goal_complete with a concise summary and accepted toolCallId evidence only when everything is done; " ~
                 "an answer-only goal needs no receipt. Its validator refuses pending, deferred or unverified items. " ~
+                "If this request does not offer goal_complete, complete the recorded work and state the verified " ~
+                "result; the app closes the goal from recorded evidence only when nothing remains. " ~
                 "Never call goal_complete to record a failure, a blocker or a failed audit. " ~
                 "Don't add hypothetical future work or repeat passing checks for completion bookkeeping.\n");
             break;
@@ -312,6 +314,8 @@ public string goalContinuationInstruction(const ref ChatSession session)
         "advancing the unfinished outcomes. Do not close the goal as a failure: an audit that " ~
         "finds the outcome unmet, blocked or not achieved means more work, not completion. Do not stop " ~
         "the goal for a question: decide routine implementation, testing and design choices yourself. " ~
+        "If this request does not offer goal_complete, finish the recorded work and state the verified " ~
+        "result; the app closes the goal from recorded evidence only when nothing remains. " ~
         "If a genuinely user-owned fact is missing, record it once with request_input and continue with " ~
         "the best supported default; the app keeps the goal running until it is complete. " ~
         "Do not repeat completed work just to avoid this boundary. " ~
@@ -502,6 +506,16 @@ private bool declaresDeferredWork(string text)
         return true;
     }
     return false;
+}
+
+/// The delivered answer still names unfinished or deferred work. Used when a
+/// goal is completed from durable state because the request did not offer the
+/// `goal_complete` tool.
+public bool goalAnswerDeclaresUnfinishedWork(const ref ChatSession session)
+{
+    const answer = currentAnswerProse(session);
+    return declaredUnfinishedWork(answer).length > 0 ||
+        declaresDeferredWork(answer);
 }
 
 /// A completion summary that reports the requested outcome as unmet is not a

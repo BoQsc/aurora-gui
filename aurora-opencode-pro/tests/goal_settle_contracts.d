@@ -334,6 +334,67 @@ int main()
             "goal_complete accepted deferred completion prose: " ~ error);
     }
 
+    // A control surface may not offer goal_complete at all. When every recorded
+    // outcome is complete and supported, the answer names no gap, and nothing is
+    // deferred, the goal closes from durable state instead of prompting forever.
+    {
+        auto session = sessionWith(actionGoal);
+        session.verificationStatus = "passed";
+        ChatMessage edit = msg("tool", "Edited the turn policy", false, "edit");
+        edit.toolCallId = "edit-done";
+        appendLinked(session, edit);
+        session.taskSteps ~= TaskStep("Fix the stop", "completed", "step-fix",
+            "edit", "Goal runs", ["edit-done"]);
+        appendLinked(session, msg("user",
+            "Persistent goal continuation: " ~ actionGoal, true));
+        appendLinked(session, msg("assistant",
+            "All recorded outcomes are complete and the checks passed."));
+        const done = decide(session);
+        require(done.settleGoal == "completed" && !done.continues(),
+            "a fully supported goal without a completion call kept running");
+        require(done.taskStatus == "completed",
+            "the completed goal did not close its task state");
+    }
+    {
+        auto session = sessionWith(actionGoal);
+        session.verificationStatus = "passed";
+        ChatMessage edit = msg("tool", "Edited the turn policy", false, "edit");
+        edit.toolCallId = "edit-done";
+        appendLinked(session, edit);
+        session.taskSteps ~= TaskStep("Fix the stop", "completed", "step-fix",
+            "edit", "Goal runs", ["edit-done"]);
+        appendLinked(session, msg("user",
+            "Persistent goal continuation: " ~ actionGoal, true));
+        appendLinked(session, msg("assistant",
+            "The fix is in.\nRemaining work: update the documentation."));
+        const gap = decide(session);
+        require(gap.settleGoal.length == 0 && gap.continues(),
+            "a goal whose answer named remaining work was completed from state");
+    }
+    {
+        auto session = sessionWith(actionGoal);
+        session.verificationStatus = "passed";
+        ChatMessage edit = msg("tool", "Edited the turn policy", false, "edit");
+        edit.toolCallId = "edit-done";
+        appendLinked(session, edit);
+        session.taskSteps ~= TaskStep("Fix the stop", "completed", "step-fix",
+            "edit", "Goal runs", ["edit-done"]);
+        TaskWorkItem deferredItem;
+        deferredItem.step = TaskStep("Run the remaining platform check",
+            "deferred", "work-deferred", "verify", "Check passes", []);
+        deferredItem.origin = "discovery";
+        deferredItem.reason = "optional follow-up";
+        deferredItem.required = false;
+        session.contract.workItems ~= deferredItem;
+        appendLinked(session, msg("user",
+            "Persistent goal continuation: " ~ actionGoal, true));
+        appendLinked(session, msg("assistant",
+            "All recorded outcomes are complete and the checks passed."));
+        const parked = decide(session);
+        require(parked.settleGoal.length == 0 && parked.continues(),
+            "a goal with deferred work was completed from durable state");
+    }
+
     // The reported refusal: the user pauses an unmet goal, asks why the agent
     // is refusing, and the app answers by restarting the paused goal's
     // outstanding verification. The delivered answer must end the turn; the
