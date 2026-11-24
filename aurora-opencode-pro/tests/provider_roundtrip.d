@@ -68,37 +68,72 @@ int main()
     root.newChatForTesting();
     root.setInputForTesting("Write out.txt containing success, verify its contents with unittest, then reply READY.");
     root.sendForTesting();
+    int proseTurns()
+    {
+        int count;
+        foreach (i; 0 .. root.totalMessageCountForTesting())
+            if (root.messageRoleForTesting(i) == "assistant" &&
+                root.messageContentForTesting(i).startsWith("READY"))
+                ++count;
+        return count;
+    }
+    // A persistent goal never settles after a prose-only turn. The fixture
+    // therefore waits for more prose turns than the old three-recovery stop and
+    // checks that the goal is still running, then stops it explicitly.
+    const goalAuditFixture = stalledGoal || auditStall;
     const deadline = MonoTime.currTime + 30.seconds;
+    bool reachedAuditLimit;
     while (MonoTime.currTime < deadline)
     {
         window.onNativeTick(0.02);
         root.projectTranscriptForTesting();
         assert(driver.paint());
+        if (goalAuditFixture)
+        {
+            if (root.turnBusyForTesting() && proseTurns() >= 6)
+            {
+                assert(root.goalStatusForTesting() == "active",
+                    "The active goal was paused while it still owned its work");
+                assert(root.failedMessageCountForTesting() == 0,
+                    "A prose-only goal turn surfaced a failure row");
+                assert(root.taskStatusForTesting() != "completed",
+                    "A stalled goal fabricated completion of its work");
+                reachedAuditLimit = true;
+                break;
+            }
+            if (!root.turnBusyForTesting()) break;
+            Thread.sleep(10.msecs);
+            continue;
+        }
         if (!root.turnBusyForTesting() &&
-            (stalledGoal
-                ? root.verificationStatusForTesting() == "passed"
-                : root.lastAssistantContentForTesting() == "READY"))
+            root.lastAssistantContentForTesting() == "READY")
             break;
         Thread.sleep(10.msecs);
     }
-    assert(!root.turnBusyForTesting() &&
-        (stalledGoal
-            ? root.verificationStatusForTesting() == "passed"
-            : root.lastAssistantContentForTesting() == "READY"),
-        "Round trip did not settle: " ~ root.lastAssistantContentForTesting());
-    if (stalledGoal)
+    if (goalAuditFixture)
     {
-        assert(root.failedMessageCountForTesting() == 0,
-            "A no-action goal continuation surfaced a failure row");
-        assert(root.taskStatusForTesting() == "completed",
-            "A no-action goal continuation lost the completed work");
+        assert(reachedAuditLimit,
+            "The active goal stopped before six prose-only turns: " ~
+            root.lastAssistantContentForTesting());
+        root.stopActiveTurnForTesting();
+        const stopDeadline = MonoTime.currTime + 5.seconds;
+        while (root.turnBusyForTesting() && MonoTime.currTime < stopDeadline)
+        {
+            window.onNativeTick(0.02);
+            root.projectTranscriptForTesting();
+            Thread.sleep(10.msecs);
+        }
+        assert(readText(buildPath(workspace, "out.txt")) == "success");
+        assert(root.verificationStatusForTesting() == "passed");
+        writeln("PASS active goal ran past the old recovery limit and stayed active until stopped");
+        return 0;
     }
+    assert(!root.turnBusyForTesting() &&
+        root.lastAssistantContentForTesting() == "READY",
+        "Round trip did not settle: " ~ root.lastAssistantContentForTesting());
     assert(readText(buildPath(workspace, "out.txt")) == "success");
     assert(root.verificationStatusForTesting() == "passed");
     assert(root.taskStatusForTesting() == "completed");
-    if (stalledGoal)
-        assert(root.goalStatusForTesting() == "active",
-            "a prose-only goal continuation paused the user's goal");
     const latency = root.latencyPaintForTesting();
     assert(latency.microseconds[LatencyStage.firstToken] >= 0 &&
         latency.microseconds[LatencyStage.applied] >= latency.microseconds[LatencyStage.firstToken] &&
@@ -115,9 +150,7 @@ int main()
         "Deferred optional title did not run after foreground work completed");
     root.persistForTesting();
     root.reloadSessionsForTesting();
-    assert(stalledGoal
-        ? root.lastAssistantContentForTesting().startsWith("READY")
-        : root.lastAssistantContentForTesting() == "READY");
+    assert(root.lastAssistantContentForTesting() == "READY");
     writeln("PASS composer -> HTTP/SSE -> plan/write/run -> verification -> final UI -> persisted reload");
     auto budget = new WorkerBudget(2);
     long worstCancelMs;

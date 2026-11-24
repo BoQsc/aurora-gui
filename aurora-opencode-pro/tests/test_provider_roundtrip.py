@@ -218,18 +218,27 @@ try:
                                  *(["registry_roundtrip", "conversation_registry_contracts", "actor_branch_contracts"] if registry_mode else
                                    ["actor_roundtrip", "actor_mailbox_contracts", "actor_branch_contracts"] if actor_mode else ["provider_roundtrip"])], cwd=package.parent, env=env, timeout=120)
         assert result.returncode == 0, "Desktop round trip failed"
-    expected_rounds = 8 if (audit_stall or stalled_goal) else 4
-    assert len(main_rounds) == expected_rounds, f"Unexpected continuation count: {len(main_rounds)}"
+    goal_fixture = audit_stall or stalled_goal
+    expected_rounds = 9 if goal_fixture else 4
+    if goal_fixture:
+        # An active goal never settles on a prose-only turn. The fixture waits
+        # past the old three-recovery stop, so the count is a lower bound.
+        assert len(main_rounds) >= expected_rounds, \
+            f"The active goal stopped before {expected_rounds} requests: {len(main_rounds)}"
+    else:
+        assert len(main_rounds) == expected_rounds, \
+            f"Unexpected continuation count: {len(main_rounds)}"
     assert not failures, failures
-    if audit_stall:
-        assert recovery_requests == 3, "A no-action goal audit did not spend its bounded recovery turns"
+    if goal_fixture:
+        assert recovery_requests >= 3, \
+            "The goal stopped escalating recovery after the old budget"
     if actor_mode:
         assert len(branch_requests) == 7, f"Unexpected branch request count: {len(branch_requests)}"
     if "--production" not in sys.argv and not actor_mode:
         assert len(title_after_rounds) == 1 and 1 <= title_after_rounds[0] <= expected_rounds, \
             f"Title was lost, repeated or launched before the opening request: {title_after_rounds}"
-    print("PASS no-action goal audit settles without a failure" if audit_stall else
-          "PASS bounded goal output recovery" if stalled_goal else
+    print("PASS active goal ran past the old audit limit and stayed active" if audit_stall else
+          "PASS active goal ran past the old stall limit and stayed active" if stalled_goal else
           "PASS four real HTTP/SSE rounds, native tools, request pairing and final settlement", flush=True)
 finally:
     hold.set()

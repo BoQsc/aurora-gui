@@ -14,7 +14,7 @@ import std.path : absolutePath, buildPath;
 import std.process : environment;
 import std.conv : to;
 import std.stdio : writeln;
-import std.string : indexOf;
+import std.string : indexOf, startsWith;
 
 int main()
 {
@@ -43,6 +43,15 @@ int main()
     assert(actor.post(ActorCommand(ActorCommandKind.start,
         "Write out.txt containing success, verify its contents with unittest, then reply READY.")) == ActorAdmission.accepted);
     bool ready;
+    int proseTurns()
+    {
+        int count;
+        foreach (message; view.messages)
+            if (message.role == "assistant" && message.content.startsWith("READY"))
+                ++count;
+        return count;
+    }
+    bool auditStalled;
     const deadline = MonoTime.currTime + 30.seconds;
     // There is no GuiWindow, native tick, layout or UI service in this process.
     while (MonoTime.currTime < deadline && !ready)
@@ -62,8 +71,39 @@ int main()
             }
         }
         ready = !projection.busy && view.turnStatus == "completed";
+        if (stalledGoal && proseTurns() >= 6 && projection.busy)
+        {
+            auditStalled = true;
+            break;
+        }
         assert(!actor.fault().length, actor.fault());
         Thread.sleep(5.msecs);
+    }
+    if (stalledGoal)
+    {
+        // An active goal never settles on prose alone. The fixture waits past
+        // the old three-recovery stop, proves the goal is still running, and
+        // then stops it explicitly.
+        assert(auditStalled,
+            "The active actor goal stopped before six prose-only turns");
+        assert(view.goalStatus == "active",
+            "a prose-only goal turn paused the user's goal");
+        actor.post(ActorCommand(ActorCommandKind.stop, "preserve-goal"));
+        const stopDeadline = MonoTime.currTime + 5.seconds;
+        while (MonoTime.currTime < stopDeadline && projection.busy)
+        {
+            auto stopped = actor.takeChanges();
+            auto stoppedApplied = projection.apply(view, stopped);
+            assert(!stoppedApplied.error.length, stoppedApplied.error);
+            Thread.sleep(5.msecs);
+        }
+        assert(view.goalStatus == "paused",
+            "the explicit user stop did not pause the goal");
+        assert(readText(buildPath(workspace, "out.txt")) == "success");
+        assert(view.verificationStatus == "passed");
+        actor.close(); assert(!actor.fault().length, actor.fault());
+        writeln("PASS actor goal ran past the old recovery limit and stayed active until stopped");
+        return 0;
     }
     assert(ready, "Autonomous turn never settled");
     if (environment.get("AURORA_CONTRACT_STREAM_TOOLS", "") == "1")
