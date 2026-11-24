@@ -654,6 +654,9 @@ bool correctiveActionRequest(string text)
             "don't ask", "dont ask", "instead of asking", "instead of clarifying",
             "instead of figuring out", "instead of doing", "figure it out",
             "just do it", "just do the", "do the work", "do what i asked",
+            "do what's asked", "do what is asked", "do what was asked",
+            "do as asked", "do what's needed", "do what is needed",
+            "do what needs to be done", "do what you need to do",
             "always clarifying", "always asking", "without asking", "keep asking"])
         if (normalized.canFind(phrase)) return true;
     return false;

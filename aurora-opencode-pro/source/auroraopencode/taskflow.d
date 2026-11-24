@@ -172,6 +172,24 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId, b
     // unplaced statement or an indicative-mood change means, and unfinished work
     // owns both: a defect report is the work in progress, not a new chat.
     const parsed = requestIntent(text);
+    // A completed persistent goal is a standing project objective, not a reason
+    // to answer instead of working. An actionable follow-up reactivates it so
+    // the next turn works on the project; answer-only and hold requests leave it
+    // completed.
+    const actionable = corrective || parsed == RequestIntent.implementation ||
+        parsed == RequestIntent.continuation || parsed == RequestIntent.diagnosis ||
+        parsed == RequestIntent.changeRequest || actionApprovalRequest(text);
+    bool reactivatedGoal;
+    if (actionable && session.goal.length && session.goalStatus == "completed" &&
+        !holdRequest(text) && !answerOnlyRequest(text))
+    {
+        import auroraopencode.goalmode : recordGoalOutcome;
+        session.goalStatus = "active";
+        if (session.goalStartedAt == 0) session.goalStartedAt = session.updatedAt;
+        recordGoalOutcome(session, "active", session.updatedAt);
+        if (!session.contract.goal.length) session.contract.goal = session.goal;
+        reactivatedGoal = true;
+    }
     const workActive = session.goalStatus == "active" ||
         (session.objective.length > 0 && session.taskStatus != "completed");
     const recordedWork = session.goal.length > 0 || session.objective.length > 0;
@@ -183,7 +201,7 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId, b
         const askedQuestion = stripped.length && stripped[$ - 1] == '?';
         const suppliedFact = session.taskStatus == "waiting_input" && !askedQuestion;
         if (session.objective.length &&
-            (corrective || (session.taskStatus != "completed" &&
+            (corrective || reactivatedGoal || (session.taskStatus != "completed" &&
              (suppliedFact || actionApprovalRequest(text) || steering))))
         {
             if (session.contract.intent == "analysis")
@@ -212,6 +230,13 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId, b
     if (intent == RequestIntent.continuation &&
         (session.taskStatus == "completed" || !session.objective.length))
     {
+        if (reactivatedGoal)
+        {
+            session.contract.currentIntent = "continuation";
+            session.taskStatus = "active";
+            session.contract.blocker = "";
+            return;
+        }
         // A complaint about just-completed work amends it. A bare "continue" after
         // a finished task stays chat: it would resurrect archived work the user
         // did not point at.

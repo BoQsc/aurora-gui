@@ -40,6 +40,10 @@ owners. It is not a complete actor-engine rewrite or a guarantee of model qualit
   interval records a substantive action or a plan change. The app never closes a
   goal from inferred state: only a validated completion call, or an answer
   goal's delivered reply, ends it.
+- A completed standing goal is reactivated by an actionable follow-up ("do what's
+  asked", a correction, an implementation or diagnosis request) instead of being
+  answered as chat. An answer-only question or a hold request leaves it
+  completed.
 - A goal's reply completes it only when the goal asks a question or records a
   note. An outcome-shaped goal ("ensure 60 fps", "bring the terrain to 60 fps",
   "perfectly placed elements") is action work even when its prose is

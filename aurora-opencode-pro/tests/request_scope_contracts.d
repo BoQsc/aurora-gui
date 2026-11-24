@@ -106,6 +106,23 @@ int main()
     request(goal, "The customer rate is 0.0175.");
     assert(goal.contract.id == goalId && goal.taskStatus == "active");
 
+    // A completed standing goal must not turn an actionable project command into
+    // an explanation. "do what's asked" reactivates the goal and keeps working.
+    ChatSession completed;
+    request(completed, "Implement the Lite session view.");
+    completed.goal = "complete everything and ensure no limitations. Always look at what's next.";
+    completed.goalStatus = "completed";
+    completed.contract.goal = completed.goal;
+    completed.taskStatus = "completed";
+    completed.verificationStatus = "passed";
+    completed.taskSteps = [TaskStep("Session view", "completed", "view", "edit", "", [])];
+    request(completed, "do what's asked");
+    assert(completed.goalStatus == "active",
+        "a project command did not reactivate the completed goal");
+    assert(completed.contract.currentIntent != "conversation" &&
+        completed.taskStatus == "active",
+        "a project command after a completed goal became an explanation");
+
     // A status question must not become a new implementation task whose
     // objective is the question itself.
     ChatSession status;

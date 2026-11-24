@@ -374,7 +374,7 @@ int main()
         const error = goalCompletionError(session,
             `{"summary":"All recorded outcomes are complete and verified.",` ~
             `"evidence":["edit-done"]}`);
-        require(error.indexOf("started or resumed") >= 0,
+        require(error.indexOf("latest request") >= 0,
             "completion was accepted in the start turn without new work: " ~ error);
     }
     {
@@ -395,8 +395,23 @@ int main()
         const error = goalCompletionError(session,
             `{"summary":"All recorded outcomes are complete and verified.",` ~
             `"evidence":["verify-resume"]}`);
-        require(error.indexOf("started or resumed") < 0,
+        require(error.indexOf("latest request") < 0,
             "new work after the resume was still refused as a start: " ~ error);
+    }
+    {
+        auto session = sessionWith(actionGoal);
+        session.verificationStatus = "passed";
+        ChatMessage edit = msg("tool", "Edited the turn policy", false, "edit");
+        edit.toolCallId = "edit-done";
+        appendLinked(session, edit);
+        session.taskSteps ~= TaskStep("Fix the stop", "completed", "step-fix",
+            "edit", "Goal runs", ["edit-done"]);
+        appendLinked(session, msg("user", "do what's asked"));
+        const error = goalCompletionError(session,
+            `{"summary":"All recorded outcomes are complete and verified.",` ~
+            `"evidence":["edit-done"]}`);
+        require(error.indexOf("latest request") >= 0,
+            "a new project command certified the goal without new work: " ~ error);
     }
     {
         auto session = sessionWith(actionGoal);

@@ -258,8 +258,9 @@ public string goalPromptBlock(const ref ChatSession session)
                 "default, record the assumption once with request_input, and keep the goal running. " ~
                 "Call goal_complete with a concise summary and accepted toolCallId evidence only when everything is done; " ~
                 "an answer-only goal needs no receipt. Its validator refuses pending, deferred or unverified items. " ~
-                "Starting or resuming a goal is not completion: prior completed outcomes are evidence of earlier " ~
-                "work, not the whole goal. Do the next unit of work before calling goal_complete. " ~
+                "Starting, resuming, or answering a new request is not completion: prior completed outcomes " ~
+                "are evidence of earlier work, not the whole goal. Do the work the request asks for before " ~
+                "calling goal_complete. " ~
                 "Never call goal_complete to record a failure, a blocker or a failed audit. " ~
                 "Don't add hypothetical future work or repeat passing checks for completion bookkeeping.\n");
             break;
@@ -314,8 +315,8 @@ public string goalContinuationInstruction(const ref ChatSession session)
         "advancing the unfinished outcomes. Do not close the goal as a failure: an audit that " ~
         "finds the outcome unmet, blocked or not achieved means more work, not completion. Do not stop " ~
         "the goal for a question: decide routine implementation, testing and design choices yourself. " ~
-        "If this turn starts or resumes the goal, prior outcomes are evidence, not the whole goal: record and " ~
-        "do the next unit of work before calling goal_complete. " ~
+        "If this turn starts, resumes, or answers a new request, prior outcomes are evidence, not the whole " ~
+        "goal: do the work the request asks for before calling goal_complete. " ~
         "If a genuinely user-owned fact is missing, record it once with request_input and continue with " ~
         "the best supported default; the app keeps the goal running until it is complete. " ~
         "Do not repeat completed work just to avoid this boundary. " ~
@@ -512,11 +513,11 @@ private enum goalResumeLead = "The user resumed the saved persistent goal.";
 private enum goalStartLead = "The user started the saved persistent goal again.";
 private enum goalReplaceLead = "The user replaced the persistent goal.";
 
-/// Starting or resuming a goal is not completion. A resumed goal reuses its
-/// recorded plan and verification, so the first turn could certify work that was
-/// already complete before the user restarted it. Completion is refused until
-/// this start interval records a substantive action or a plan change.
-public bool goalStartedWithoutNewEvidence(const ref ChatSession session)
+/// The latest human request or goal start is a work boundary. Starting,
+/// resuming, or answering a new request is not completion: the recorded plan and
+/// verification predate it, so completion is refused until that interval records
+/// a substantive action or a plan change.
+public bool goalRequestWithoutNewEvidence(const ref ChatSession session)
 {
     import auroraopencode.taskflow : evidenceKind;
     const path = activeMessagePath(session);
@@ -525,7 +526,8 @@ public bool goalStartedWithoutNewEvidence(const ref ChatSession session)
     {
         const ref message = session.messages[index];
         if (message.role != "user") continue;
-        if (message.content.startsWith(goalResumeLead) ||
+        if (!message.internal ||
+            message.content.startsWith(goalResumeLead) ||
             message.content.startsWith(goalStartLead) ||
             message.content.startsWith(goalReplaceLead))
         {
@@ -637,11 +639,12 @@ public string goalCompletionError(const ref ChatSession session, string argument
             "an audit that finds the goal unmet is a result to act on, not completion. " ~
             "Call goal_complete only once the requested outcome is achieved and its checks pass. " ~
             "If an essential user-owned fact prevents completion, call request_input with that fact and blocked_steps.";
-    if (!answerGoal && goalStartedWithoutNewEvidence(session))
-        return "This goal was just started or resumed, and its recorded plan and verification predate that " ~
-            "start. Starting a goal is not completion: do the next unit of work, or record the new outcome with " ~
-            "update_plan, then call goal_complete only when the whole goal is finished. If the delivered result " ~
-            "already satisfies everything, the user can clear the goal instead of certifying it twice.";
+    if (!answerGoal && goalRequestWithoutNewEvidence(session))
+        return "This goal's latest request has no new work recorded after it, and the recorded plan and " ~
+            "verification predate that request. Answering or starting the goal is not completion: do the work " ~
+            "the request asks for, or record the new outcome with update_plan, then call goal_complete only " ~
+            "when the whole goal is finished. If the delivered result already satisfies everything, the user " ~
+            "can clear the goal instead of certifying it twice.";
     // Report remaining work before asking the model to repair receipt IDs.
     // Otherwise an already-finished archive sent the agent through thirteen
     // history lookups only to discover it still needed an accepted check.
