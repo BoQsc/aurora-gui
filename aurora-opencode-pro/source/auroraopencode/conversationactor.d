@@ -158,7 +158,10 @@ public final class ConversationActor
     private string frameTime;
     private long frameUnix;
     private MonoTime clockOrigin;
-    private long frameMs, outageStartedMs = -1, retryAtMs = -1;
+    // Recovery time is what this actor waited out between attempts, not the
+    // length of the failing request: a request that only ends at the transport
+    // watchdog lasts as long as the entire outage budget.
+    private long frameMs, outageWaitMs, retryAtMs = -1;
     private uint resendCount;
     private bool quotaWait, offeredTools;
     private bool[string] offeredToolNames;
@@ -525,7 +528,7 @@ public final class ConversationActor
         return value;
     }
     private void resetOutage()
-    { outageStartedMs = -1; resendCount = 0; retryAtMs = -1; quotaWait = false; }
+    { outageWaitMs = 0; resendCount = 0; retryAtMs = -1; quotaWait = false; }
     private void ensureAssistant()
     {
         if (!session.messages.length || session.messages[$ - 1].role != "assistant" ||
@@ -981,13 +984,11 @@ public final class ConversationActor
             }
             case ActorCommandKind.retryPending:
                 if (retryAtMs < 0 || frameMs < retryAtMs || engine.turnCancelled) break;
-                if (!quotaWait && !engine.retryPolicy.available((frameMs - outageStartedMs).msecs))
-                {
-                    retryAtMs = -1; running = false; session.turnStatus = "failed"; session.taskStatus = "blocked";
-                    metadata(); break;
-                }
+                // The armed wait was already clipped to the budget left, so it
+                // runs; exhaustion is decided by the next failure, not by the
+                // length of the request that failed.
                 retryAtMs = -1;
-                if (quotaWait) { outageStartedMs = frameMs; resendCount = 0; quotaWait = false; }
+                if (quotaWait) { outageWaitMs = 0; resendCount = 0; quotaWait = false; }
                 else ++resendCount;
                 if (session.messages.length && session.messages[$ - 1].role == "assistant" && session.messages[$ - 1].failed)
                     session.activeLeafId = session.messages[$ - 1].parentId;
@@ -1328,11 +1329,11 @@ public final class ConversationActor
                 : "The provider returned unusable output. Use the structured tool protocol and take a different useful action; do not repeat the rejected output."));
             request(); return;
         }
-        if (outageStartedMs < 0) outageStartedMs = frameMs;
         const decision = engine.retryPolicy.resend(event.text, resendCount,
-            (frameMs - outageStartedMs).msecs, false, event.retryExhausted);
+            outageWaitMs.msecs, false, event.retryExhausted);
         if (!decision.retry) { fail(event.text); return; }
         retryAtMs = frameMs + decision.delayMs; quotaWait = decision.reason == RetryReason.quotaLimit;
+        outageWaitMs += decision.delayMs;
         fail(event.text, false);
     }
     private void applyEvent(const ref OpenCodeEvent event)

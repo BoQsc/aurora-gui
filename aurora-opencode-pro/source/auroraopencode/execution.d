@@ -7,7 +7,7 @@ import auroraopencode.repository : RepositoryRuntime;
 import auroraopencode.projectioncache : RequestProjectionCache;
 import auroraopencode.orchestrator : OrchestrationBatch;
 import auroraopencode.retrypolicy : ProviderRetryPolicy, configuredProviderRetryPolicy;
-import core.time : MonoTime, msecs;
+import core.time : Duration, MonoTime, msecs;
 import auroraopencode.tokenrate : TokenRateWindow;
 import core.sync.mutex : Mutex;
 import auroraopencode.lifecyclediagnostics : logAgentLifecycle, lifecycleErrorCategory;
@@ -168,7 +168,12 @@ public class ThreadEngine
     int lastRetryStatusSeconds = -1;
     int speakerToolRoundsBase = -1;
     ProviderRetryPolicy retryPolicy;
-    MonoTime outageStartedAt;
+    // Time this turn has spent waiting out provider recovery: the pauses it
+    // inserted between automatic attempts, never the length of a failing
+    // request. A request that only gives up when the transport watchdog fires
+    // is as long as the whole budget, so counting it here left exactly one
+    // automatic re-send for the turn.
+    Duration outageWait;
     bool autoResendPending;
     MonoTime autoResendAt;
     int autoResendSession = -1;

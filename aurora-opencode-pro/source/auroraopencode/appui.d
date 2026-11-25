@@ -196,7 +196,7 @@ import auroraopencode.emergency : emergencyHeartbeat,
 // Optional per-project project manager (see docs/project-driver.md).
 import auroraopencode.projectdriver : buildProjectReviewPrompt;
 import core.thread : Thread;
-import core.time : MonoTime, msecs, minutes, seconds;
+import core.time : Duration, MonoTime, msecs, minutes, seconds;
 import std.algorithm : canFind, endsWith, min, max, sort;
 import std.array : appender, join;
 import std.conv : to;
@@ -27489,7 +27489,7 @@ private void pollButtonSuggestionRequest()
         if (userTurn && !_autoResending)
         {
             _autoResendCount = 0;
-            _execution.outageStartedAt = MonoTime.init;
+            _execution.outageWait = Duration.zero;
             _contextOverflowRetryUsed = false;
         }
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
@@ -27802,6 +27802,11 @@ private void pollButtonSuggestionRequest()
     /// when its message stated one, otherwise a short interval that widens with
     /// each attempt. A failure that needs a decision (a bad key, a quota wall
     /// with no time) is left alone, because replaying it only hides the reason.
+    ///
+    /// The outage budget pays for the waits this inserts, not for the failing
+    /// request that preceded them: a request abandoned by the transport
+    /// watchdog is already as long as the whole budget, and charging that to
+    /// recovery allowed exactly one automatic attempt per turn.
     private void scheduleAutoResend(string failureText, bool exhausted = false)
     {
         dropAutoResendSchedule();
@@ -27812,11 +27817,11 @@ private void pollButtonSuggestionRequest()
         if (session.messages.length == 0) return;
         const reply = session.messages[$ - 1];
         if (reply.role != "assistant" || !reply.failed) return;
-        if (_execution.outageStartedAt == MonoTime.init) _execution.outageStartedAt = MonoTime.currTime;
         const recovery = _execution.retryPolicy.resend(failureText, cast(uint) _autoResendCount,
-            MonoTime.currTime - _execution.outageStartedAt, false, exhausted);
+            _execution.outageWait, false, exhausted);
         if (!recovery.retry) return;
         const delayMs = recovery.delayMs;
+        _execution.outageWait += msecs(delayMs);
         armAutoResend(sessionIndex, cast(int) session.messages.length - 1,
             delayMs, quotaResetDelayMs(failureText));
     }
@@ -27855,12 +27860,14 @@ private void pollButtonSuggestionRequest()
             return false;
         const reply = session.messages[cast(size_t) messageIndex];
         if (reply.role != "assistant" || !reply.failed) return false;
-        if (manual || _execution.outageStartedAt == MonoTime.init)
-            _execution.outageStartedAt = MonoTime.currTime;
+        // An explicit start is the reader's own decision, so it renews the
+        // budget it is allowed to spend.
+        if (manual) _execution.outageWait = Duration.zero;
         const recovery = _execution.retryPolicy.resend(reply.error, cast(uint) _autoResendCount,
-            MonoTime.currTime - _execution.outageStartedAt, manual);
+            _execution.outageWait, manual);
         if (!recovery.retry) return false;
         const delayMs = recovery.delayMs;
+        _execution.outageWait += msecs(delayMs);
         dropAutoResendSchedule();
         armAutoResend(sessionIndex, messageIndex,
             delayMs,
@@ -27939,16 +27946,9 @@ private void pollButtonSuggestionRequest()
         if (_processingRuntimeSession >= 0 &&
             _processingRuntimeSession != _autoResendSession) return;
         if (_client.busy() || _turnTiming) return;
-        // Background chats retain their own recovery. Exhaustion leaves the
-        // failure and manual Retry visible without opening another outage loop.
-        if (_autoResendResetMs == 0 && !_execution.retryPolicy.available(
-            MonoTime.currTime - _execution.outageStartedAt))
-        {
-            const sessionIndex = _autoResendSession;
-            dropAutoResendSchedule();
-            refreshAutoRetryPill(sessionIndex);
-            return;
-        }
+        // The schedule itself was already clipped to what the outage budget has
+        // left, so an armed wait always runs: cancellation is the reader's Stop
+        // retrying, and exhaustion is decided when the next failure arrives.
         const remainingMs = (_autoResendAt - MonoTime.currTime).total!"msecs";
         if (remainingMs > 0)
         {
@@ -35275,7 +35275,7 @@ private void pollButtonSuggestionRequest()
                     if (!event.cancelled)
                     {
                         _autoResendCount = 0;
-                        _execution.outageStartedAt = MonoTime.init;
+                        _execution.outageWait = Duration.zero;
                     }
                     if (!event.cancelled &&
                         leakedTextToolCalls(turnOwnerSessionIndex()))
