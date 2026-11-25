@@ -4199,16 +4199,34 @@ int main(string[] args)
     driver.click(globalCenter(pickerButton));
     root.tickTree(0.02);
     assert(paintProjection(root, driver), "Model picker did not lay out for the row click");
+    // The reopened popup scrolls the current model into view on a layout pass
+    // after the first one. Settle it before reading row geometry, or the click
+    // aims at the pre-scroll position and lands on the current row.
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Model picker did not settle its scroll for the row click");
     auto pickerList = requireWidget!ListView(root, "oc-model-picker");
     assert(pickerList.items().length > 1,
         "Model picker needs at least two models for this test");
+    const pickerSelected = pickerList.selectedIndex();
+    assert(pickerSelected >= 0 &&
+        pickerSelected * pickerList.rowHeight() >= pickerList.scrollOffset() &&
+        (pickerSelected + 1) * pickerList.rowHeight() <=
+            pickerList.scrollOffset() + pickerList.bounds().height,
+        "Reopened picker must show the selected model row");
     int pickerOrigRow = -1;
     int pickerAltRow = -1;
     foreach (index, item; pickerList.items())
     {
         if (item.text == pickerModelBefore) pickerOrigRow = cast(int) index;
-        else if (pickerAltRow < 0) pickerAltRow = cast(int) index;
     }
+    // The list opens scrolled to the current model, and the fetched catalog
+    // grows over time. Pick a neighbour so the row is always inside the
+    // viewport; the first row can be scrolled out and the click would land on
+    // the popup instead, leaving the selection unchanged.
+    if (pickerOrigRow + 1 < cast(int) pickerList.items().length)
+        pickerAltRow = pickerOrigRow + 1;
+    else if (pickerOrigRow > 0)
+        pickerAltRow = pickerOrigRow - 1;
     assert(pickerOrigRow >= 0 && pickerAltRow >= 0,
         "Model picker rows do not cover the current model");
     const pickerListOrigin = pickerList.localToGlobal(Point(0, 0));
@@ -4234,6 +4252,9 @@ int main(string[] args)
     root.tickTree(0.02);
     assert(paintProjection(root, driver),
         "Model picker did not lay out for the restore row click");
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver),
+        "Model picker did not settle its scroll for the restore row click");
     pickerList = requireWidget!ListView(root, "oc-model-picker");
     const restoreOrigin = pickerList.localToGlobal(Point(0, 0));
     const restoreRowHeight = pickerList.rowHeight();

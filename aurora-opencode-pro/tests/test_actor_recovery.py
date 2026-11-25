@@ -135,7 +135,10 @@ try:
     # fixed: one real write, then repeated prose-only action turns.
     only_modes = set(only.split(",")) if only else set()
     if "goal-stall" in counts:
-        assert 3 <= counts["goal-stall"] <= 8, \
+        # The fixture's provider caps at twelve requests, so a count above
+        # eleven means the reader's pause never landed and the goal ran to the
+        # cap instead of stopping.
+        assert 3 <= counts["goal-stall"] <= 11, \
             f"stalled goal recovery left its bound: {counts['goal-stall']}"
         del counts["goal-stall"]
     only_modes.discard("goal-stall")

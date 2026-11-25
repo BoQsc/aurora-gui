@@ -99,7 +99,11 @@ int main()
             {
                 assert(view.model.goalStatus == "active",
                     "the app paused a goal it may only keep running");
-                if (view.model.goalTurns >= 3)
+                // The escalating "Progress audit" directive appears from the
+                // third stalled turn, so let the goal spend enough recovery
+                // turns that the escalation is certainly recorded before the
+                // reader pauses it.
+                if (view.model.goalTurns >= 5)
                 {
                     assert(actor.post(ActorCommand(ActorCommandKind.pauseGoal)) == ActorAdmission.accepted);
                     paused = true; quietUntil = MonoTime.currTime + 500.msecs;
@@ -139,7 +143,7 @@ int main()
             assert(state["taskStatus"].str != "completed",
                 "pausing a stalled goal fabricated completion");
             assert(!sawFailure, "a stalled goal painted a failure");
-            assert(state["goalTurns"].integer >= 3,
+            assert(state["goalTurns"].integer >= 5,
                 "a stalled goal was not given another action turn");
             bool escalated;
             foreach (message; state["messages"].array)
