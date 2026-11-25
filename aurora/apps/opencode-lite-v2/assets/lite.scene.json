@@ -343,27 +343,40 @@
                 "style": "toolbar"
               },
               {
-                "id": "lite-session",
-                "type": "label",
-                "text": "Workspace 1 - 0 messages",
-                "width": 180,
-                "height": 22,
-                "scale": 1,
-                "textColor": "#7c7c8a"
-              },
-              {
-                "id": "lite-usage",
-                "type": "label",
-                "text": "Messages 0 | idle",
-                "width": 180,
-                "height": 22,
-                "scale": 1,
-                "textColor": "#7c7c8a",
-                "allowTextClip": true
-              },
-              {
                 "type": "spacer",
                 "flex": 1
+              },
+              {
+                "id": "sidebar-footer",
+                "type": "column",
+                "width": 180,
+                "height": 84,
+                "padding": 8,
+                "spacing": 4,
+                "radius": 6,
+                "background": "#151b25",
+                "children": [
+                  {
+                    "id": "lite-session",
+                    "type": "label",
+                    "text": "Workspace 1 - 0 messages",
+                    "width": 160,
+                    "height": 22,
+                    "scale": 1,
+                    "textColor": "#7c7c8a",
+                    "allowTextClip": true
+                  },
+                  {
+                    "id": "lite-usage",
+                    "type": "label",
+                    "text": "Messages 0 | idle",
+                    "width": 160,
+                    "height": 22,
+                    "scale": 1,
+                    "textColor": "#7c7c8a",
+                    "allowTextClip": true
+                  }
+                ]
               }
             ]
           },
@@ -379,7 +392,7 @@
                 "type": "component",
                 "component": "opencode.messages",
                 "props": {},
-                "height": 384
+                "flex": 1
               },
               {
                 "type": "row",
