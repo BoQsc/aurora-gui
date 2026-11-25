@@ -176,6 +176,14 @@ final class HostLink
         exchange(payload);
     }
 
+    void activate(string id)
+    {
+        JSONValue payload;
+        payload["command"] = JSONValue("click");
+        payload["node"] = JSONValue(id);
+        exchange(payload);
+    }
+
     JSONValue[] takeEvents()
     {
         synchronized (_mutex)
@@ -222,6 +230,20 @@ final class RemoteLiteView : LiteView
     bool setActive(string id, bool active)
     {
         _link.setActive(id, active);
+        return true;
+    }
+
+    bool activate(string id)
+    {
+        _link.activate(id);
+        return true;
+    }
+
+    bool closeHost()
+    {
+        try
+            _link.request("close");
+        catch (Exception) {}
         return true;
     }
 }

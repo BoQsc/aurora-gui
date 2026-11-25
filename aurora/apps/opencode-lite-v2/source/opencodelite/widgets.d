@@ -6,6 +6,14 @@ import std.conv : to;
 import std.json : JSONType, JSONValue;
 import std.utf : toUTF32;
 
+private enum int tokenPadding = 6;
+private enum int tokenRadius = 8;
+private enum int tokenCardHeight = 64;
+private enum int tokenBadgeHeight = 32;
+private enum int tokenToolbarHeight = 38;
+private enum int tokenEmptyHeight = 88;
+private enum int tokenDialogHeight = 96;
+
 /// Declarative card/header widget shared by every scene instance.
 final class UniversalWidget : Widget
 {
@@ -21,9 +29,11 @@ final class UniversalWidget : Widget
     private int _padding;
     private bool _shadow;
     private bool _accentBar;
+    private string _mode;
 
     this(JSONValue props)
     {
+        validateProps(props);
         _kicker = toUTF32(readString(props, "kicker", ""));
         _title = toUTF32(readString(props, "title", ""));
         _subtitle = toUTF32(readString(props, "subtitle", ""));
@@ -36,13 +46,22 @@ final class UniversalWidget : Widget
         _padding = readInt(props, "padding", 12, 2, 40);
         _shadow = readBool(props, "shadow", true);
         _accentBar = readBool(props, "accentBar", true);
+        _mode = readString(props, "mode", "card");
         setFocusable(false);
         setCursor(CursorKind.arrow);
     }
 
     protected override Size onMeasure(Size available)
     {
-        return Size(maxInt(120, available.width), 58);
+        if (_mode == "badge")
+            return Size(available.width, tokenBadgeHeight);
+        if (_mode == "toolbar")
+            return Size(available.width, tokenToolbarHeight);
+        if (_mode == "empty")
+            return Size(available.width, tokenEmptyHeight);
+        if (_mode == "dialog")
+            return Size(available.width, tokenDialogHeight);
+        return Size(maxInt(120, available.width), tokenCardHeight);
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -52,6 +71,57 @@ final class UniversalWidget : Widget
         if (w <= 0 || h <= 0)
             return;
         const body = Rect(0, 0, w, h);
+        if (_mode == "toolbar")
+        {
+            canvas.drawRoundedRect(body, _radius, _background, _border, 1);
+            if (_accentBar)
+                canvas.fillRect(Rect(0, h - 2, w, 2), _accent);
+            canvas.drawTextInRect(Rect(_padding, 0, maxInt(1, w - _padding * 2), h),
+                _title, _textColor, 1, HorizontalAlign.left,
+                VerticalAlign.middle, true);
+            if (_subtitle.length > 0)
+                canvas.drawTextInRect(Rect(_padding, 0, maxInt(1, w - _padding * 2), h),
+                    _subtitle, _mutedColor, 1, HorizontalAlign.right,
+                    VerticalAlign.middle, true);
+            return;
+        }
+        if (_mode == "empty" || _mode == "dialog")
+        {
+            canvas.drawRoundedRect(body, _radius, _background, _border, 1);
+            if (_mode == "dialog" && _accentBar)
+                canvas.fillRect(Rect(0, 0, w, 3), _accent);
+            const top = _mode == "dialog" ? 18 : 20;
+            canvas.drawTextInRect(Rect(_padding, top, maxInt(1, w - _padding * 2), 24),
+                _title, _textColor, 2, HorizontalAlign.center,
+                VerticalAlign.middle, true);
+            if (_subtitle.length > 0)
+                canvas.drawTextInRect(Rect(_padding, top + 28,
+                    maxInt(1, w - _padding * 2), maxInt(1, h - top - 30)),
+                    _subtitle, _mutedColor, 1, HorizontalAlign.center,
+                    VerticalAlign.top, true);
+            return;
+        }
+        if (_mode == "badge")
+        {
+            if (_shadow)
+                canvas.fillRoundedRect(Rect(1, 2, maxInt(1, w - 2), maxInt(1, h - 2)),
+                    h / 2, Color.rgba(0, 0, 0, 70));
+            canvas.drawRoundedRect(body, h / 2, _background, _border, 1);
+            canvas.fillCircle(Point(_padding, h / 2), 4, _accent);
+            const textLeft = _padding + 12;
+            const textWidth = maxInt(1, w - textLeft - _padding);
+            if (_title.length > 0)
+                canvas.drawTextInRect(Rect(textLeft, 0, _subtitle.length > 0 ?
+                    maxInt(1, textWidth - 54) : textWidth, h), _title, _textColor,
+                    1, HorizontalAlign.left, VerticalAlign.middle, true);
+            if (_subtitle.length > 0)
+                canvas.drawTextInRect(Rect(maxInt(textLeft, w - _padding - 50),
+                    0, 50, h), _subtitle, _mutedColor, 1,
+                    HorizontalAlign.right, VerticalAlign.middle, true);
+            return;
+        }
+
+
         if (_shadow)
             canvas.fillRoundedRect(Rect(2, 3, maxInt(1, w - 4), maxInt(1, h - 4)),
                 _radius, Color.rgba(0, 0, 0, 85));
@@ -87,6 +157,26 @@ final class UniversalWidget : Widget
             canvas.drawTextInRect(Rect(textX, y, textWidth, lineHeight),
                 _subtitle, _mutedColor, 1, HorizontalAlign.left,
                 VerticalAlign.middle, true);
+    }
+}
+
+private void validateProps(JSONValue props)
+{
+    immutable string[] allowed = [
+        "mode", "kicker", "title", "subtitle", "accent", "background",
+        "border", "textColor", "mutedColor", "radius", "padding", "shadow",
+        "accentBar", "allowTextClip"];
+    foreach (key, value; props.object)
+    {
+        bool supported;
+        foreach (candidate; allowed)
+            if (candidate == key)
+            {
+                supported = true;
+                break;
+            }
+        if (!supported)
+            throw new Exception("opencode.universal: unsupported prop: " ~ key);
     }
 }
 

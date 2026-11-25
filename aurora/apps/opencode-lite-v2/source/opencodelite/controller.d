@@ -1,19 +1,21 @@
 module opencodelite.controller;
 
 import opencodelite.history : ConversationState, loadConversation, saveConversation;
+import opencodelite.messages : parseTranscript;
 import opencodelite.session : ChatSession, SessionEventKind;
 import opencodelite.settings : LiteSettings, openAiBaseUrl, openAiModel,
     isOpenAiBaseUrl, isOpenCodeBaseUrl, openCodeBaseUrl, openCodeModel,
     saveSettings, defaultSettingsPath;
 import std.conv : to;
+import core.thread : Thread;
 import core.time : seconds;
 import std.array : join, split;
 import std.datetime : Clock, SysTime;
-import std.file : exists, mkdirRecurse, write;
-import std.file : readText;
+import std.file : dirEntries, exists, mkdirRecurse, readText,
+    SpanMode, thisExePath, timeLastModified, write;
 import std.json : JSONType, JSONValue, parseJSON;
-import std.path : buildPath, dirName;
-import std.process : environment;
+import std.path : buildPath, dirName, extension;
+import std.process : environment, spawnProcess;
 import std.string : indexOf, replace, splitLines, strip, toLower;
 
 /// The small host-facing surface the controller needs. Implementations are the
@@ -24,6 +26,8 @@ interface LiteView
     bool setText(string id, string text);
     bool setEnabled(string id, bool enabled);
     bool setActive(string id, bool active);
+    bool activate(string id);
+    bool closeHost();
 }
 
 private struct WorkspaceSlot
@@ -56,8 +60,18 @@ final class LiteController
     private int _historyIndex;
     private string[] _searchLines;
     private int _searchIndex;
+    private string _sessionFilter;
+    private int _activeSessionIndex;
+    private int _sessionViewIndex = -1;
+    private bool _thinkingOn = true;
+    private bool _toolsOn;
+    private bool _planOn;
     private bool _confirmClearKey;
     private SysTime _clearKeyDeadline;
+    private bool _confirmDeleteWorkspace;
+    private SysTime _deleteWorkspaceDeadline;
+    private bool _confirmSaveKey;
+    private SysTime _saveKeyDeadline;
     private SysTime _statusBannerUntil;
     private int _paletteIndex;
     private string _recentPaletteCommand;
@@ -68,6 +82,9 @@ final class LiteController
     {
         _view = view;
         _settings = settings;
+        _thinkingOn = settings.thinkingOn;
+        _toolsOn = settings.toolsOn;
+        _planOn = settings.planOn;
         _session = new ChatSession(_settings);
         const history = loadConversation();
         _workspace[0] = WorkspaceSlot(history.transcript, history.messages,
@@ -94,7 +111,7 @@ final class LiteController
             stop();
         else if (action == "composer-clear")
         {
-            _view.setText("lite-input", "");
+            safeSetText("lite-input", "");
             setStatus("Composer cleared");
             updateSession();
         }
@@ -104,18 +121,30 @@ final class LiteController
             historyNext();
         else if (action == "workspace-search")
         {
-            const query = _view.text("lite-search").strip;
+            const query = safeText("lite-search").strip;
             if (query.length == 0)
+            {
+                _sessionFilter = "";
+                _searchLines = [];
+                _searchIndex = 0;
+                safeSetText("search-result", "no matches");
                 setStatus("Search is empty");
+                updateSession();
+            }
             else
             {
                 const needle = query.toLower;
+                _sessionFilter = query;
                 _searchLines = [];
                 foreach (line; _transcript.splitLines)
                     if (line.toLower.indexOf(needle) != -1)
                         _searchLines ~= line.strip;
+                foreach (name; _workspaceNames)
+                    if (name.toLower.indexOf(needle) != -1)
+                        _searchLines ~= "Workspace: " ~ name;
                 _searchIndex = 0;
                 showSearchResult(query);
+                updateSession();
             }
         }
         else if (action == "search-prev")
@@ -124,16 +153,86 @@ final class LiteController
             searchNext();
         else if (action == "search-clear")
         {
-            _view.setText("lite-search", "");
+            safeSetText("lite-search", "");
             _searchLines = [];
             _searchIndex = 0;
-            _view.setText("search-result", "no matches");
+            _sessionFilter = "";
+            safeSetText("search-result", "no matches");
             setStatus("Search cleared");
+            updateSession();
+        }
+        else if (action == "session-pick-1")
+            pickSession(0);
+        else if (action == "session-pick-2")
+            pickSession(1);
+        else if (action == "session-pick-3")
+            pickSession(2);
+        else if (action == "session-all")
+        {
+            _sessionViewIndex = -1;
+            _activeSessionIndex = 0;
+            displayTranscript();
+            setStatus("Full history");
+            updateSession();
+        }
+        else if (action == "plan-open")
+            setStatus("Plan: Review sandbox 2 workspace · 1/4 steps");
+        else if (action == "plan-start")
+        {
+            if (!_session.busy())
+            {
+                safeSetText("lite-input",
+                    "Continue the current plan from the next step.");
+                setStatus("Plan continuation loaded");
+                updateSession();
+            }
+        }
+        else if (action == "toggle-thinking")
+        {
+            _thinkingOn = !_thinkingOn;
+            _settings.thinkingOn = _thinkingOn;
+            try saveSettings(_settings);
+            catch (Exception) {}
+            _session.updateSettings(_settings);
+            setStatus("Thinking " ~ (_thinkingOn ? "on" : "off"));
+            updateSession();
+        }
+        else if (action == "toggle-tools")
+        {
+            _toolsOn = !_toolsOn;
+            _settings.toolsOn = _toolsOn;
+            try saveSettings(_settings);
+            catch (Exception) {}
+            _session.updateSettings(_settings);
+            setStatus("Tools " ~ (_toolsOn ? "on" : "off"));
+            updateSession();
+        }
+        else if (action == "toggle-plan")
+        {
+            _planOn = !_planOn;
+            _settings.planOn = _planOn;
+            try saveSettings(_settings);
+            catch (Exception) {}
+            _session.updateSettings(_settings);
+            setStatus("Plan mode " ~ (_planOn ? "on" : "off"));
+            updateSession();
         }
         else if (action == "save")
             saveConnection();
         else if (action == "save-key")
+        {
+            const entered = safeText("lite-key").strip;
+            if (_settings.apiKey.length > 0 && entered.length > 0 &&
+                entered != _settings.apiKey && !_confirmSaveKey)
+            {
+                _confirmSaveKey = true;
+                _saveKeyDeadline = Clock.currTime() + 5.seconds;
+                setStatus("Confirm replace key");
+                return;
+            }
+            _confirmSaveKey = false;
             saveKey();
+        }
         else if (action == "clear-key")
         {
             if (!_confirmClearKey)
@@ -165,10 +264,28 @@ final class LiteController
         else if (action == "dismiss-banner")
         {
             _statusBannerUntil = SysTime.init;
-            _view.setText("key-clear-toast", "");
+            safeSetText("key-clear-toast", "");
         }
         else if (action == "help")
             setStatus("Enter sends | Shift+Enter newline | Esc stops | Ctrl+L focus");
+        else if (action == "audit-text")
+        {
+            auditTextFit();
+            setStatus("Text fit audit refreshed");
+        }
+        else if (action == "audit-credentials")
+            auditCredentials();
+        else if (action == "rebuild-request")
+            requestRebuild();
+        else if (action == "update-request")
+            checkForUpdate();
+        else if (action == "key-status")
+        {
+            if (safeActivate("settings-button"))
+                setStatus("Settings opened");
+            else
+                setStatus(_settings.apiKey.length > 0 ? "Key set" : "No key");
+        }
         else if (action == "palette-next")
             movePaletteFocus(1);
         else if (action == "palette-prev")
@@ -176,10 +293,10 @@ final class LiteController
         else if (action == "palette-run")
             runPaletteCommand();
         else if (action == "palette-clear-recent")
-            _view.setText("command-palette-recent", "Recent: none");
+            safeSetText("command-palette-recent", "Recent: none");
         else if (action == "palette-restore-recent")
         {
-            _view.setText("command-palette-recent",
+            safeSetText("command-palette-recent",
                 _recentPaletteCommand.length > 0
                     ? "Recent: " ~ _recentPaletteCommand
                     : "Recent: none");
@@ -188,7 +305,7 @@ final class LiteController
         else if (action == "palette-reset-status")
         {
             _recentPaletteCommand = "";
-            _view.setText("command-palette-recent", "Recent: none");
+            safeSetText("command-palette-recent", "Recent: none");
             setStatus("Ready");
         }
         else if (action == "clear")
@@ -202,17 +319,29 @@ final class LiteController
         else if (action == "import")
             importSession();
         else if (action == "session-1")
-            activateSlot(0);
+            selectWorkspaceSlot(0);
         else if (action == "session-2")
-            activateSlot(1);
+            selectWorkspaceSlot(1);
         else if (action == "session-3")
-            activateSlot(2);
+            selectWorkspaceSlot(2);
         else if (action == "workspace-rename")
             renameWorkspace();
         else if (action == "workspace-new")
             newWorkspace();
         else if (action == "workspace-delete")
+        {
+            if (!_confirmDeleteWorkspace)
+            {
+                _confirmDeleteWorkspace = true;
+                _deleteWorkspaceDeadline = Clock.currTime() + 5.seconds;
+                setStatus("Confirm clear workspace");
+                return;
+            }
+            _confirmDeleteWorkspace = false;
             deleteWorkspace();
+        }
+        else if (action == "workspace-duplicate")
+            duplicateWorkspace();
         else if (action == "preset-opencode")
             applyPreset(openCodeBaseUrl, openCodeModel, "OpenCode API preset");
         else if (action == "preset-openai")
@@ -222,19 +351,29 @@ final class LiteController
             applyPreset(openCodeBaseUrl, openCodeModel, "DeepSeek selected");
         else if (action == "model-gpt")
             applyPreset(openAiBaseUrl, openAiModel, "GPT-4o mini selected");
+        else if (action == "reset-connection")
+            resetConnection();
     }
 
     private void applyPreset(string baseUrl, string model, string label)
     {
+        if (isOpenCodeBaseUrl(_settings.baseUrl))
+            _settings.openCodeModelName = _settings.model;
+        else if (isOpenAiBaseUrl(_settings.baseUrl))
+            _settings.openAiModelName = _settings.model;
         rememberKey();
         _settings.baseUrl = baseUrl;
-        _settings.model = model;
+        _settings.model = isOpenCodeBaseUrl(baseUrl)
+            ? (_settings.openCodeModelName.length > 0
+                ? _settings.openCodeModelName : model)
+            : (_settings.openAiModelName.length > 0
+                ? _settings.openAiModelName : model);
         _settings.apiKey = isOpenCodeBaseUrl(baseUrl)
             ? _settings.openCodeKey
             : isOpenAiBaseUrl(baseUrl) ? _settings.openAiKey : "";
-        _view.setText("lite-base", baseUrl);
-        _view.setText("lite-model", model);
-        _view.setText("lite-key", "");
+        safeSetText("lite-base", baseUrl);
+        safeSetText("lite-model", _settings.model);
+        safeSetText("lite-key", "");
         updateKeyState();
         setStatus(label);
         updateSession();
@@ -247,9 +386,32 @@ final class LiteController
             setStatus("Settings error: " ~ error.msg);
     }
 
+    private void resetConnection()
+    {
+        _settings.baseUrl = openCodeBaseUrl;
+        _settings.model = _settings.openCodeModelName.length > 0
+            ? _settings.openCodeModelName : openCodeModel;
+        _settings.apiKey = _settings.openCodeKey;
+        safeSetText("lite-base", _settings.baseUrl);
+        safeSetText("lite-model", _settings.model);
+        safeSetText("lite-key", "");
+        try
+        {
+            saveSettings(_settings);
+            _session.updateSettings(_settings);
+            setStatus("Connection reset");
+        }
+        catch (Exception error)
+        {
+            setStatus("Reset error: " ~ error.msg);
+        }
+        updateKeyState();
+        updateSession();
+    }
+
     private void rememberKey()
     {
-        const entered = _view.text("lite-key").strip;
+        const entered = safeText("lite-key").strip;
         if (entered.length > 0)
             _settings.apiKey = entered;
         if (isOpenCodeBaseUrl(_settings.baseUrl))
@@ -258,28 +420,54 @@ final class LiteController
             _settings.openAiKey = _settings.apiKey;
     }
 
-    private void saveConnection()
+    private bool saveConnection()
     {
-        _settings.baseUrl = _view.text("lite-base").strip;
-        _settings.model = _view.text("lite-model").strip;
+        const viewBase = safeText("lite-base").strip;
+        const viewModel = safeText("lite-model").strip;
+        if (viewBase.length > 0)
+            _settings.baseUrl = viewBase;
+        if (viewModel.length > 0)
+            _settings.model = viewModel;
+        if (isOpenCodeBaseUrl(_settings.baseUrl))
+            _settings.openCodeModelName = _settings.model;
+        else if (isOpenAiBaseUrl(_settings.baseUrl))
+            _settings.openAiModelName = _settings.model;
+        const validBase = (_settings.baseUrl.length >= 8 &&
+            _settings.baseUrl[0 .. 8] == "https://") ||
+            (_settings.baseUrl.length >= 7 &&
+            _settings.baseUrl[0 .. 7] == "http://");
+        if (!validBase)
+        {
+            setStatus("Invalid base URL");
+            updateSession();
+            return false;
+        }
+        if (_settings.model.length == 0)
+        {
+            setStatus("Model is required");
+            updateSession();
+            return false;
+        }
         rememberKey();
         try
         {
             saveSettings(_settings);
             _session.updateSettings(_settings);
-            _view.setText("lite-key", "");
+            safeSetText("lite-key", "");
             updateKeyState();
-            setStatus("Settings saved");
+            setStatus("Settings saved · " ~ Clock.currTime().toString());
+            return true;
         }
         catch (Exception error)
         {
             setStatus("Settings error: " ~ error.msg);
+            return false;
         }
     }
 
     private void saveKey()
     {
-        const entered = _view.text("lite-key").strip;
+        const entered = safeText("lite-key").strip;
         if (entered.length == 0)
         {
             setStatus("Enter an API key");
@@ -294,7 +482,7 @@ final class LiteController
         {
             saveSettings(_settings);
             _session.updateSettings(_settings);
-            _view.setText("lite-key", "");
+            safeSetText("lite-key", "");
             updateKeyState();
             updateSession();
             setStatus("Key saved");
@@ -307,10 +495,11 @@ final class LiteController
     {
         if (_session.busy())
             return;
-        const prompt = _view.text("lite-input").strip;
+        const prompt = safeText("lite-input").strip;
         if (prompt.length == 0)
             return;
-        saveConnection();
+        if (!saveConnection())
+            return;
         if (_settings.apiKey.length == 0)
         {
             setStatus("Add an API key to send");
@@ -322,12 +511,12 @@ final class LiteController
         ++_messages;
 
         const stamp = Clock.currTime().toString();
+        _sessionViewIndex = -1;
         _transcript ~= "\n[" ~ stamp ~ "] You: " ~ prompt ~
             "\n[" ~ stamp ~ "] Assistant: ";
-        _view.setText("lite-input", "");
-        _view.setText("lite-transcript", displayTranscript());
+        safeSetText("lite-input", "");
         setStatus("Waiting for response...");
-        _view.setText("lite-send", "Stop");
+        safeSetText("lite-send", "Stop");
         updateSession();
         persist();
         _session.send(prompt);
@@ -337,7 +526,7 @@ final class LiteController
     {
         if (_lastPrompt.length == 0 || _session.busy())
             return;
-        _view.setText("lite-input", _lastPrompt);
+        safeSetText("lite-input", _lastPrompt);
         send();
     }
 
@@ -352,25 +541,70 @@ final class LiteController
         _messages = _workspace[_activeSlot].messages;
         _lastPrompt = _workspace[_activeSlot].lastPrompt;
         _lastFailed = _workspace[_activeSlot].failed;
+        _sessionViewIndex = -1;
+        _activeSessionIndex = 0;
     }
 
     private string displayTranscript()
     {
-        const clean = _transcript
+        if (_transcript.strip.length == 0 || _transcript.strip == "New session.")
+            return publishConversation(
+                "No messages yet.\n\nStart a conversation below.");
+        auto messages = parseTranscript(_transcript);
+        if (_sessionViewIndex >= 0)
+        {
+            const indices = recentSessionMessageIndices();
+            if (_sessionViewIndex < indices.length)
+            {
+                const start = indices[_sessionViewIndex];
+                size_t end = messages.length;
+                foreach (i; start + 1 .. messages.length)
+                    if (messages[i].role == "user")
+                    {
+                        end = i;
+                        break;
+                    }
+                messages = messages[start .. end];
+            }
+        }
+        string source = _transcript;
+        if (messages.length > 0)
+        {
+            string[] sections;
+            foreach (message; messages)
+            {
+                const role = message.role == "user" ? "YOU" :
+                    message.role == "assistant" ? "ASSISTANT" : "SYSTEM";
+                sections ~= role ~
+                    (message.timestamp.length > 0 ? "  ·  " ~ message.timestamp : "") ~
+                    "\n" ~ message.body;
+            }
+            source = sections.join("\n\n");
+        }
+        const clean = source
             .replace("**", "")
             .replace("```", "")
             .replace("`", "")
-            .replace("*", "");
+            .replace("*", "")
+            .replace("[error]", "ERROR")
+            .replace("[stopped]", "STOPPED");
+        if (clean.strip.length == 0)
+            return "No messages yet.\n\nStart a conversation below.";
         string[] wrapped;
         foreach (line; clean.splitLines)
         {
-            if (line.length <= 80)
+            auto shaped = line;
+            if (shaped.length >= 2 && shaped[0 .. 2] == "# ")
+                shaped = shaped[2 .. $];
+            else if (shaped.length >= 2 && shaped[0 .. 2] == "- ")
+                shaped = "• " ~ shaped[2 .. $];
+            if (shaped.length <= 80)
             {
-                wrapped ~= line;
+                wrapped ~= shaped;
                 continue;
             }
             string current;
-            foreach (word; line.split(" "))
+            foreach (word; shaped.split(" "))
             {
                 if (current.length == 0)
                     current = word;
@@ -384,7 +618,21 @@ final class LiteController
             }
             wrapped ~= current;
         }
-        return wrapped.join("\n");
+        return publishConversation(wrapped.join("\n"));
+    }
+
+    private string publishConversation(string text)
+    {
+        try
+        {
+            const path = buildPath(environment.get("LOCALAPPDATA", ""),
+                "AuroraOpenCodeLiteV2", "conversation.txt");
+            write(path, text);
+        }
+        catch (Exception)
+        {
+        }
+        return text;
     }
 
     private void syncActive()
@@ -472,7 +720,7 @@ final class LiteController
         }
     }
 
-    private void activateSlot(int index)
+    private void selectWorkspaceSlot(int index)
     {
         if (index < 0 || index >= _workspace.length || index == _activeSlot)
             return;
@@ -481,9 +729,8 @@ final class LiteController
         syncActive();
         _activeSlot = index;
         loadActive();
-        _view.setText("lite-input", "");
-        _view.setText("lite-transcript", displayTranscript());
-        _view.setText("lite-send", "Send");
+        safeSetText("lite-input", "");
+        safeSetText("lite-send", "Send");
         setStatus("Workspace " ~ to!string(index + 1));
         updateSession();
         persist();
@@ -491,11 +738,11 @@ final class LiteController
 
     private void renameWorkspace()
     {
-        const name = _view.text("lite-input").strip;
+        const name = safeText("lite-input").strip;
         if (name.length == 0)
             return;
         _workspaceNames[_activeSlot] = name;
-        _view.setText("lite-input", "");
+        safeSetText("lite-input", "");
         setStatus("Workspace renamed");
         updateSession();
         persist();
@@ -507,7 +754,7 @@ final class LiteController
             return;
         if (_historyIndex > 0)
             --_historyIndex;
-        _view.setText("lite-input", _promptHistory[_historyIndex]);
+        safeSetText("lite-input", _promptHistory[_historyIndex]);
         updateSession();
     }
 
@@ -515,7 +762,7 @@ final class LiteController
     {
         _paletteIndex = (_paletteIndex + direction +
             cast(int) _paletteCommands.length) % cast(int) _paletteCommands.length;
-        _view.setText("command-palette-selected",
+        safeSetText("command-palette-selected",
             "Focus: " ~ _paletteCommands[_paletteIndex]);
         setStatus("Command focus: " ~ _paletteCommands[_paletteIndex]);
     }
@@ -532,7 +779,7 @@ final class LiteController
         default: break;
         }
         _recentPaletteCommand = _paletteCommands[_paletteIndex];
-        _view.setText("command-palette-recent",
+        safeSetText("command-palette-recent",
             "Recent: " ~ _paletteCommands[_paletteIndex]);
     }
 
@@ -542,7 +789,7 @@ final class LiteController
             return;
         if (_historyIndex < _promptHistory.length)
             ++_historyIndex;
-        _view.setText("lite-input",
+        safeSetText("lite-input",
             _historyIndex == _promptHistory.length
                 ? ""
                 : _promptHistory[_historyIndex]);
@@ -553,16 +800,23 @@ final class LiteController
     {
         if (_searchLines.length == 0)
         {
-            _view.setText("search-result", "no matches");
+            safeSetText("search-result", "no matches");
             setStatus(query ~ ": 0 matches");
             return;
         }
-        _view.setText("search-result",
+        safeSetText("search-result",
             "match " ~ to!string(_searchIndex + 1) ~ "/" ~
             to!string(_searchLines.length) ~ ": " ~
             _searchLines[_searchIndex]);
         setStatus(query ~ ": match " ~ to!string(_searchIndex + 1) ~
             "/" ~ to!string(_searchLines.length));
+    }
+
+    private void pickSession(int index)
+    {
+        if (index < 0 || index >= _workspace.length)
+            return;
+        selectWorkspaceSlot(index);
     }
 
     private void searchPrevious()
@@ -571,7 +825,7 @@ final class LiteController
             return;
         _searchIndex = (_searchIndex - 1 + cast(int) _searchLines.length) %
             cast(int) _searchLines.length;
-        showSearchResult(_view.text("lite-search").strip);
+        showSearchResult(safeText("lite-search").strip);
     }
 
     private void searchNext()
@@ -579,28 +833,66 @@ final class LiteController
         if (_searchLines.length == 0)
             return;
         _searchIndex = (_searchIndex + 1) % cast(int) _searchLines.length;
-        showSearchResult(_view.text("lite-search").strip);
+        showSearchResult(safeText("lite-search").strip);
     }
 
     private void newWorkspace()
     {
-        _workspace[_activeSlot] = WorkspaceSlot();
+        syncActive();
+        int target = -1;
+        foreach (i; 0 .. _workspace.length)
+            if (i != _activeSlot && _workspace[i].messages == 0 &&
+                _workspace[i].transcript.strip == "New session.")
+            {
+                target = cast(int) i;
+                break;
+            }
+        if (target < 0)
+        {
+            setStatus("No empty workspace slot");
+            return;
+        }
+        _activeSlot = target;
+        _workspace[target] = WorkspaceSlot();
+        _workspaceNames[target] = "Workspace " ~ to!string(target + 1);
         loadActive();
-        _view.setText("lite-input", "");
-        _view.setText("lite-transcript", displayTranscript());
-        setStatus("Workspace " ~ to!string(_activeSlot + 1));
+        safeSetText("lite-input", "");
+        setStatus("Created " ~ _workspaceNames[target]);
         updateSession();
         persist();
     }
 
     private void deleteWorkspace()
     {
+        _confirmDeleteWorkspace = false;
         _workspace[_activeSlot] = WorkspaceSlot();
         _workspaceNames[_activeSlot] = "Empty";
         loadActive();
-        _view.setText("lite-input", "");
-        _view.setText("lite-transcript", displayTranscript());
+        safeSetText("lite-input", "");
         setStatus("Workspace deleted");
+        updateSession();
+        persist();
+    }
+
+    private void duplicateWorkspace()
+    {
+        syncActive();
+        int target = -1;
+        foreach (i; 0 .. _workspace.length)
+            if (i != _activeSlot && _workspace[i].messages == 0 &&
+                _workspace[i].transcript.strip == "New session.")
+            {
+                target = cast(int) i;
+                break;
+            }
+        if (target < 0)
+        {
+            setStatus("No free workspace");
+            return;
+        }
+        _workspace[target] = _workspace[_activeSlot];
+        _workspaceNames[target] = _workspaceNames[_activeSlot] ~ " copy";
+        setStatus("Workspace duplicated");
         updateSession();
         persist();
     }
@@ -615,8 +907,16 @@ final class LiteController
                 mkdirRecurse(directory);
             const path = buildPath(directory, "session.md");
             write(path, _transcript);
+            JSONValue metadata;
+            metadata["model"] = JSONValue(_settings.model);
+            metadata["baseUrl"] = JSONValue(_settings.baseUrl);
+            metadata["messages"] = JSONValue(cast(long) _messages);
+            metadata["exportedAt"] = JSONValue(Clock.currTime().toString());
+            write(buildPath(directory, "session.json"),
+                metadata.toString() ~ "\n");
 
-            setStatus("Session exported");
+            setStatus("Exported session.md · " ~ to!string(_transcript.length) ~
+                " chars · " ~ Clock.currTime().toString());
         }
         catch (Exception error)
         {
@@ -635,9 +935,25 @@ final class LiteController
                 setStatus("Import file missing");
                 return;
             }
-            _transcript = readText(path);
-            _messages = 0;
-            _view.setText("lite-transcript", displayTranscript());
+            const content = readText(path);
+            if (content.length > 2_000_000)
+            {
+                setStatus("Import file too large");
+                return;
+            }
+            if (content.strip.length == 0)
+            {
+                setStatus("Import file is empty");
+                return;
+            }
+            const imported = parseTranscript(content);
+            if (imported.length == 0)
+            {
+                setStatus("Import has no messages");
+                return;
+            }
+            _transcript = content;
+            _messages = cast(uint) imported.length;
 
             setStatus("Session imported");
             updateSession();
@@ -654,12 +970,12 @@ final class LiteController
         if (_session.busy())
             _session.cancel();
         _transcript = "New session.\n";
+        _sessionViewIndex = -1;
         _lastPrompt = "";
         _lastFailed = false;
         _messages = 0;
-        _view.setText("lite-input", "");
-        _view.setText("lite-transcript", displayTranscript());
-        _view.setText("lite-send", "Send");
+        safeSetText("lite-input", "");
+        safeSetText("lite-send", "Send");
         setStatus("Ready");
         updateSession();
         persist();
@@ -670,7 +986,7 @@ final class LiteController
         _session.cancel();
         setStatus("Stopping...");
         _statusBannerUntil = SysTime.init;
-        _view.setText("key-clear-toast", "");
+        safeSetText("key-clear-toast", "");
     }
 
     void service(double deltaSeconds)
@@ -681,23 +997,20 @@ final class LiteController
             {
                 case SessionEventKind.delta:
                     _transcript ~= event.text;
-                    _view.setText("lite-transcript", displayTranscript());
                     break;
                 case SessionEventKind.done:
                     _transcript ~= event.text == "Stopped"
                         ? "\n[stopped]\n" : "\n";
-                    _view.setText("lite-transcript", displayTranscript());
                     setStatus(event.text);
-                    _view.setText("lite-send", "Send");
+                    safeSetText("lite-send", "Send");
                     _lastFailed = false;
                     updateSession();
                     persist();
                     break;
                 case SessionEventKind.failed:
                     _transcript ~= "\n[error] " ~ event.text ~ "\n";
-                    _view.setText("lite-transcript", displayTranscript());
                     setStatus("Error");
-                    _view.setText("lite-send", "Send");
+                    safeSetText("lite-send", "Send");
                     _lastFailed = true;
                     updateSession();
                     persist();
@@ -717,23 +1030,32 @@ final class LiteController
             _confirmClearKey = false;
             setStatus("Clear confirmation expired");
         }
+        if (_confirmDeleteWorkspace && now >= _deleteWorkspaceDeadline)
+        {
+            _confirmDeleteWorkspace = false;
+            setStatus("Clear workspace confirmation expired");
+        }
+        if (_confirmSaveKey && now >= _saveKeyDeadline)
+        {
+            _confirmSaveKey = false;
+            setStatus("Replace key confirmation expired");
+        }
         if (_statusBannerUntil != SysTime.init && now >= _statusBannerUntil &&
             !_confirmClearKey)
         {
             _statusBannerUntil = SysTime.init;
-            _view.setText("key-clear-toast", "");
+            safeSetText("key-clear-toast", "");
         }
     }
 
     /// Reapply controller-owned values after a scene reload or controller attach.
     void refreshView()
     {
-        _view.setText("lite-base", _settings.baseUrl);
-        _view.setText("lite-model", _settings.model);
-        _view.setText("lite-key", "");
+        safeSetText("lite-base", _settings.baseUrl);
+        safeSetText("lite-model", _settings.model);
+        safeSetText("lite-key", "");
         updateKeyState();
-        _view.setText("lite-transcript", displayTranscript());
-        _view.setText("lite-send", _session.busy() ? "Stop" : "Send");
+        safeSetText("lite-send", _session.busy() ? "Stop" : "Send");
         setStatus(_status);
         updateSession();
         auditTextFit();
@@ -784,9 +1106,13 @@ final class LiteController
                 {
                     int lines;
                     int padding = 6;
+                    string mode = "card";
                     if (auto props = "props" in node.object)
                         if ((*props).type == JSONType.object)
                         {
+                            if (auto value = "mode" in (*props).object)
+                                if ((*value).type == JSONType.string)
+                                    mode = (*value).str;
                             if (auto value = "padding" in (*props).object)
                                 if ((*value).type == JSONType.integer)
                                     padding = cast(int) (*value).integer;
@@ -796,6 +1122,10 @@ final class LiteController
                                         (*value).str.length > 0)
                                         ++lines;
                         }
+
+
+                    if (mode == "badge" || mode == "toolbar")
+                        lines = 1;
                     if (lines > 0 && height > 0 &&
                         height < padding * 2 + lines * 12 && !allowClip)
                         warnings ~= (id.length ? id : "component");
@@ -808,6 +1138,9 @@ final class LiteController
                             text = (*value).str;
                     if (text.length > 0 && width > 2 && height > 0 &&
                         height < 18 && !allowClip)
+                        warnings ~= (id.length ? id : type);
+                    if ((type == "button" || type == "menu") &&
+                        width > 2 && height > 0 && height < 24 && !allowClip)
                         warnings ~= (id.length ? id : type);
                 }
 
@@ -823,62 +1156,229 @@ final class LiteController
                 : intentional > 0
                     ? "TEXT FIT OK · " ~ to!string(intentional) ~ " intentional"
                     : "TEXT FIT OK";
-            _view.setText("text-audit", message);
+            safeSetText("text-audit", message);
         }
         catch (Exception)
         {
-            _view.setText("text-audit", "TEXT AUDIT ERROR");
+            safeSetText("text-audit", "TEXT AUDIT ERROR");
+        }
+    }
+
+    private void auditCredentials()
+    {
+        const conversationPath = buildPath(
+            environment.get("LOCALAPPDATA", ""),
+            "AuroraOpenCodeLiteV2", "conversation.txt");
+        const rendered = exists(conversationPath)
+            ? readText(conversationPath) : "";
+        const exposed =
+            (_settings.apiKey.length > 2 &&
+                rendered.indexOf(_settings.apiKey) != -1) ||
+            (_settings.openCodeKey.length > 2 &&
+                rendered.indexOf(_settings.openCodeKey) != -1) ||
+            (_settings.openAiKey.length > 2 &&
+                rendered.indexOf(_settings.openAiKey) != -1);
+        setStatus(exposed ? "Credential warning: key exposed"
+            : "Credential audit OK");
+    }
+
+    private void checkForUpdate()
+    {
+        try
+        {
+            const exe = thisExePath();
+            SysTime newest = timeLastModified(exe);
+            const sourceDir = buildPath(dirName(dirName(exe)), "source");
+            if (!exists(sourceDir))
+            {
+                setStatus("Update check unavailable");
+                return;
+            }
+            bool newer;
+            foreach (entry; dirEntries(sourceDir, SpanMode.depth))
+            {
+                if (!entry.isFile || extension(entry.name) != ".d")
+                    continue;
+                const stamp = timeLastModified(entry.name);
+                if (stamp > newest)
+                {
+                    newest = stamp;
+                    newer = true;
+                }
+            }
+            setStatus(newer ? "Update available" : "Up to date");
+        }
+        catch (Exception)
+        {
+            setStatus("Update check failed");
+        }
+    }
+
+    private void requestRebuild()
+    {
+        try
+        {
+            const buildDir = dirName(thisExePath());
+            const appDir = dirName(buildDir);
+            const helper = buildPath(buildDir, "rebuild_helper.ps1");
+            spawnProcess(["powershell", "-NoProfile", "-ExecutionPolicy",
+                "Bypass", "-File", helper, appDir]);
+            setStatus("Rebuilding…");
+            Thread.sleep(2.seconds);
+            _view.closeHost();
+        }
+        catch (Exception)
+        {
+            setStatus("Rebuild failed");
         }
     }
 
     private void updateSession()
     {
-        _view.setText("lite-session",
+        safeSetText("lite-session",
             "Workspace " ~ to!string(_activeSlot + 1) ~ " - " ~
             to!string(_messages) ~
             (_messages == 1 ? " message" : " messages"));
         foreach (i; 0 .. 3)
         {
-            _view.setText("lite-slot-" ~ to!string(i + 1),
-                _workspaceNames[i]);
-            _view.setActive("lite-slot-" ~ to!string(i + 1),
+            const slotName = _workspaceNames[i];
+            safeSetText("lite-slot-" ~ to!string(i + 1),
+                slotName.length > 0 ? slotName[0 .. 1] : "?");
+            safeSetActive("lite-slot-" ~ to!string(i + 1),
                 i == _activeSlot);
         }
+        safeSetText("workspace-title", _workspaceNames[_activeSlot]);
+        const titles = recentSessionTitles();
+        foreach (i; 0 .. 3)
+        {
+            auto label = i < titles.length ? titles[i] : "";
+            if (_sessionFilter.length > 0 && label.length > 0 &&
+                label.toLower.indexOf(_sessionFilter.toLower) == -1)
+                label = "";
+            if (label.length > 7)
+                label = label[0 .. 7] ~ "…";
+            safeSetText("session-row-" ~ to!string(i + 1), label);
+            safeSetActive("session-row-" ~ to!string(i + 1),
+                i == _activeSlot);
+        }
+        safeSetText("chat-title",
+            _activeSlot < titles.length ? titles[_activeSlot] : "New chat");
+        safeSetText("thinking-toggle",
+            "Thinking: " ~ (_thinkingOn ? "High" : "Off"));
+        safeSetText("tools-toggle", _toolsOn ? "Tools: On" : "Tools");
+        safeSetText("plan-toggle", _planOn ? "Plan: On" : "Plan");
 
-        _view.setText("lite-usage",
+        safeSetText("lite-usage",
             "Messages " ~ to!string(_messages) ~ "  |  " ~
             (_session.busy() ? "working" : "idle") ~ "  |  " ~
             _settings.model);
 
-        _view.setText("transcript-meta",
-            "MESSAGE ROLES  ·  TIMESTAMPS  ·  " ~
+        const parsedMessages = parseTranscript(_transcript);
+        safeSetText("transcript-meta",
+            to!string(parsedMessages.length) ~ " MESSAGES  ·  ROLES  ·  " ~
             Clock.currTime().toString());
-        _view.setText("composer-state",
+        safeSetText("composer-state",
             _session.busy()
                 ? "Working..."
-                : (_view.text("lite-input").length == 0
+                : (safeText("lite-input").length == 0
                     ? "Composer empty"
                     : (_settings.apiKey.length > 0
                         ? "Ready to send"
                         : "Add an API key to send")));
-        _view.setText("composer-count",
-            to!string(_view.text("lite-input").length) ~ " characters");
-        _view.setEnabled("composer-clear",
-            _view.text("lite-input").length > 0);
-        _view.setText("last-prompt",
+        safeSetText("composer-count",
+            to!string(safeText("lite-input").length) ~ " characters");
+        safeSetEnabled("composer-clear",
+            safeText("lite-input").length > 0);
+        safeSetText("last-prompt",
             "Last sent: " ~
             (_lastPrompt.length > 0 ? _lastPrompt : "none"));
 
-        _view.setText("lite-provider-health",
+        const provider = isOpenCodeBaseUrl(_settings.baseUrl)
+            ? "OpenCode" : "OpenAI";
+        safeSetText("lite-provider-health",
             _settings.baseUrl.length > 0 && _settings.model.length > 0
-                ? (_settings.apiKey.length > 0 ? "Provider ready" : "No key")
+                ? provider ~ " · " ~ _settings.model ~ " · " ~
+                    (_settings.apiKey.length > 0 ? "ready" : "no key")
                 : "Invalid configuration");
+    }
+
+    private string[] recentSessionTitles()
+    {
+        string[] titles;
+        foreach (i; 0 .. _workspace.length)
+            titles ~= workspaceSessionTitle(cast(int) i);
+        return titles;
+    }
+
+    private string workspaceSessionTitle(int index)
+    {
+        const messages = parseTranscript(_workspace[index].transcript);
+        for (size_t i = messages.length; i-- > 0;)
+        {
+            if (messages[i].role != "user")
+                continue;
+            const lines = messages[i].body.splitLines;
+            if (lines.length == 0)
+                continue;
+            auto title = lines[0].strip;
+            if (title.length > 32)
+                title = title[0 .. 32] ~ "…";
+            if (title.length > 0)
+                return title;
+        }
+        return "New session";
+    }
+
+    private size_t[] recentSessionMessageIndices()
+    {
+        const messages = parseTranscript(_transcript);
+        size_t[] indices;
+        string[] titles;
+        for (size_t i = messages.length; i-- > 0;)
+        {
+            if (messages[i].role != "user")
+                continue;
+            const lines = messages[i].body.splitLines;
+            if (lines.length == 0)
+                continue;
+            auto title = lines[0].strip;
+            if (title.length == 0)
+                continue;
+            if (title.length > 32)
+                title = title[0 .. 32] ~ "…";
+            bool duplicate;
+            foreach (existing; titles)
+                if (existing == title)
+                {
+                    duplicate = true;
+                    break;
+                }
+            if (duplicate)
+                continue;
+            titles ~= title;
+            indices ~= i;
+            if (indices.length == 3)
+                break;
+        }
+        return indices;
     }
 
     private void persist()
     {
         syncActive();
         saveWorkspace();
+        try
+        {
+            const directory = buildPath(dirName(defaultSettingsPath()),
+                "exports");
+            if (!exists(directory))
+                mkdirRecurse(directory);
+            write(buildPath(directory, "autosave.md"), _transcript);
+        }
+        catch (Exception)
+        {
+            // Workspace persistence remains authoritative if autosave fails.
+        }
         try
         {
             ConversationState state;
@@ -894,14 +1394,57 @@ final class LiteController
         }
     }
 
+    private void safeSetText(string id, string value)
+    {
+        try
+            _view.setText(id, value);
+        catch (Exception)
+        {
+        }
+    }
+
+    private string safeText(string id)
+    {
+        try
+            return _view.text(id);
+        catch (Exception)
+            return "";
+    }
+
+    private void safeSetEnabled(string id, bool enabled)
+    {
+        try
+            _view.setEnabled(id, enabled);
+        catch (Exception)
+        {
+        }
+    }
+
+    private void safeSetActive(string id, bool active)
+    {
+        try
+            _view.setActive(id, active);
+        catch (Exception)
+        {
+        }
+    }
+
+    private bool safeActivate(string id)
+    {
+        try
+            return _view.activate(id);
+        catch (Exception)
+            return false;
+    }
+
     private void setStatus(string value)
     {
         const changed = _status != value;
         _status = value;
-        _view.setText("lite-status", value);
+        safeSetText("lite-status", value);
         if (changed)
         {
-            _view.setText("key-clear-toast", value);
+            safeSetText("key-clear-toast", value);
             _statusBannerUntil = value != "Ready"
                 ? Clock.currTime() + 4.seconds
                 : SysTime.init;
@@ -910,7 +1453,7 @@ final class LiteController
 
     private void updateKeyState()
     {
-        _view.setText("lite-key-state", _settings.apiKey.length > 0
+        safeSetText("lite-key-state", _settings.apiKey.length > 0
             ? "Key set" : "No key");
     }
 }

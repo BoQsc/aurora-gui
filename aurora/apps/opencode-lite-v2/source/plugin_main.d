@@ -38,6 +38,16 @@ final class PluginView : LiteView
     {
         return false;
     }
+
+    bool activate(string id)
+    {
+        return false;
+    }
+
+    bool closeHost()
+    {
+        return false;
+    }
 }
 
 extern(C) export int aurora_lite_plugin_init(LitePluginApi* value)

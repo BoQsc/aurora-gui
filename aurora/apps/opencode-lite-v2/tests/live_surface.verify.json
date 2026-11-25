@@ -1,0 +1,54 @@
+{
+  "inputs": [
+    "aurora/apps/opencode-lite-v2/assets/lite.scene.json",
+    "aurora/apps/opencode-lite-v2/source/opencodelite/controller.d"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-B",
+          "-c",
+          "import json,os\nfrom pathlib import Path\nv2=Path('aurora/apps/opencode-lite-v2/assets/lite.scene.json');live=Path(os.environ['LOCALAPPDATA'])/'AuroraOpenCodeLiteV2/lite.scene.json';assert v2.read_bytes()==live.read_bytes()\ndef find(n,t):\n if n.get('id')==t:return n\n for c in n.get('children',[]):\n  r=find(c,t)\n  if r:return r\ns=json.loads(v2.read_text(encoding='utf-8'))\nfor mid in ('menu-session','menu-model','menu-help'):\n assert find(s['root'],mid),mid\nassert find(s['root'],'text-audit')\nprint('live-surface scene verified')"
+        ]
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-B",
+          "-c",
+          "import json,socket\ns=socket.create_connection(('127.0.0.1',8792),timeout=5);seq=990000\ndef req(node):\n global seq\n i=seq;seq+=1;s.sendall((json.dumps({'id':i,'command':'getBounds','node':node})+'\\n').encode());b=b''\n while True:\n  while b'\\n' not in b:b+=s.recv(65536)\n  line,b=b.split(b'\\n',1);t=line.decode(errors='replace')\n  if t.startswith('RESPONSE '):\n   r=json.loads(t[9:])\n   if r.get('id')==i:return r['rect']\nmain=req('main-pane');footer=req('app-footer');send=req('lite-send');inp=req('lite-input');clear=req('composer-clear')\ncontent_bottom=main['y']+main['height']-16\nassert main['y']+main['height']==footer['y'],(main,footer)\nfor name,b in [('send',send),('input',inp),('clear',clear)]:\n assert b['y']+b['height']<=content_bottom,(name,b,content_bottom)\nprint('safe composer bounds verified')\ns.close()"
+        ]
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-B",
+          "-c",
+          "import json,socket\ns=socket.create_connection(('127.0.0.1',8792),timeout=5);rid=980001;s.sendall((json.dumps({'id':rid,'command':'tree'})+'\\n').encode());b=b''\nwhile True:\n while b'\\n' not in b:b+=s.recv(65536)\n line,b=b.split(b'\\n',1);t=line.decode(errors='replace')\n if t.startswith('RESPONSE '):\n  r=json.loads(t[9:])\n  if r.get('id')==rid and 'nodes' in r:break\nn={x['id']:x.get('text','') for x in r['nodes']};assert {'menu-session','menu-model','menu-help','conversation-widget','text-audit'}<=set(n);assert n.get('text-audit')=='TEXT FIT OK';assert 'Main' in n.get('lite-slot-1','')\nprint('live surface verified')"
+        ]
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "powershell",
+        "args": [
+          "-NoProfile",
+          "-Command",
+          "$h=@(Get-Process aurora-opencode-lite-v2,aurora-opencode-lite-v2-standalone -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0}); $c=@(Get-Process aurora-opencode-lite-v2-controller -ErrorAction SilentlyContinue); if($h.Count -ne 1 -or $c.Count -ne 1){exit 1}; Write-Output 'live topology passed'"
+        ],
+        "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui",
+        "timeout": 30000
+      }
+    }
+  ]
+}

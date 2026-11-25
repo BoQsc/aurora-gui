@@ -476,6 +476,9 @@ class ControlServer
                 case "tree":
                     tree(requestId);
                     break;
+                case "layoutAudit":
+                    layoutAudit(requestId, document);
+                    break;
                 case "setText":
                     setText(requestId, document);
                     break;
@@ -620,6 +623,47 @@ class ControlServer
         }
         JSONValue[string] extra;
         extra["nodes"] = JSONValue(nodes);
+        respond(id, true, null, extra);
+    }
+
+    private void layoutAudit(long id, JSONValue document)
+    {
+        auto root = _window.root();
+        Rect oldBounds;
+        Size auditSize;
+        if (root !is null)
+        {
+            oldBounds = root.bounds();
+            auto size = _registry.sceneSize;
+            if (size.width < 200 || size.height < 200)
+                size = _window.designedClientSize();
+            if (size.width < 200 || size.height < 200)
+                size = _window.logicalClientSize();
+            const requestedWidth = optionalInt(document, "width",
+                size.width);
+            const requestedHeight = optionalInt(document, "height",
+                size.height);
+            if (requestedWidth >= 200 && requestedWidth <= 10000 &&
+                requestedHeight >= 200 && requestedHeight <= 10000)
+                size = Size(cast(int) requestedWidth,
+                    cast(int) requestedHeight);
+            auditSize = size;
+            if (size.width >= 200 && size.height >= 200)
+            {
+                root.setBounds(Rect(0, 0, size.width, size.height));
+                root.layoutTree();
+            }
+        }
+        JSONValue[] issues;
+        foreach (issue; _registry.auditLayout(auditSize))
+            issues ~= JSONValue(issue);
+        if (root !is null)
+        {
+            root.setBounds(oldBounds);
+            root.layoutTree();
+        }
+        JSONValue[string] extra;
+        extra["issues"] = JSONValue(issues);
         respond(id, true, null, extra);
     }
 
@@ -1295,7 +1339,7 @@ class ControlServer
 
     private void pointer(long id, JSONValue document)
     {
-        const node = requireString(document, "node");
+        const node = optionalString(document, "node", "");
         const kind = optionalString(document, "kind", "move");
         enforce(kind == "down" || kind == "move" || kind == "up" ||
             kind == "wheel", "kind must be down, move, up, or wheel");
@@ -1307,6 +1351,24 @@ class ControlServer
         const modifiers = readModifiers(document);
         const wheelX = optionalInt(document, "wheelX", 0);
         const wheelY = optionalInt(document, "wheelY", 0);
+        if (node.length == 0)
+        {
+            auto driver = new UiTestDriver(_window);
+            const point = Point(cast(int) x, cast(int) y);
+            driver.moveTo(point);
+            if (kind == "down")
+                driver.mouseDown(button);
+            else if (kind == "up")
+                driver.mouseUp(button);
+            else if (kind == "wheel")
+                driver.wheel(point, cast(int) wheelY, cast(int) wheelX);
+            JSONValue[string] extra;
+            extra["kind"] = JSONValue(kind);
+            extra["x"] = JSONValue(x);
+            extra["y"] = JSONValue(y);
+            respond(id, true, null, extra);
+            return;
+        }
         if (!_registry.injectPointer(node, kind, cast(int) x, cast(int) y,
             button, modifiers, cast(int) wheelX, cast(int) wheelY))
         {
@@ -1417,12 +1479,25 @@ class ControlServer
         enforce(width >= 200 && width <= 10000 &&
             height >= 200 && height <= 10000,
             "resize width and height must be between 200 and 10000");
+        int requestedWidth = cast(int) width;
+        int requestedHeight = cast(int) height;
+        try
+        {
+            const scene = loadScene(_scenePath);
+            if (scene.window.minWidth > requestedWidth)
+                requestedWidth = scene.window.minWidth;
+            if (scene.window.minHeight > requestedHeight)
+                requestedHeight = scene.window.minHeight;
+        }
+        catch (Exception)
+        {
+        }
         auto driver = new UiTestDriver(_window);
-        driver.resize(Size(cast(int) width, cast(int) height));
+        driver.resize(Size(requestedWidth, requestedHeight));
         driver.paint();
         JSONValue[string] extra;
-        extra["width"] = JSONValue(width);
-        extra["height"] = JSONValue(height);
+        extra["width"] = JSONValue(requestedWidth);
+        extra["height"] = JSONValue(requestedHeight);
         respond(id, true, null, extra);
     }
 
@@ -1432,16 +1507,23 @@ class ControlServer
         const parent = dirName(path);
         if (parent.length > 0 && parent != ".")
             mkdirRecurse(parent);
-        // A minimized native window has an iconic 21x1 client area. Tests and
-        // live tooling intentionally run the host minimized, but a screenshot
-        // must still capture the full logical scene. Restore for the capture
-        // and return to the minimized state immediately afterward.
-        const wasMinimized = _window.isMinimized();
-        if (wasMinimized)
-            _window.restore();
-        _window.saveScreenshot(path);
-        if (wasMinimized)
-            _window.minimize();
+        // Inspection is headless by policy: render the whole logical scene
+        // directly to an offscreen surface. Never restore or foreground the
+        // native window just to take a screenshot.
+        auto logicalSize = _window.designedClientSize();
+        if (logicalSize.width < 200 || logicalSize.height < 200)
+            logicalSize = _window.logicalClientSize();
+        const requestedWidth = optionalInt(document, "width",
+            logicalSize.width);
+        const requestedHeight = optionalInt(document, "height",
+            logicalSize.height);
+        logicalSize = Size(
+            requestedWidth >= 200 && requestedWidth <= 10000
+                ? cast(int) requestedWidth : logicalSize.width,
+            requestedHeight >= 200 && requestedHeight <= 10000
+                ? cast(int) requestedHeight : logicalSize.height);
+        _window.saveSceneScreenshot(path, logicalSize,
+            _window.displayScale());
         JSONValue[string] extra;
         extra["path"] = JSONValue(path);
         respond(id, true, null, extra);

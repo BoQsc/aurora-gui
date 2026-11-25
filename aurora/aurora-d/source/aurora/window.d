@@ -209,6 +209,10 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     Widget focusedWidget() @safe pure nothrow @nogc { return _focused; }
     override FontSystem fontSystem() @safe pure nothrow @nogc { return _fonts; }
     Size logicalClientSize() const @safe pure nothrow @nogc { return _clientSize; }
+    Size designedClientSize() const @safe pure nothrow @nogc
+    {
+        return Size(_options.width, _options.height);
+    }
     Size framebufferSize() const @safe pure nothrow @nogc { return _framebufferSize; }
     DisplayScale displayScale() const @safe pure nothrow @nogc { return _displayScale; }
     bool windowBounds(out Rect bounds)
@@ -486,6 +490,32 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     void saveScreenshot(string path)
     {
         surface().savePpm(path);
+    }
+
+    /** Render the whole scene to a full offscreen image without native state. */
+    void saveSceneScreenshot(string path, Size logicalSize, DisplayScale scale)
+    {
+        if (_root is null || logicalSize.width <= 0 || logicalSize.height <= 0)
+        {
+            saveScreenshot(path);
+            return;
+        }
+        const framebufferSize = scale.logicalToPhysical(logicalSize);
+        auto drawList = new DrawList(_fonts);
+        drawList.reset(logicalSize, framebufferSize, scale,
+            _theme.windowBackground);
+        const oldBounds = _root.bounds();
+        _root.setBounds(Rect(0, 0, logicalSize.width, logicalSize.height));
+        _root.layoutTree();
+        auto canvas = Canvas(drawList, logicalSize.width, logicalSize.height);
+        _root.paintTree(canvas);
+        auto scene = new RenderScene();
+        scene.reset(drawList, 1, framebufferSize);
+        auto image = new Surface(framebufferSize.width, framebufferSize.height);
+        SoftwareRenderer.renderSceneInto(scene, image);
+        image.savePpm(path);
+        _root.setBounds(oldBounds);
+        _root.layoutTree();
     }
 
     override const(Theme) currentTheme() const

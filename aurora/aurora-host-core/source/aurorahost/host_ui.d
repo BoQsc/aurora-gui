@@ -13,7 +13,9 @@ enum ChromeStyle
     menu,
     toolbar,
     flat,
-    status
+    status,
+    avatar,
+    sidebar
 }
 
 ChromeStyle parseChromeStyle(string name, ChromeStyle fallback = ChromeStyle.standard)
@@ -26,6 +28,8 @@ ChromeStyle parseChromeStyle(string name, ChromeStyle fallback = ChromeStyle.sta
         case "toolbar": return ChromeStyle.toolbar;
         case "flat": return ChromeStyle.flat;
         case "status": return ChromeStyle.status;
+        case "avatar": return ChromeStyle.avatar;
+        case "sidebar": return ChromeStyle.sidebar;
         default: return fallback;
     }
 }
@@ -267,6 +271,25 @@ class ChromeButton : Button
         const height = bounds().height;
         if (width <= 0 || height <= 0) return;
         const body = Rect(0, 0, width, height);
+        const textColor = !enabled() ? palette.disabled :
+            (_hasTextColor ? _textColor : palette.text);
+        auto layout = textLayout();
+        const measured = layout.measuredSize();
+        if (_chromeStyle == ChromeStyle.avatar)
+        {
+            const diameter = width < height ? width : height;
+            const radius = diameter / 2;
+            const center = Point(width / 2, height / 2);
+            const background = _active ? palette.selection :
+                (hovered() ? palette.buttonHover : palette.buttonBackground);
+            canvas.fillCircle(center, radius, background);
+            canvas.strokeCircle(center, maxInt(1, radius - 1),
+                _active ? palette.accent : palette.border,
+                _active ? 2 : 1);
+            canvas.drawLayout(Point(maxInt(0, (width - measured.width) / 2),
+                maxInt(0, (height - measured.height) / 2)), layout, textColor);
+            return;
+        }
         const radius = _chromeStyle == ChromeStyle.menu ||
             _chromeStyle == ChromeStyle.toolbar ? 3 : palette.cornerRadius;
         Color background = Color.rgba(0, 0, 0, 0);
@@ -316,6 +339,18 @@ class ChromeButton : Button
                     (hovered() ? palette.buttonHover : palette.buttonBackground);
                 paintBackground = true;
                 break;
+            case ChromeStyle.sidebar:
+                if (_active)
+                {
+                    background = palette.selection;
+                    paintBackground = true;
+                }
+                else if (hovered())
+                {
+                    background = palette.buttonHover;
+                    paintBackground = true;
+                }
+                break;
             default:
                 break;
         }
@@ -329,17 +364,14 @@ class ChromeButton : Button
                 canvas.fillRoundedRect(body, radius, background);
         }
 
-        const textColor = !enabled() ? palette.disabled :
-            (_hasTextColor ? _textColor : palette.text);
-        auto layout = textLayout();
-        const measured = layout.measuredSize();
         const iconSize = 17;
         const iconWidth = _chromeIcon == IconKind.none ? 0 : iconSize;
         const gap = _chromeIcon == IconKind.none ? 0 : 6;
         const horizontalPadding =
             _chromeStyle == ChromeStyle.toolbar ? 7 : 9;
         const contentWidth = iconWidth + gap + measured.width;
-        int x = _chromeStyle == ChromeStyle.status ? horizontalPadding :
+        int x = _chromeStyle == ChromeStyle.status ||
+            _chromeStyle == ChromeStyle.sidebar ? horizontalPadding :
             max(0, (width - contentWidth) / 2);
         const y = max(0, (height - measured.height) / 2);
 
@@ -357,6 +389,9 @@ class ChromeButton : Button
         if (_active && _chromeStyle == ChromeStyle.toolbar)
             canvas.drawLine(Point(3, height - 2),
                 Point(width - 4, height - 2), palette.accent, 2);
+        if (_active && _chromeStyle == ChromeStyle.sidebar)
+            canvas.fillRect(Rect(0, 3, 2, maxInt(1, height - 6)),
+                palette.accent);
     }
 }
 

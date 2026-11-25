@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Record the committed source (c7511db) for the delivered goal-loop fix so the public update can publish with matching provenance.",
+  "reason": "Align the executable's recorded source with commit af51c36 (model-picker and stalled-goal fixture corrections) so the release can publish and verify.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-22 19:54:45.5693741 UTC",
-  "finishedAt": "2026-11-22 19:55:47.9648604 UTC",
-  "durationMs": 62406,
+  "startedAt": "2026-11-25 14:05:04.8625902 UTC",
+  "finishedAt": "2026-11-25 14:06:06.4919916 UTC",
+  "durationMs": 61629,
   "exitCode": 0,
   "errors": [],
   "publishStatus": "published",
-  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (9179e6f1520d).",
+  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (8473fe660181).",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

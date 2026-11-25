@@ -1,7 +1,8 @@
 module hostlite;
 
 import aurorahost.runtime : runHostWindow;
-import aurorahost.scene : createWindow, loadScene, NodeRegistry;
+import aurorahost.scene : createWindow, loadScene, NodeRegistry, SceneWindow;
+import aurora : GuiWindow;
 import aurorahost.console : errLine;
 import aurorahost.controller_supervisor : ControllerSupervisor;
 import aurorahost.single_instance : HostInstance, activateWindow;
@@ -11,13 +12,56 @@ import opencodelite.pluginloader : LitePlugin;
 import opencodelite.registryview : RegistryLiteView;
 import opencodelite.settings : LiteSettings, loadSettings;
 import opencodelite.widgets : universalWidgetFactory;
+import opencodelite.messageview : messageListFactory;
+import opencodelite.settings_modal : settingsButtonFactory;
+import opencodelite.plan_card : planCardFactory;
 import std.conv : to;
-import std.file : exists, mkdirRecurse, thisExePath, write;
+import std.file : exists, mkdirRecurse, readText, thisExePath, write;
 import std.path : buildPath, dirName;
 import std.process : environment;
+import std.json : JSONType, parseJSON;
 
 
 private enum EmbeddedScene = import("lite.scene.json");
+
+private string windowStatePath()
+{
+    auto root = environment.get("LOCALAPPDATA", "");
+    if (root.length == 0) root = ".";
+    const directory = buildPath(root, "AuroraOpenCodeLiteV2");
+    if (!exists(directory)) mkdirRecurse(directory);
+    return buildPath(directory, "window.json");
+}
+
+private void restoreWindowState(ref SceneWindow sceneWindow)
+{
+    const path = windowStatePath();
+    if (!exists(path)) return;
+    try
+    {
+        const state = parseJSON(readText(path));
+        if (auto value = "width" in state.object)
+            if ((*value).type == JSONType.integer)
+                sceneWindow.width = cast(int) (*value).integer;
+        if (auto value = "height" in state.object)
+            if ((*value).type == JSONType.integer)
+                sceneWindow.height = cast(int) (*value).integer;
+        if (sceneWindow.width < 800) sceneWindow.width = 800;
+        if (sceneWindow.height < 600) sceneWindow.height = 600;
+        if (sceneWindow.width > 10000) sceneWindow.width = 10000;
+        if (sceneWindow.height > 10000) sceneWindow.height = 10000;
+    }
+    catch (Exception)
+    {
+    }
+}
+
+private void saveWindowState(GuiWindow window)
+{
+    const size = window.logicalClientSize();
+    write(windowStatePath(), "{\"width\":" ~ to!string(size.width) ~
+        ",\"height\":" ~ to!string(size.height) ~ "}\n");
+}
 
 private string embeddedScenePath()
 {
@@ -89,6 +133,11 @@ int main(string[] args)
         }
         else if (args[index] == "--start-minimized")
             startMinimized = true;
+        else if (args[index] == "--headless")
+        {
+            startMinimized = true;
+            noActivate = true;
+        }
         else if (args[index] == "--allow-termination")
             allowTermination = true;
         else if (args[index] == "--allow-injected-input")
@@ -105,7 +154,8 @@ int main(string[] args)
 
     try
     {
-        const scene = loadScene(scenePath);
+        auto scene = loadScene(scenePath);
+        restoreWindowState(scene.window);
         HostInstance instance;
         if (singleInstance)
         {
@@ -127,10 +177,15 @@ int main(string[] args)
             errLine("hostlite: previous run ended without an intentional close");
         auto registry = new NodeRegistry();
         registry.components.register("opencode.universal", universalWidgetFactory());
+        registry.components.register("opencode.messages", messageListFactory());
+        registry.components.register("opencode.settings", settingsButtonFactory());
+        registry.components.register("opencode.plan", planCardFactory());
         const settings = loadSettings();
         environment["AURORA_RENDERER"] = "software";
         auto window = createWindow(scene, registry, startMinimized, false,
             noActivate);
+        if (scene.window.minWidth > 0 || scene.window.minHeight > 0)
+            window.setMinimumSize(scene.window.minWidth, scene.window.minHeight);
         const controllerExe = buildPath(dirName(thisExePath()),
             "aurora-opencode-lite-v2-controller.exe");
         // Production default: isolate the controller in its own process so a
@@ -146,6 +201,7 @@ int main(string[] args)
             const result = runHostWindow(window, registry, true, scenePath,
                 watch, controllerPort, allowForcedTermination,
                 allowInjectedInput);
+            saveWindowState(window);
             journal.close("window closed");
             return result;
         }
@@ -154,6 +210,7 @@ int main(string[] args)
             const result = runHostWindow(window, registry, true, scenePath,
                 watch, listenPort, allowForcedTermination,
                 allowInjectedInput);
+            saveWindowState(window);
             journal.close("window closed");
             return result;
         }
@@ -176,6 +233,7 @@ int main(string[] args)
                 const result = runHostWindow(window, registry, false,
                     scenePath, watch, 0, allowForcedTermination,
                     allowInjectedInput);
+                saveWindowState(window);
                 errLine("hostlite: plugin host loop returned " ~
                     to!string(result));
                 journal.close("window closed");
@@ -196,6 +254,7 @@ int main(string[] args)
         controller.refreshView();
         const result = runHostWindow(window, registry, false, scenePath, watch,
             0, allowForcedTermination, allowInjectedInput);
+        saveWindowState(window);
         journal.close("window closed");
         return result;
     }

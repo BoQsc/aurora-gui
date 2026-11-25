@@ -32,4 +32,15 @@ final class RegistryLiteView : LiteView
     {
         return _registry.setChrome(id, "", "", active ? 1 : 0);
     }
+
+    bool activate(string id)
+    {
+        return _registry.activate(id);
+    }
+
+    bool closeHost()
+    {
+        _registry.window.close();
+        return true;
+    }
 }

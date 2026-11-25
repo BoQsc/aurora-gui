@@ -18,6 +18,11 @@ struct LiteSettings
     string apiKey;
     string openCodeKey;
     string openAiKey;
+    string openCodeModelName = openCodeModel;
+    string openAiModelName = openAiModel;
+    bool thinkingOn = true;
+    bool toolsOn;
+    bool planOn;
 }
 
 bool isOpenCodeBaseUrl(string value)
@@ -65,6 +70,16 @@ LiteSettings loadSettings(string path = null)
                 settings.openCodeKey = document["openCodeKey"].str;
             if ("openAiKey" in document.object)
                 settings.openAiKey = document["openAiKey"].str;
+            if ("openCodeModelName" in document.object)
+                settings.openCodeModelName = document["openCodeModelName"].str;
+            if ("openAiModelName" in document.object)
+                settings.openAiModelName = document["openAiModelName"].str;
+            if ("thinkingOn" in document.object)
+                settings.thinkingOn = document["thinkingOn"].boolean;
+            if ("toolsOn" in document.object)
+                settings.toolsOn = document["toolsOn"].boolean;
+            if ("planOn" in document.object)
+                settings.planOn = document["planOn"].boolean;
         }
         catch (Exception)
         {
@@ -75,6 +90,10 @@ LiteSettings loadSettings(string path = null)
         settings.baseUrl = openCodeBaseUrl;
     if (settings.model.length == 0)
         settings.model = openCodeModel;
+    if (settings.openCodeModelName.length == 0)
+        settings.openCodeModelName = openCodeModel;
+    if (settings.openAiModelName.length == 0)
+        settings.openAiModelName = openAiModel;
     if (isOpenCodeBaseUrl(settings.baseUrl))
     {
         if (settings.openCodeKey.length == 0 && settings.apiKey.length > 0)
@@ -207,5 +226,10 @@ void saveSettings(in LiteSettings settings, string path = null)
     document["apiKey"] = settings.apiKey;
     document["openCodeKey"] = settings.openCodeKey;
     document["openAiKey"] = settings.openAiKey;
+    document["openCodeModelName"] = settings.openCodeModelName;
+    document["openAiModelName"] = settings.openAiModelName;
+    document["thinkingOn"] = JSONValue(settings.thinkingOn);
+    document["toolsOn"] = JSONValue(settings.toolsOn);
+    document["planOn"] = JSONValue(settings.planOn);
     write(path, document.toString() ~ "\n");
 }

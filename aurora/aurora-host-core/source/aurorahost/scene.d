@@ -18,6 +18,7 @@ import aurorahost.protocol : MaxSceneDepth, MaxSceneNodes, NodeTypes,
     MaxCanvasCommands, MaxInputEvents, MaxSurfacePixels, SchemaVersion;
 import aurorahost.scene_icon : decodeSceneIcon, sceneIconPath;
 import std.algorithm : canFind, max;
+import std.conv : to;
 import std.exception : enforce;
 import std.file : readText;
 import std.format : format;
@@ -61,6 +62,7 @@ struct SceneNode
     int flex;
     int padding;
     bool hasPadding;
+    bool allowTextClip;
     bool hasBackground;
     Color background;
     bool hasBorder;
@@ -129,6 +131,8 @@ class NodeRegistry
     private string[string] _actions;
     private bool[string] _quiet;
     private string[] _order;
+    private bool[string] _allowTextClip;
+    Size sceneSize;
     private SurfaceWidget[] _surfaces;
 
     string assetBase;
@@ -159,6 +163,7 @@ class NodeRegistry
         _actions = null;
         _quiet = null;
         _order.length = 0;
+        _allowTextClip = null;
         _surfaces.length = 0;
     }
 
@@ -229,6 +234,72 @@ class NodeRegistry
     {
         auto found = id in _types;
         return found is null ? "" : *found;
+    }
+
+    void markAllowTextClip(string id)
+    {
+        _allowTextClip[id] = true;
+    }
+
+    string[] auditLayout(Size rootSize = Size.init)
+    {
+        string[] issues;
+        foreach (id; _order)
+        {
+            auto found = id in _widgets;
+            if (found is null) continue;
+            auto w = *found;
+            const b = w.bounds();
+            const type = _types[id];
+            if ((type == "button" || type == "menu") && b.height > 0 &&
+                b.height < 24)
+                issues ~= id ~ ":target-height " ~ to!string(b.height);
+            if (!(id in _allowTextClip) && _texts[id].length > 0 &&
+                (type == "label" || type == "button" || type == "menu"))
+            {
+                const needed = w.measure(Size(100000, 100000));
+                if (needed.width > b.width + 1 || needed.height > b.height + 1)
+                    issues ~= id ~ ":text-overflow needed=" ~
+                        to!string(needed.width) ~ "x" ~ to!string(needed.height) ~
+                        " bounds=" ~ to!string(b.width) ~ "x" ~ to!string(b.height);
+            }
+            foreach (childId; _order)
+            {
+                if (childId == id) continue;
+                auto childFound = childId in _widgets;
+                if (childFound is null) continue;
+                auto child = *childFound;
+                if (child.parent() !is w) continue;
+                if (id != "root") continue;
+
+                auto parentOrigin = w.globalOrigin();
+                int parentWidth = b.width;
+                int parentHeight = b.height;
+                if ((w.parent() is null || id == "root") && window !is null)
+                {
+                    auto size = rootSize;
+                    if (size.width < 200 || size.height < 200)
+                    {
+                        size = window.logicalClientSize();
+                        if (size.width < 200 || size.height < 200)
+                            size = window.designedClientSize();
+                    }
+                    parentOrigin = Point(0, 0);
+                    parentWidth = size.width;
+                    parentHeight = size.height;
+                }
+                const childOrigin = child.globalOrigin();
+                const cb = child.bounds();
+                if (childOrigin.x < parentOrigin.x ||
+                    childOrigin.y < parentOrigin.y ||
+                    childOrigin.x + cb.width >
+                        parentOrigin.x + parentWidth ||
+                    childOrigin.y + cb.height >
+                        parentOrigin.y + parentHeight)
+                    issues ~= childId ~ ":outside-parent " ~ id;
+            }
+        }
+        return issues;
     }
 
     void setAction(string id, string action)
@@ -589,6 +660,7 @@ private bool isCommonNodeField(string name)
         case "fontSize":
         case "textColor":
         case "align":
+        case "allowTextClip":
             return true;
         default:
             return false;
@@ -1260,6 +1332,8 @@ private SceneNode parseNode(JSONValue value, ref int count, int depth,
         node.icon = readString(value, "icon", "", label);
     if (auto active = "active" in value.object)
         node.active = readBool(value, "active", false, label);
+    if (auto allowClip = "allowTextClip" in value.object)
+        node.allowTextClip = readBool(value, "allowTextClip", false, label);
     if (auto fontSize = "fontSize" in value.object)
         node.fontSize = readRange(value, "fontSize", 0, 8, 96, label);
     if (auto textColor = "textColor" in value.object)
@@ -1730,7 +1804,9 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
                 "titleBar requires a window host");
             auto bar = new StandardCaptionBar(registry.window);
             bar.setTitle(node.text);
-            bar.setShowIcon(false);
+            bar.setShowIcon(true);
+            if (registry.iconImage !is null)
+                bar.setIconImage(registry.iconImage);
             if (node.height > 0)
                 bar.setBarHeight(node.height);
             if (node.hasBackground)
@@ -1842,6 +1918,7 @@ GuiWindow createWindow(const Scene scene, NodeRegistry registry,
     options.iconPath = iconPath;
     auto window = new GuiWindow(options, themeWithOverrides(scene));
     registry.window = window;
+    registry.sceneSize = Size(scene.window.width, scene.window.height);
     registry.iconPath = iconPath;
     registry.iconImage = cast(RgbaImage) scene.window.iconImage;
     applyScene(window, scene, registry);
@@ -1863,6 +1940,7 @@ void applyScene(GuiWindow window, const Scene scene, NodeRegistry registry)
         window.setIconPath(iconPath))
         registry.iconPath = iconPath;
     auto root = buildWidget(scene.root, registry);
+    collectTextClipPolicy(scene.root, registry);
     registerTooltips(scene.root, registry);
     window.setMinimumSize(scene.window.minWidth, scene.window.minHeight);
     window.setRoot(root);
@@ -1878,6 +1956,10 @@ void applyScene(GuiWindow window, const Scene scene, NodeRegistry registry)
             reportCallback("after-apply", error);
     }
     registry.restoreEditorState(editorState);
+    // Applying a scene rebuilds widgets but does not necessarily dirty the
+    // native frame. Request a full visible repaint so watcher/control reloads
+    // cannot leave stale pixels from the previous layout on screen.
+    window.invalidate();
 }
 
 private void registerTooltips(const SceneNode node, NodeRegistry registry)
@@ -1886,4 +1968,12 @@ private void registerTooltips(const SceneNode node, NodeRegistry registry)
         registry.setTooltip(node.id, node.tooltip);
     foreach (child; node.children)
         registerTooltips(child, registry);
+}
+
+private void collectTextClipPolicy(const SceneNode node, NodeRegistry registry)
+{
+    if (node.allowTextClip)
+        registry.markAllowTextClip(node.id);
+    foreach (child; node.children)
+        collectTextClipPolicy(child, registry);
 }

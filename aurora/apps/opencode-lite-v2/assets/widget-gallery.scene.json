@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 2,
+  "window": {"title": "Aurora Universal Widget Gallery", "width": 900, "height": 620, "minWidth": 700, "minHeight": 520, "theme": "dark"},
+  "root": {
+    "type": "column",
+    "padding": 18,
+    "spacing": 10,
+    "children": [
+      {"type": "label", "text": "UNIVERSAL WIDGET GALLERY", "scale": 2, "textColor": "#e6edf5"},
+      {"id": "gallery-card", "type": "component", "component": "opencode.universal", "height": 72, "props": {"kicker": "CARD", "title": "Universal card", "subtitle": "Declarative title and subtitle", "padding": 6, "shadow": true}},
+      {"id": "gallery-badge", "type": "component", "component": "opencode.universal", "width": 180, "height": 32, "props": {"mode": "badge", "title": "LIVE", "subtitle": "v50", "padding": 8, "shadow": false}},
+      {"id": "gallery-toolbar", "type": "component", "component": "opencode.universal", "height": 38, "props": {"mode": "toolbar", "title": "Toolbar", "subtitle": "Right-aligned metadata", "padding": 8, "accentBar": true}},
+      {"id": "gallery-empty", "type": "component", "component": "opencode.universal", "height": 110, "props": {"mode": "empty", "title": "Nothing here", "subtitle": "Empty-state content", "padding": 8, "shadow": false}},
+      {"id": "gallery-dialog", "type": "component", "component": "opencode.universal", "height": 120, "props": {"mode": "dialog", "title": "Confirm action", "subtitle": "Dialog-style content area", "padding": 8, "shadow": true}},
+      {"type": "spacer", "flex": 1}
+    ]
+  }
+}

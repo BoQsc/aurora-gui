@@ -4,12 +4,39 @@ import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import std.conv : to;
 import std.datetime : Clock;
+import std.array : join;
 import opencodelite.http : Cancellation, SseResult, streamSse;
 import opencodelite.settings : LiteSettings;
 
 import std.json : JSONType, JSONValue, parseJSON;
 
 import std.string : indexOf, strip, stripRight, toLower;
+
+string modeInstructions(in LiteSettings settings)
+{
+    string[] parts;
+    if (settings.thinkingOn)
+        parts ~= "Thinking mode: reason carefully before the final answer.";
+    if (settings.toolsOn)
+        parts ~= "Tools are enabled for this request.";
+    if (settings.planOn)
+        parts ~= "Plan mode: outline a concise plan before executing.";
+    return parts.join(" ");
+}
+
+unittest
+{
+    LiteSettings settings;
+    auto instructions = modeInstructions(settings);
+    assert(instructions.indexOf("Thinking") >= 0);
+    settings.thinkingOn = false;
+    settings.toolsOn = true;
+    settings.planOn = true;
+    instructions = modeInstructions(settings);
+    assert(instructions.indexOf("Thinking") < 0);
+    assert(instructions.indexOf("Tools") >= 0);
+    assert(instructions.indexOf("Plan") >= 0);
+}
 
 enum SessionEventKind
 {
@@ -181,6 +208,14 @@ final class ChatSession
             item["role"] = message.role;
             item["content"] = message.content;
             messages ~= item;
+        }
+        const modes = modeInstructions(settings);
+        if (modes.length > 0)
+        {
+            JSONValue system;
+            system["role"] = "system";
+            system["content"] = modes;
+            messages = [system] ~ messages;
         }
         JSONValue payload;
         payload["model"] = settings.model;
