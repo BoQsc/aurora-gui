@@ -20,7 +20,7 @@ import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.array : replicate;
 import std.conv : to;
-import std.file : exists, mkdirRecurse, readText, write, dirEntries, SpanMode;
+import std.file : exists, mkdirRecurse, readText, tempDir, write, dirEntries, SpanMode;
 import std.json : JSONValue, parseJSON;
 import std.path : buildPath;
 import std.process : spawnProcess, kill, wait;
@@ -157,7 +157,11 @@ int main(string[] args)
     { writeCheckpointChild(args[2]); return 0; }
     if (args.length == 3 && args[1] == "--mutation-child")
     { writeMutationChild(args[2]); return 0; }
-    const directory = buildPath("contract-state-" ~ to!string(MonoTime.currTime.ticks));
+    // Fixture state lives outside the checkout: the filesystem host serializes
+    // work on one checkout, so the real commands this fixture runs would stall
+    // on the checkout lease a running app (or a verifying step) already holds.
+    const directory = buildPath(tempDir(),
+        "aurora-architecture-contracts-" ~ to!string(MonoTime.currTime.ticks));
     mkdirRecurse(directory);
 
     ExecutionState state;
