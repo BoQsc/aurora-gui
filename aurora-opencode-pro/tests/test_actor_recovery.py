@@ -128,19 +128,34 @@ try:
                              "actor_recovery_contracts"], cwd=package.parent, env=env, timeout=600)
     assert result.returncode == 0, "Actor recovery fixture failed"
     expected = {"retry": 2, "retry-stop": 1, "transient-cap": 3, "budget": 1,
-                "quota": 2, "bad-output": 4, "summary": 1, "summary-error": 1, "unoffered": 4, "mixed-offer": 2}
+                "quota": 2, "summary": 1, "summary-error": 1, "unoffered": 4, "mixed-offer": 2}
     expected["plan-approval"] = 4
-    # One real write, the continuation, three bounded recovery turns and the
-    # stopped turn: the goal stops instead of requesting another action.
-    expected["goal-stall"] = 6
+    # The app keeps a stalled goal running and only the reader's pause ends it,
+    # so the request count depends on when that pause lands. It is bounded, not
+    # fixed: one real write, then repeated prose-only action turns.
+    only_modes = set(only.split(",")) if only else set()
+    if "goal-stall" in counts:
+        assert 3 <= counts["goal-stall"] <= 8, \
+            f"stalled goal recovery left its bound: {counts['goal-stall']}"
+        del counts["goal-stall"]
+    only_modes.discard("goal-stall")
+    # Unusable output while a goal is active is never parked, so the repeated
+    # protocol repairs run until the fixture's own request bound answers 422 and
+    # the turn settles failed.
+    if "bad-output" in counts:
+        assert 4 <= counts["bad-output"] <= 14, \
+            f"output recovery left its bound: {counts['bad-output']}"
+        del counts["bad-output"]
+    only_modes.discard("bad-output")
     # Task recovery is bounded, not a fixed count: the write turn plus the
     # bounded completion-recovery turns, then the turn settles with the
     # unfinished verification recorded.
     if "task-stall" in counts:
         assert 2 <= counts["task-stall"] <= 7, f"task-stall recovery left its bound: {counts['task-stall']}"
         del counts["task-stall"]
+    only_modes.discard("task-stall")
     if only:
-        assert set(counts) == set(only.split(",")), f"Unexpected recovery modes: {dict(counts)}"
+        assert set(counts) == only_modes, f"Unexpected recovery modes: {dict(counts)}"
     else:
         assert counts == expected, f"Unexpected retries or tool recovery loops: {dict(counts)}"
     assert not failures, failures

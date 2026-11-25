@@ -63,7 +63,7 @@ int main()
         auto view = new ActorTestView(initial, actor);
         assert(actor.post(ActorCommand(ActorCommandKind.start, "Analyze the tradeoffs of this design.")) == ActorAdmission.accepted);
         JSONValue latest;
-        bool sawWait, sawFailure, stopped;
+        bool sawWait, sawFailure, stopped, paused;
         auto quietUntil = MonoTime.init;
         const deadline = MonoTime.currTime + (mode == "goal-stall" ? 60 : 20).seconds;
         bool settled;
@@ -91,11 +91,27 @@ int main()
                 assert(actor.stop() == ActorAdmission.accepted);
                 stopped = true; quietUntil = MonoTime.currTime + 3300.msecs;
             }
+            // A goal whose turns only answer with prose keeps running: the app
+            // never pauses or completes the user's goal on the model's behalf.
+            // The escalating directive is the only thing it may do, so the
+            // reader's own pause is what ends this fixture.
+            if (mode == "goal-stall" && !paused && view.model.goalStatus.length)
+            {
+                assert(view.model.goalStatus == "active",
+                    "the app paused a goal it may only keep running");
+                if (view.model.goalTurns >= 3)
+                {
+                    assert(actor.post(ActorCommand(ActorCommandKind.pauseGoal)) == ActorAdmission.accepted);
+                    paused = true; quietUntil = MonoTime.currTime + 500.msecs;
+                }
+            }
             if (latest.type == JSONType.object)
             {
                 const status = latest["turnStatus"].str;
                 if (mode == "retry-stop") settled = stopped && status == "interrupted" && MonoTime.currTime >= quietUntil;
-                else if (mode == "task-stall" || mode == "goal-stall") settled = status == "completed";
+                else if (mode == "task-stall") settled = status == "completed";
+                else if (mode == "goal-stall")
+                    settled = paused && status == "interrupted" && MonoTime.currTime >= quietUntil;
                 else if (mode == "budget" || mode == "transient-cap" || mode == "bad-output" || mode == "unoffered")
                     settled = status == "failed" && latest["execution"]["retryRemainingMs"].integer < 0;
                 else settled = status == "completed";
@@ -116,14 +132,19 @@ int main()
         if (mode == "retry-stop") assert(state["goalStatus"].str == "paused");
         if (mode == "goal-stall")
         {
-            // Reported: a goal whose turns only answered with prose kept being
-            // re-prompted forever while the model asked the user to pause it.
-            // The bounded audit stops the goal and keeps its recorded work.
+            // The app keeps a stalled goal running and escalates its directive;
+            // only the reader pauses it. Nothing is parked or fabricated.
             assert(state["goalStatus"].str == "paused",
-                "a goal that never acted kept looping instead of stopping");
+                "the reader's pause did not stop the stalled goal");
             assert(state["taskStatus"].str != "completed",
-                "stopping a stalled goal fabricated completion");
-            assert(!sawFailure, "the bounded goal stop painted a failure");
+                "pausing a stalled goal fabricated completion");
+            assert(!sawFailure, "a stalled goal painted a failure");
+            assert(state["goalTurns"].integer >= 3,
+                "a stalled goal was not given another action turn");
+            bool escalated;
+            foreach (message; state["messages"].array)
+                if (message["content"].str.indexOf("Progress audit") >= 0) escalated = true;
+            assert(escalated, "a repeated goal stall did not escalate its directive");
         }
         if (mode == "task-stall")
         {

@@ -34,6 +34,7 @@ provider_harnesses = {
     'resume_tool_handoff_contracts': 'test_resume_tool_handoff.py',
     'recovery_graceful_ui_contracts': 'recovery_graceful_fixture.py',
     'auto_retry_duration_contracts': 'auto_retry_fixture.py',
+    'actor_recovery_contracts': 'test_actor_recovery.py',
 }
 parser = argparse.ArgumentParser()
 parser.add_argument('--release', action='store_true', help='Measure optimized fixtures using release compiler flags')
