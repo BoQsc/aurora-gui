@@ -83,5 +83,11 @@ string answerContract(string request, string verbosity, bool executionGrounding 
             "A request for tradeoffs does not require an exhaustive catalogue. Omit hypothetical future requirements.\n";
     import auroraopencode.numericalgrounding : numericalCodeRequest, numericalGroundingInstruction;
     if (executionGrounding && numericalCodeRequest(request)) result ~= numericalGroundingInstruction ~ "\n";
+    if (requestIntent(request) == RequestIntent.analysis &&
+        (request.indexOf("https://") >= 0 || request.indexOf("http://") >= 0))
+        result ~= "Fetch the named sources directly and cite URLs that actually supplied the evidence. " ~
+            "Reuse successful retrievals while the facts and freshness requirements are unchanged; retry temporary failures. " ~
+            "webfetch follows redirects automatically. A requested URL that supplied the redirected content is a valid citation. " ~
+            "Inspect redirect headers or re-fetch a successful body for a concrete diagnostic, missing evidence or freshness need, not merely to reconfirm it.\n";
     return result;
 }

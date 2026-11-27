@@ -25,7 +25,8 @@ private void compactSchemaDescriptions(ref JSONValue value, string field = "")
         auto object = value.object;
         // Units and indexing are part of the execution contract. Removing
         // these made timeout=180 look like seconds instead of milliseconds.
-        if (field != "timeout" && field != "offset") object.remove("description");
+        if (field != "timeout" && field != "offset" && field != "check" && field != "inputs")
+            object.remove("description");
         foreach (key, ref child; object)
             compactSchemaDescriptions(child, key);
         value = JSONValue(object);

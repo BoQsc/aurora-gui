@@ -25,7 +25,9 @@ bool numericalCodeRequest(string request)
 enum numericalGroundingInstruction =
     "Execute a safe read-only probe of the existing referenced Python implementation with the stated inputs before reporting its current numerical result. " ~
     "Compute the required result separately from the original rule; do not substitute the intended behavior for what the current code returns. " ~
-    "Use python -B or an equivalent cache-free invocation. No file changes or verification recipe are required. " ~
+    "Read the named source directly in the supplied workspace; inspect unrelated files, inventory or environment only for a concrete missing path or dependency. " ~
+    "Use an ordinary run with python -B or an equivalent cache-free invocation; omit run.check and run.inputs for this read-only calculation. " ~
+    "No file changes or verification recipe are required. " ~
     "In the same probe independently calculate every requested required/expected value from the original rule, preserving its units and operation order. " ~
     "Print labeled observed and expected results at the requested precision; do not leave expected values to mental arithmetic. " ~
     "Once its output agrees with the inspected implementation and stated inputs, " ~

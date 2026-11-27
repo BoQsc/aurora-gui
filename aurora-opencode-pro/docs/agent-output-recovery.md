@@ -117,7 +117,11 @@ Rolling context checkpoints retain small source observations with their actual
 call IDs and quoted output. Known writes/edits invalidate the affected snapshot;
 unknown workspace changes invalidate the set. These are historical context, not
 freshness claims or verification receipts, and never remove inspection tools.
-Compact tool schemas preserve timeout units and cursor indexing. Context byte
+Compact tool schemas preserve timeout units, cursor indexing, checked-run mode
+and receipt-input requirements. Read-only numerical probes use an ordinary run;
+checked runs still require their actual declared inputs. Successful research
+fetches are reused for unchanged facts; redirect/network diagnostics need a
+concrete evidence or freshness gap. Context byte
 budgets do not impose a limit on productive tool use.
 
 ## Diagnostics
