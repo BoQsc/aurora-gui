@@ -45,5 +45,16 @@ int main()
     ChatSession actualFailure; check(actualFailure, oldScript, true); check(actualFailure, corrected, true);
     assert(executionState(actualFailure).remaining.length, "A failing revised checker concealed a failure");
     writeln("PASS unrelated passes, dropped inputs, weakened assertions and failing revisions preserve obligations");
+    enum oldBytes = "from pathlib import Path\nassert Path('catalog.json').read_bytes() == b'{\"ok\":true}'\nassert price(60) == 54\n";
+    enum newBytes = "from pathlib import Path\nassert Path('catalog.json').read_bytes() == b'{\"ok\":true}\\r\\n'\nassert price(60) == 54\n";
+    ChatSession bytes; check(bytes, oldBytes, true); check(bytes, newBytes, false);
+    assert(!executionState(bytes).remaining.length, "A corrected literal assertion still requires its known-false old expectation");
+    foreach (bad; ["from pathlib import Path\nassert Path('catalog.json').exists()\nassert price(60) == 54\n",
+                  "from pathlib import Path\nassert price(60) == 54\n"])
+    {
+        ChatSession lost; check(lost, oldBytes, true); check(lost, bad, false);
+        assert(executionState(lost).remaining.length, "A changed assertion subject or missing assertion was accepted");
+    }
+    writeln("PASS corrected equality literals retain assertion subjects, operators and all other checker logic");
     return 0;
 }

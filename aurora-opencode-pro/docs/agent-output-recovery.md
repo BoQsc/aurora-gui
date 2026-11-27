@@ -65,6 +65,9 @@ Requests to calculate a value are analysis, including applying a discount or
 adding shipping. They do not require creating an artifact solely to obtain a
 verification receipt. Explicit requests to save or implement still own delivery.
 JSON response-field names such as `repair` and `test` cannot authorize changes.
+Explicit global no-edit instructions keep research and diagnosis read-only even
+when they ask to resolve conflicting claims or execute a failing reproducer.
+A subsequent explicit implementation request can lift that restriction.
 
 A passing inline Python parameter-table revision can correct generated expected
 values while resolving the original failed check. Every original input tuple,
@@ -72,6 +75,9 @@ the assertion body, imports, interpreter arguments and surrounding guards must
 remain. Unrelated checks, dropped cases and weakened assertions do not qualify;
 unsupported syntax keeps exact command matching. Original failures and revised
 executions both remain in the transcript.
+Equality assertions can also revise a typed literal expectation while retaining
+the assertion subject, operator and every other line. Removing assertions,
+changing their subjects or relaxing a comparison cannot resolve the old check.
 
 ## Diagnostics
 

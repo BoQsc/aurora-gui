@@ -402,8 +402,28 @@ bool continuationFragment(string text)
 
 /// This conservative local classifier controls continuation, not authorization
 /// for arbitrary tools. The model still sees the complete current instruction.
+private RequestIntent restrictedResultIntent(string text)
+{
+    import std.regex : matchAll;
+    string after;
+    bool restricted;
+    foreach (match; matchAll(text.toLower(),
+        `(?:^|[.!?;\n]\s*)(?:do not|don't)\s+(?:edit|modify|change)\s+(?:any\s+)?(?:files|code|anything)(?:[.!?;]|$)|` ~
+        `\bwithout\s+(?:editing|modifying|changing)\s+files(?:[.!?;]|$)`))
+    { restricted = true; after = match.post; }
+    if (!restricted) return RequestIntent.indeterminate;
+    // A subsequent explicit instruction can lift the restriction. A response
+    // schema, descriptive sentence or a research verb cannot manufacture edits.
+    const later = requestIntent(after);
+    if (later == RequestIntent.implementation ||
+        (later == RequestIntent.changeRequest && artifactChangeRequested(after))) return later;
+    return RequestIntent.analysis;
+}
+
 RequestIntent requestIntent(string text)
 {
+    const restricted = restrictedResultIntent(text);
+    if (restricted != RequestIntent.indeterminate) return restricted;
     if (calculationResultRequest(text)) return RequestIntent.analysis;
     const words = requestWords(text);
     const raw = text.toLower().split();
@@ -732,6 +752,9 @@ bool permissionQuestionReply(string text)
 
 bool artifactChangeRequested(string text)
 {
+    const restricted = restrictedResultIntent(text);
+    if (restricted == RequestIntent.analysis) return false;
+    if (restricted == RequestIntent.implementation || restricted == RequestIntent.changeRequest) return true;
     if (calculationResultRequest(text)) return false;
     const words = requestWords(text);
     const raw = text.toLower().split();

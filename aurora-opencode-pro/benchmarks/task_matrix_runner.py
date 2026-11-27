@@ -36,6 +36,21 @@ def json_answer(text):
     return json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip()))
 
 
+def completion_loop(messages):
+    last_tool = max((i for i, m in enumerate(messages) if m.get("role") == "tool"), default=-1)
+    rejected = collections.Counter()
+    for message in messages[last_tool + 1:]:
+        text = message.get("content", "")
+        if not message.get("internal") or not text.startswith("Execution recovery:") or "cause=unfinished_outcome" not in text:
+            continue
+        try:
+            fingerprint = json.loads(text.splitlines()[0].removeprefix("Execution recovery:").strip())["fingerprint"]
+            rejected[fingerprint] += 1
+        except (ValueError, KeyError):
+            continue
+    return max(rejected.values(), default=0) >= 3
+
+
 class ProviderProxy:
     def __init__(self, saved, root, outages=0, truncate=False):
         self.target = urlsplit(saved["baseUrl"])
@@ -229,6 +244,7 @@ def run_case(case, executable, saved, root, repeat=1):
                         raise RuntimeError("Native process exited before completion")
                 header, history = current()
                 tools = [m for m in history if m.get("role") == "tool"]
+                assert not completion_loop(history), "Completion loop: three identical rejections without another tool result"
                 assert not any(m.get("toolName") in ("request_input", "task_blocker", "ask_user") for m in tools), "Requested user intervention"
                 assert not any(m.get("toolName") in ("rebuild", "sync", "computer", "open") for m in tools), "Requested self-maintenance or desktop outside task"
                 elapsed = time.monotonic() - started

@@ -3,12 +3,82 @@ module auroraopencode.checkrevision;
 import std.algorithm : canFind;
 import std.json : parseJSON, JSONType, JSONValue;
 import std.regex : matchFirst;
-import std.string : strip, split, indexOf;
+import std.string : strip, split, indexOf, startsWith;
 
 private struct InlineCases
 {
     string templateCommand;
     string[] inputs;
+}
+
+private string equalityTemplate(string command)
+{
+    try
+    {
+        const separator = command.indexOf('\n');
+        if (separator < 0 || !["python", "python.exe", "python3", "python3.exe"].canFind(command[0 .. separator])) return "";
+        auto arguments = parseJSON(command[separator + 1 .. $]);
+        if (arguments.type != JSONType.array) return "";
+        foreach (i, value; arguments.array)
+        {
+            if (value.type != JSONType.string || value.str != "-c" || i + 1 == arguments.array.length ||
+                arguments.array[i + 1].type != JSONType.string) continue;
+            const source = arguments.array[i + 1].str;
+            string normalized;
+            bool found;
+            foreach (line; source.split('\n'))
+            {
+                const stripped = line.strip();
+                if (!stripped.startsWith("assert ")) { normalized ~= line ~ "\n"; continue; }
+                size_t equal = size_t.max;
+                int depth;
+                char quote = 0;
+                foreach (j; 0 .. line.length)
+                {
+                    const ch = line[j];
+                    if (quote)
+                    {
+                        if (ch == quote && (j == 0 || line[j - 1] != '\\')) quote = 0;
+                        continue;
+                    }
+                    if (ch == '\'' || ch == '"') quote = ch;
+                    else if ("([{".canFind(ch)) ++depth;
+                    else if (")]}".canFind(ch)) --depth;
+                    else if (!depth && ch == '=' && j + 1 < line.length && line[j + 1] == '=')
+                    { equal = j; break; }
+                }
+                if (equal == size_t.max) { normalized ~= line ~ "\n"; continue; }
+                const right = line[equal + 2 .. $].strip();
+                string kind;
+                if (matchFirst(right, `^(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)|True|False|None)$`))
+                    kind = ["True", "False"].canFind(right) ? "bool" : right == "None" ? "none" : "number";
+                else
+                {
+                    size_t start;
+                    if (right.length && (right[0] == 'b' || right[0] == 'B')) start = 1;
+                    if (right.length < start + 2 || (right[start] != '\'' && right[start] != '"'))
+                    { normalized ~= line ~ "\n"; continue; }
+                    const delimiter = right[start];
+                    size_t end = start + 1;
+                    while (end < right.length)
+                    {
+                        if (right[end] == '\\') { end += 2; continue; }
+                        if (right[end] == delimiter) break;
+                        ++end;
+                    }
+                    if (end != right.length - 1) { normalized ~= line ~ "\n"; continue; }
+                    kind = start ? "bytes" : "string";
+                }
+                found = true;
+                normalized ~= line[0 .. equal + 2] ~ "<expected:" ~ kind ~ ">\n";
+            }
+            if (!found) return "";
+            auto args = arguments.array.dup; args[i + 1] = JSONValue(normalized);
+            return command[0 .. separator] ~ "\n" ~ JSONValue(args).toString();
+        }
+    }
+    catch (Exception) {}
+    return "";
 }
 
 /// Recognize a small literal parameter table without evaluating checker source.
@@ -98,6 +168,8 @@ private InlineCases inlineCases(string command)
 /// arguments, imports and surrounding guards must all be retained.
 bool retainsInlineCheckCoverage(string previous, string candidate)
 {
+    const oldEquality = equalityTemplate(previous);
+    if (oldEquality.length && oldEquality == equalityTemplate(candidate)) return true;
     const old = inlineCases(previous), next = inlineCases(candidate);
     if (!old.templateCommand.length || old.templateCommand != next.templateCommand) return false;
     int[string] available;

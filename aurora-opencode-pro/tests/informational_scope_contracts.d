@@ -56,5 +56,13 @@ int main()
     assert(requestIntent("Return JSON keys result, save. Please save the report to report.json.") == RequestIntent.implementation);
     assert(requestIntent("Return JSON keys result, save, then implement the fix.") == RequestIntent.implementation);
     writeln("PASS response-field labels cannot authorize repair or create an endless diagnostic recovery");
+    foreach (research; [
+        "Research these sources. Resolve conflicting claims and retry temporary outages. Do not edit files.",
+        "Review the source and test the hypothesis; do not modify files.",
+        "Analyze the failure without changing files. Return JSON keys actual, repair, test."])
+        assert(requestIntent(research) == RequestIntent.analysis && !artifactChangeRequested(research), research);
+    assert(requestIntent("Do not edit catalog.json. Implement invoice.py.") == RequestIntent.implementation);
+    assert(requestIntent("Do not edit files. Now implement the fix.") == RequestIntent.implementation);
+    writeln("PASS explicit read-only scope owns research/diagnosis; later authorized implementation still works");
     return 0;
 }
