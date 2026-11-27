@@ -63,7 +63,7 @@ private bool runsModule(JSONValue command, string moduleName, string output)
                 if (callsModule(source, moduleName) || (source.indexOf(moduleName ~ ".py") >= 0 &&
                     matchFirst(source, `\b(?:exec|eval|compile)\s*\(`))) return true;
             }
-            if (baseName(arg) == moduleName ~ ".py") return true;
+            if (baseName(arg).toLower() == (moduleName ~ ".py").toLower()) return true;
         }
         const invocation = args.join(" ");
         return (invocation.indexOf("unittest") >= 0 || invocation.indexOf("pytest") >= 0) &&
@@ -82,8 +82,9 @@ bool numericalProbeMissing(const ref ChatSession session)
         { request = session.messages[index].content; begin = i + 1; }
     if (!numericalCodeRequest(request)) return false;
     string[] modules;
-    foreach (match; matchAll(request, `\b([A-Za-z_]\w*)\.py\b`))
+    foreach (match; matchAll(request, `(?i)\b([A-Za-z_]\w*)\.py\b`))
         if (!modules.canFind(match[1])) modules ~= match[1];
+    if (!modules.length) return false;
     foreach (index; path[begin .. $])
     {
         const ref message = session.messages[index];

@@ -40,6 +40,10 @@ int main()
     add(s, "tool", "44.1", "run", `{"program":"python","args":["-B","-c","from invoice import total; print(total(49,True))"]}`);
     assert(!numericalProbeMissing(s) && !continues(s));
     assert(s.verificationStatus == "not_required", "Numerical grounding created a verification/artifact ceremony");
+    ChatSession extension; add(extension, "user", "Read invoice.PY without changing files. Independently calculate its current result.");
+    assert(numericalProbeMissing(extension));
+    add(extension, "tool", "44.1", "run", `{"program":"python","args":["-B","-c","from invoice import total; print(total(49,True))"]}`);
+    assert(!numericalProbeMissing(extension), "An uppercase file extension left an impossible grounding obligation");
     foreach (plain; ["Calculate 19 * 4.75 plus 8 * 3.20.", "Explain Python lists.",
             "Review invoice.py for bugs; do not edit files.",
             "Independently calculate invoice.py results without running code.",
