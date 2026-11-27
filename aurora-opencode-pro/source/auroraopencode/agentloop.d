@@ -1,12 +1,16 @@
 module auroraopencode.agentloop;
 
-import auroraopencode.core : ChatSession, activeMessagePath;
+import auroraopencode.core : ChatSession, ChatMessage, activeMessagePath;
 import auroraopencode.outputguard : outputRecoveryMarker;
 import auroraopencode.outputrecovery : outputRecoveryCount;
 import auroraopencode.taskcontext : taskExcerpt;
 import auroraopencode.contextpolicy : latestActualUserRequest;
 import std.conv : to;
 import std.string : startsWith, toLower, indexOf, replace;
+import std.json : JSONValue, JSONType, parseJSON;
+import std.digest.sha : sha256Of;
+import std.digest : toHexString;
+import std.path : buildNormalizedPath;
 
 /// Only an actual provider rejection can tighten a request budget. This is
 /// distinct from the user's selected context target and never deletes history.
@@ -78,31 +82,87 @@ AgentRecovery recoverAgent(const ref ChatSession session, string cause, int atte
     return result;
 }
 
-/// Detect repeated *observations*, not just repeated prose. Polling an existing
-/// process is legitimate; repeating a read/search without new facts needs a
-/// changed approach, not suppression of the requested tool.
-string stagnantToolGuidance(const ref ChatSession session)
+struct ObservationRecovery
 {
-    string[string] observations;
-    int[string] repeats;
+    int repeats, notices, sinceNotice;
+    string tool, arguments;
+    bool focused() const { return repeats >= 3 && notices >= 2; }
+}
+
+/// Identify repeated information independently of JSON argument order and read
+/// defaults. Different ranges/results remain different observations. A process
+/// poll or actual command/check/edit owns its own progress and ends this streak.
+private string observationKey(const ref ChatMessage message)
+{
+    string target = message.toolArgs;
+    try
+    {
+        auto args = parseJSON(target);
+        if (args.type == JSONType.object)
+        {
+            if (message.toolName == "read" || message.toolName == "list" || message.toolName == "dshell")
+            {
+                if (message.toolName == "dshell")
+                {
+                    const command = "command" in args.object;
+                    if (command is null || command.type != JSONType.string || command.str != "list") return "";
+                }
+                auto path = "filePath" in args.object;
+                if (path is null) path = "path" in args.object;
+                if (path !is null && path.type == JSONType.string)
+                {
+                    target = buildNormalizedPath(path.str).replace("\\", "/");
+                    version (Windows) target = target.toLower();
+                }
+            }
+            else target = args.toString();
+        }
+    }
+    catch (Exception) {}
+    if (message.toolName != "read" && message.toolName != "list" && message.toolName != "dshell" &&
+        message.toolName != "grep" && message.toolName != "glob" && message.toolName != "read_plan" &&
+        message.toolName != "calculate") return "";
+    return message.toolName ~ "\n" ~ target ~ "\n" ~ sha256Of(message.content).toHexString().idup;
+}
+
+ObservationRecovery observationRecovery(const ref ChatSession session)
+{
+    ObservationRecovery result;
+    int[string] observations;
     int inspected;
+    bool latestNotice;
     foreach_reverse (index; activeMessagePath(session))
     {
         const ref message = session.messages[index];
-        if ((message.role == "user" && !message.internal) ||
-            (message.internal && message.content.startsWith(outputRecoveryMarker))) break;
+        if (message.role == "user" && !message.internal) break;
+        if (message.internal && message.content.indexOf("cause=unchanged_tool_results") >= 0)
+        { ++result.notices; latestNotice = true; }
         if (message.role != "tool") continue;
-        if (++inspected > 48) break;
+        if (++inspected > 128) break;
         if (message.workspaceChanged || (!message.failed && message.verificationCheck.length)) break;
-        if (message.toolName != "read" && message.toolName != "grep" &&
-            message.toolName != "glob" && message.toolName != "list" &&
-            message.toolName != "read_plan" && message.toolName != "update_plan" &&
-            message.toolName != "update_subplan") continue;
-        const key = message.toolName ~ "\n" ~ message.toolArgs;
-        auto prior = key in observations;
-        if (prior is null) { observations[key] = message.content; repeats[key] = 1; }
-        else if (*prior == message.content && ++repeats[key] >= 3)
-            return recoverAgent(session, "unchanged_tool_results").guidance;
+        if (message.toolName == "update_plan" || message.toolName == "update_subplan") continue;
+        const key = observationKey(message);
+        if (!key.length) break;
+        if (!latestNotice) ++result.sinceNotice;
+        const repeats = ++observations[key];
+        if (repeats > result.repeats)
+        {
+            result.repeats = repeats;
+            result.tool = message.toolName;
+            result.arguments = message.toolArgs;
+        }
     }
-    return "";
+    return result;
+}
+
+string stagnantToolGuidance(const ref ChatSession session)
+{
+    const state = observationRecovery(session);
+    if (state.repeats < 3 || (state.notices && state.sinceNotice < 3)) return "";
+    return recoverAgent(session, "unchanged_tool_results", state.notices).guidance ~
+        "\nThe same unchanged observation has already been returned " ~ to!string(state.repeats) ~
+        " times: " ~ state.tool ~ " " ~ taskExcerpt(state.arguments, 500) ~
+        ". Reloading it does not add evidence. Use the retained checkpoint and results. " ~
+        "Run the next declared behavioral check, or apply the specific needed change now; " ~
+        "let a concrete checker failure select further inspection. Do not reconstruct the same source inventory again.";
 }

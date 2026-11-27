@@ -1,6 +1,7 @@
 module auroraopencode.requestpolicy;
 
-import auroraopencode.core : ChatSession, ChatRequestMessage, OpenCodeToolDef;
+import auroraopencode.core : ChatSession, ChatRequestMessage, OpenCodeToolDef, activeMessagePath;
+import auroraopencode.agentloop : observationRecovery;
 import auroraopencode.contextcheckpoint : requestMessageBytes;
 import auroraopencode.contextpolicy;
 import auroraopencode.projectioncache : projectContext, RequestProjectionCache, ProjectionRevision;
@@ -80,6 +81,19 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     import auroraopencode.executioncontrol : executionReadyToAnswer;
     import auroraopencode.contextpolicy : latestActualUserRequest;
     const requestText = latestActualUserRequest(session);
+    const ready = executionReadyToAnswer(session);
+    bool goalReply;
+    if (!policy.diagnosticReview && session.goalStatus == "completed" && ready)
+        foreach_reverse (index; activeMessagePath(session))
+        {
+            const ref message = session.messages[index];
+            if (message.role == "user" && !message.internal) break;
+            if (message.role == "tool" && message.toolName == "goal_complete" && !message.failed)
+            { goalReply = true; break; }
+        }
+    const focus = !policy.diagnosticReview && !taskInvestigation(session) &&
+        session.contract.intent == "implementation" && session.contract.currentIntent != "analysis" &&
+        !ready && observationRecovery(session).focused();
     // Ready-to-answer means "produce the reply". Only an answer-only direct
     // question gets the tool-less handoff; a review, inspection, diagnosis or
     // repair still needs the tools to deliver a result, even when it is phrased
@@ -89,8 +103,8 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     // answer is recorded state, or an explicit explanation request, can be
     // answered without a lookup; otherwise a completed task left "what's in the
     // log?" with no channel to read the log.
-    const finalAnswer = policy.finalAnswer || (policy.toolsEnabled && !policy.diagnosticReview &&
-        !policy.orchestratorEnabled && executionReadyToAnswer(session) &&
+    const finalAnswer = policy.finalAnswer || goalReply || (policy.toolsEnabled && !policy.diagnosticReview &&
+        !policy.orchestratorEnabled && ready &&
         answerOnlyRequest(requestText) &&
         (explanationOnlyRequest(requestText) || stateQuestionRequest(requestText)));
     import auroraopencode.answercontract : answerContract;
@@ -117,10 +131,16 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
                     "replacing the main plan. Keep the parent step " ~
                     "in_progress until its outcome is complete.\n";
             import auroraopencode.planprogress : initialPlanSuggestion;
-            if (!policy.diagnosticReview)
+            if (!policy.diagnosticReview && !focus)
                 foreach (tool; policy.availableTools)
                     if (tool.name == "update_plan") { system.content ~= "\n" ~ initialPlanSuggestion ~ "\n"; break; }
             system.content ~= policy.planPrompt;
+            if (focus)
+                system.content ~= "\nRepeated unchanged inspection has not advanced the task. " ~
+                    "For this decision use a command/check or a small necessary edit. Run the next " ~
+                    "declared acceptance check rather than reloading source files or rewriting the plan. " ~
+                    "The supplied tools focus on execution and delivery for this step; normal inspection " ~
+                    "returns after that action or a concrete checker failure. Do not ask for Continue or routine approval.\n";
         }
         system.content ~= policy.identityBlock ~ sessionInstructionsBlock(session);
         result.messages ~= system;
@@ -152,6 +172,12 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
             if (policy.diagnosticReview && !diagnosticToolAllowed(tool.name)) continue;
             if (!policy.nestedPlans && tool.name == "update_subplan") continue;
             if (!goalActive(session) && tool.name == "goal_complete") continue;
+            if (focus)
+            {
+                import std.algorithm : canFind;
+                if (!["run", "bash", "verify", "write", "edit", "apply_patch", "patch",
+                    "process", "tool_status", "calculate", "goal_complete", "request_input", "task_blocker"].canFind(tool.name)) continue;
+            }
             result.tools ~= compactContextTool(tool, policy.contextLimit);
         }
     if (policy.orchestratorEnabled)

@@ -26,7 +26,10 @@ Retries cannot make an invalid credential valid or make an offline service work.
 They preserve pending work and automatically resume when the dependency recovers.
 
 Tools always report their failures to the agent. Repeated identical read/search
-results produce a strategy reminder without suppressing calls. Existing process
+results first produce a specific strategy reminder. Repeated ignored reminders
+temporarily focus the next implementation decision on a command, behavioral
+check or edit. Normal inspection returns after that action or a checker failure;
+read-only diagnoses retain their inspection tools. Existing process
 polls remain legitimate work. Unknown mutation outcomes require inspecting current
 state before another mutation; this system does not blindly replay tool effects.
 
@@ -51,6 +54,9 @@ not a failed behavioral assertion. It still requires current verification.
 Once a current behavioral check passes, the earlier invalidated receipt cannot
 reopen a completed goal. Actual failed steps remain obligations until rerun;
 an unrelated passing check cannot conceal them. Both kinds remain in history.
+Python's interpreter-only `-B` flag does not create a different checker identity.
+A validated `goal_complete` in the current turn leads to a final response with no
+further tool audit; a later human request receives its normal tools.
 
 ## Diagnostics
 
@@ -95,6 +101,11 @@ The provider credential stays in proxy memory; logs contain fault metadata and
 request fingerprints. The proxy remains on loopback and preserves the hosted
 wire profile. A pending repair omitted from the actual provider request or a
 system-only task request fails the run.
+The harness enables the native `AURORA_TOOL_ROOT` boundary, omits self-maintenance
+and desktop tools, and fails sustained identical-observation loops. This boundary
+checks structured tool paths; arbitrary programs are not an OS sandbox. An
+unconfigured developer source cannot make an unrelated task invoke Aurora's own
+rebuild tool.
 
 ```text
 python benchmarks/live_goal_resilience.py --live --output ABSOLUTE_NEW_OUTPUT_DIRECTORY --timeout 1800

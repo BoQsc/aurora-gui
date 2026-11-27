@@ -184,7 +184,30 @@ private string[] checkCommands(const ref ChatMessage message)
         if (value.type != JSONType.object || !("program" in value.object)) return;
         string text;
         if (auto program = "program" in value.object) text ~= program.str;
-        if (auto arguments = "args" in value.object) text ~= "\n" ~ arguments.toString();
+        if (auto arguments = "args" in value.object)
+        {
+            auto args = *arguments;
+            // Python's interpreter-only -B changes cache writes, not the test
+            // being run. A retry that disables bytecode must resolve the same
+            // failed checker; flags after the script/module remain significant.
+            if (["python", "python.exe", "python3", "python3.exe"].canFind(text.toLower()) && args.type == JSONType.array)
+            {
+                JSONValue[] normalized;
+                bool interpreter = true;
+                foreach (argument; args.array)
+                {
+                    if (argument.type == JSONType.string)
+                    {
+                        if (interpreter && argument.str == "-B") continue;
+                        if (!argument.str.startsWith("-") || argument.str == "-m" ||
+                            argument.str == "-c" || argument.str == "--") interpreter = false;
+                    }
+                    normalized ~= argument;
+                }
+                args = JSONValue(normalized);
+            }
+            text ~= "\n" ~ args.toString();
+        }
         if (text.length) commands ~= text;
     }
     void steps(JSONValue root, string key)

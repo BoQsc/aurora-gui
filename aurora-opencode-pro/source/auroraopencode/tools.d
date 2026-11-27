@@ -31,7 +31,7 @@ import auroraopencode.orchestrator : experimentalOrchestratorExecute,
     experimentalOrchestratorTools;
 // Aurora's own source package detection, so the `run` tool never recompiles the
 // running app's executable instead of using the in-app `rebuild` flow.
-import rebuild : isAuroraProject, isRebuildWorkspace;
+import rebuild : isAuroraProject, isRebuildWorkspace, findBuildDirectory;
 import std.file : dirEntries, exists, isFile, isDir, isSymlink, SpanMode, read,
     readText, write, mkdirRecurse, fileCopy = copy, remove, rename,
     rmdir, rmdirRecurse, tempDir, getSize,
@@ -969,6 +969,15 @@ private OpenCodeToolDef grepToolDefinition()
 
 /// Advertised tool definitions. Built as a function (not an immutable global)
 /// so the bash tool's description reflects the platform shell.
+private OpenCodeToolDef[] replayToolDefinitions(OpenCodeToolDef[] definitions)
+{
+    import std.process : environment;
+    import auroraopencode.isolation : isolatedToolError;
+    const root = environment.get("AURORA_TOOL_ROOT", "");
+    if (!root.length) return definitions;
+    return definitions.filter!(tool => !isolatedToolError(tool.name, "{}", root).length).array;
+}
+
 public OpenCodeToolDef[] builtinToolDefinitions()
 {
     const shell = defaultShellName();
@@ -1033,7 +1042,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
     defs ~= experimentalWebSearchTools(); // experimental: websearch
     defs ~= experimentalComputerUseTools(); // experimental: computer use
     defs ~= experimentalOrchestratorTools(); // experimental: orchestrator
-    return defs;
+    return replayToolDefinitions(defs);
 }
 
 /// Native-only tool definitions: the D-native `run` tool replaces the shell
@@ -1116,7 +1125,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
     defs ~= experimentalWebSearchTools(); // experimental: websearch
     defs ~= experimentalComputerUseTools(); // experimental: computer use
     defs ~= experimentalOrchestratorTools(); // experimental: orchestrator
-    return defs;
+    return replayToolDefinitions(defs);
 }
 
 /// Stable, outcome-first instructions for the coding agent. Tool-specific
@@ -7204,8 +7213,11 @@ private ToolExecution runRebuildTool(string arguments, string workspace, ChangeC
     }
     catch (Exception) {}
     const developerSource = developerToolSourceDirectory();
-    if (developerSource.length > 0 &&
-        !isRebuildWorkspace(workspace, developerSource))
+    const ownsPackage = isAuroraProject(workspace) ||
+        isAuroraProject(buildPath(workspace, "aurora-opencode-pro")) ||
+        isAuroraProject(findBuildDirectory(buildPath(workspace, "source-probe.exe")));
+    if ((developerSource.length > 0 && !isRebuildWorkspace(workspace, developerSource)) ||
+        (!developerSource.length && !ownsPackage))
         return ToolExecution("rebuild",
             "Error: `rebuild` only applies to Aurora OpenCode's own source " ~
             "(the `aurora-opencode-pro` package) that is running this " ~

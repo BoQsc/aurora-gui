@@ -239,6 +239,7 @@ def main():
     snapshots = []
     seen_signature = None
     last_print = 0
+    maximum_observation_repeats = 0
 
     def current():
         index = read_json(state / "threads.index.json", {})
@@ -255,7 +256,7 @@ def main():
         with (root / "process.log").open("w", encoding="utf-8") as error_log:
             process = subprocess.Popen([str(executable), "--session-server"], cwd=workspace,
                 env=dict(os.environ, APPDATA=str(appdata), TEMP=str(private), TMP=str(private),
-                         AURORA_STRICT_PLAN="0", FORGE_PUBLISH_SKIP="1"),
+                         AURORA_STRICT_PLAN="0", AURORA_TOOL_ROOT=str(root), FORGE_PUBLISH_SKIP="1"),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=error_log,
                 text=True, encoding="utf-8", errors="replace", bufsize=1)
 
@@ -286,6 +287,28 @@ def main():
                             raise RuntimeError("Aurora exited before goal completion")
                     header, messages = current()
                     tools = [m for m in messages if m.get("role") == "tool"]
+                    observations = collections.Counter()
+                    for m in reversed(tools):
+                        if m.get("workspaceChanged") or (not m.get("failed") and m.get("verificationCheck")):
+                            break
+                        name = m.get("toolName")
+                        if name in ("update_plan", "update_subplan"):
+                            continue
+                        try:
+                            arguments = json.loads(m.get("toolArgs", "{}"))
+                        except ValueError:
+                            arguments = {}
+                        if name not in ("read", "list") and not (name == "dshell" and arguments.get("command") == "list"):
+                            break
+                        target_path = arguments.get("filePath", arguments.get("path", ""))
+                        key = (name, os.path.normcase(os.path.normpath(target_path)),
+                               hashlib.sha256(m.get("content", "").encode()).hexdigest())
+                        observations[key] += 1
+                    maximum_observation_repeats = max(maximum_observation_repeats, max(observations.values(), default=0))
+                    if maximum_observation_repeats >= 9:
+                        raise RuntimeError("Sustained observation loop: the same unchanged file/list result was fetched nine times without an action or check")
+                    if any(m.get("toolName") in ("rebuild", "sync", "computer", "open") for m in tools):
+                        raise RuntimeError("The isolated task requested a forbidden application/desktop operation")
                     if counts["missing_recovery_directives"]:
                         raise RuntimeError("Pending recovery was saved but omitted from the actual provider request")
                     if counts["system_only_task_requests"]:
@@ -361,6 +384,7 @@ def main():
         server.shutdown(); server.server_close()
         actual_key = ""
         proof["seconds"] = round(time.monotonic() - started, 3)
+        proof["maximumIdenticalObservationStreak"] = maximum_observation_repeats
         header, messages = current()
         tools = [m for m in messages if m.get("role") == "tool"]
         proof.update(goalStatus=header.get("goalStatus"), taskStatus=header.get("taskStatus"),

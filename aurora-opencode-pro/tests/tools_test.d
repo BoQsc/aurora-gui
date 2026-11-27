@@ -1145,9 +1145,9 @@ int main(string[] args)
     }
     const contract = toolSteeringPrompt(false);
     assert(contract.indexOf("smallest complete solution") >= 0 &&
-        contract.indexOf("A pre-existing failing test") >= 0 &&
-        contract.indexOf("Verify at the level the request needs") >= 0 &&
-        contract.indexOf("preserve their constraints and edits") >= 0,
+        contract.indexOf("Preserve unrelated edits, history and user-owned tests") >= 0 &&
+        contract.indexOf("relevant behavior checks on the actual execution path") >= 0 &&
+        contract.indexOf("Keep the user's constraints, corrections, existing work and scope authoritative") >= 0,
         "The steering prompt must keep the execution contract");
     assert(toolSteeringPrompt(false).indexOf("# Environment") >
         toolSteeringPrompt(false).indexOf("# Communication"),
@@ -1276,13 +1276,16 @@ int main(string[] args)
             "rebuild without a host handler must fail clearly: " ~
             noHandler.output);
         string capturedReason;
+        const rebuildWorkspace = buildPath(dir, "self-rebuild-fixture");
+        mkdirRecurse(buildPath(rebuildWorkspace, "shared"));
+        write(buildPath(rebuildWorkspace, "shared", "rebuild.d"), "module rebuild;");
         rebuildRequestHandler = delegate bool(string reason)
         {
             capturedReason = reason;
             return true;
         };
         auto requested = executeTool(makeCall("rebuild",
-            `{"reason":"apply the new edit"}`), dir);
+            `{"reason":"apply the new edit"}`), rebuildWorkspace);
         assert(!requested.failed && capturedReason == "apply the new edit",
             "rebuild must forward its reason to the host handler");
         assert(requested.output.indexOf("reports the compiler errors") >= 0,
@@ -1311,7 +1314,7 @@ int main(string[] args)
         auto rebuildWorker = new Thread(delegate()
         {
             executeTool(makeCall("rebuild",
-                `{"reason":"from a worker"}`), dir);
+                `{"reason":"from a worker"}`), rebuildWorkspace);
         });
         rebuildWorker.start();
         rebuildWorker.join();
