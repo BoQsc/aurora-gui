@@ -9,7 +9,7 @@ import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker;
 import std.string : startsWith;
 import auroraopencode.grepformat : compactGrepHistory;
 import auroraopencode.controlhistory : controlHistoryBoundary, supersededControlState, turnControlState,
-    controlStateKind, ControlStateKind, controlHistoryLimit;
+    controlStateKind, ControlStateKind, controlHistoryLimit, pendingRecoveryIndex;
 import auroraopencode.completionhandoff : completionHandoffMarker;
 
 // Wire projection is independent of widgets, settings, and provider I/O.
@@ -46,6 +46,10 @@ public ChatRequestMessage[] projectRequestMessages(
                 session.messages[index].content.startsWith(controlHistoryBoundary))
                 controlBoundary = i;
         }
+        // A constrained checkpoint records task state, not the repair strategy.
+        // Keep the latest still-pending repair even when a boundary was written
+        // after it. A real tool result or new human request retires that repair.
+        const pendingRecovery = pendingRecoveryIndex(session);
         size_t slot = 0;
         if (afterMessageId.length > 0)
             foreach (i, index; path)
@@ -121,7 +125,7 @@ public ChatRequestMessage[] projectRequestMessages(
             // Earlier-turn controls cannot govern a new request. Preserve the
             // live turn's prefix for provider caching; constrained windows use
             // the explicit control boundary to retire its superseded states.
-            if ((slot < controlBoundary && supersededControlState(message)) ||
+            if ((slot < controlBoundary && path[slot] != pendingRecovery && supersededControlState(message)) ||
                 (slot < instructionBoundary && turnControlState(message)) ||
                 (message.internal && message.content.startsWith(controlHistoryBoundary)))
             {

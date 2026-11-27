@@ -108,6 +108,23 @@ def main():
             if not self.path.endswith("/chat/completions"):
                 self.forward(payload); return
             request = json.loads(payload)
+            if request.get("tools"):
+                if all(m.get("role") in ("system", "developer") for m in request.get("messages", [])):
+                    counts["system_only_task_requests"] += 1
+                # Observe only: a missing pending repair fails the test rather
+                # than inserting instructions into the agent's provider call.
+                _, history = current()
+                for message in reversed(history):
+                    if message.get("role") == "tool" or (message.get("role") == "user" and not message.get("internal")):
+                        break
+                    content = message.get("content", "")
+                    if message.get("internal") and content.startswith(("Agent output recovery:", "Execution recovery:")):
+                        marker = content.splitlines()[0]
+                        wire_text = "\n".join(m["content"] for m in request.get("messages", []) if isinstance(m.get("content"), str))
+                        if marker not in wire_text:
+                            counts["missing_recovery_directives"] += 1
+                            record({"kind": "missing_recovery_directive", "marker": marker})
+                        break
             counts["chat_attempts"] += 1
             number = counts["chat_attempts"]
             phases = passed_phases()
@@ -130,6 +147,8 @@ def main():
             counts["upstream_chat_requests"] += 1
             record({"kind": "upstream_request", "model": request.get("model"),
                     "messages": len(request.get("messages", [])),
+                    "roles": [m.get("role") for m in request.get("messages", [])],
+                    "bodySha256": hashlib.sha256(payload).hexdigest(),
                     "requestBytes": len(payload), "phasesPassed": sorted(phases),
                     "truncate": truncate})
             self.forward(payload, truncate)
@@ -181,10 +200,13 @@ def main():
                 connection.close()
                 self.close_connection = True
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    # Remain on loopback, while preserving the hosted wire profile. Aurora's
+    # conventional localhost/127.0.0.1 endpoint selects llama.cpp normalization;
+    # applying that to a hosted provider would change the path being tested.
+    server = http.server.ThreadingHTTPServer(("127.0.0.2", 0), Proxy)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    local_base = f"http://127.0.0.1:{server.server_port}/v1"
+    local_base = f"http://127.0.0.2:{server.server_port}/v1"
     model = saved["model"]
     settings = dict(baseUrl=local_base, apiKey="isolated-fault-proxy", model=model,
                     workspace=str(workspace), thinking=saved.get("thinking", True),
@@ -207,6 +229,7 @@ def main():
               "Finish only after all six phases, actual deliverables and final current-source verification pass.")
     (root / "prompt.txt").write_text(prompt, encoding="utf-8")
     proof = dict(status="running", model=model, thinking=settings["thinking"],
+                 wireProfile="hosted",
                  binarySha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
                  externalGoalSubmissions=0, continueMessages=0, interventionMessages=0,
                  contextBudget=args.context, errors=[])
@@ -263,6 +286,10 @@ def main():
                             raise RuntimeError("Aurora exited before goal completion")
                     header, messages = current()
                     tools = [m for m in messages if m.get("role") == "tool"]
+                    if counts["missing_recovery_directives"]:
+                        raise RuntimeError("Pending recovery was saved but omitted from the actual provider request")
+                    if counts["system_only_task_requests"]:
+                        raise RuntimeError("Compaction produced a system-only task request without a conversational turn")
                     # Completion-only recovery is a product defect, even if
                     # the goal itself has been marked complete. Do not let
                     # repeated final answers run until the overall deadline.

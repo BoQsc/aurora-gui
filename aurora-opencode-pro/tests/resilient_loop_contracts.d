@@ -4,6 +4,8 @@ import auroraopencode.core;
 import auroraopencode.outputguard : agentOutputIssue, outputRecoveryMarker;
 import auroraopencode.agentloop;
 import auroraopencode.requestbuilder : projectRequestMessages;
+import auroraopencode.contextpolicy : checkpointRequestMessages;
+import auroraopencode.controlhistory : controlHistoryBoundary, durableTaskCheckpointPrefix;
 import auroraopencode.turnpolicy;
 import auroraopencode.executioncontrol : executionState;
 import auroraopencode.taskmutation : planReplacementError;
@@ -59,6 +61,52 @@ int main()
     assert(decideTurn(s, policy).recoveryDelayMs > 0, "Repeated failures spun without a delay");
     policy.cancelled = true;
     assert(decideTurn(s, policy).action == TurnAction.interrupted);
+
+    // A real long goal compacted through its latest tool result. A subsequent
+    // constrained control boundary then discarded the fresh repair directive,
+    // producing an identical system-only request after a repeated-prose error.
+    ChatSession compacted;
+    add(compacted, "user", "Complete all six milestones and verify the delivered files.");
+    compacted.compactedThroughMessageId = compacted.activeLeafId;
+    compacted.compactionSummary = "Five milestones passed; implement and verify the sixth.";
+    string previous;
+    foreach (i; 0 .. 4)
+    {
+        add(compacted, "assistant", "Rejected printed tool calls and looping prose");
+        const repair = recoverAgent(compacted, "repeated_prose", i).guidance;
+        add(compacted, "user", repair, true);
+        add(compacted, "user", controlHistoryBoundary, true);
+        add(compacted, "user", durableTaskCheckpointPrefix ~ " Phase 6 remains active.", true);
+        const request = checkpointRequestMessages(compacted);
+        int repairs;
+        bool human;
+        string projection;
+        foreach (message; request)
+        {
+            projection ~= message.content;
+            if (message.content.indexOf("cause=repeated_prose") >= 0) ++repairs;
+            if (message.role == "user" && message.content == compacted.messages[0].content) human = true;
+        }
+        assert(human && repairs == 1 && projection.indexOf(repair) >= 0,
+            "Compaction lost the current repair strategy or user's conversational request");
+        assert(projection != previous, "An output failure retried the identical provider prompt");
+        previous = projection;
+    }
+    compacted.compactedThroughMessageId = compacted.activeLeafId;
+    bool checkpointedRepair;
+    foreach (message; checkpointRequestMessages(compacted))
+        if (message.content.indexOf("attempt=4 cause=repeated_prose") >= 0) checkpointedRepair = true;
+    assert(checkpointedRepair, "Rolling the summary past a pending repair discarded it");
+    add(compacted, "tool", "A real tool result now owns the next action.", false, "read");
+    add(compacted, "user", controlHistoryBoundary, true);
+    foreach (message; checkpointRequestMessages(compacted))
+        assert(message.content.indexOf("cause=repeated_prose") < 0,
+            "An old repair remained authoritative after actual tool progress");
+    add(compacted, "user", "New request: inspect only.");
+    foreach (message; projectRequestMessages(compacted))
+        assert(message.content.indexOf("cause=repeated_prose") < 0,
+            "An earlier repair leaked into a new human instruction");
+    writeln("PASS live repair and actual user request survive constrained compaction; retries change the wire prompt");
 
     ChatSession repeated;
     add(repeated, "user", "Repair the file");

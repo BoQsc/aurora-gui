@@ -3,6 +3,7 @@ module auroraopencode.contextpolicy;
 import auroraopencode.core : ChatSession, ChatRequestMessage, OpenCodeToolDef, activeMessagePath;
 import auroraopencode.contextcheckpoint : requestMessageBytes, compactionBoundary;
 import auroraopencode.projectioncache : projectContext, RequestProjectionCache, ProjectionRevision;
+import auroraopencode.controlhistory : pendingRecoveryIndex;
 import auroraopencode.taskcontext : taskContext;
 import auroraopencode.taskpolicy : requiredEvidence;
 import auroraopencode.taskflow : taskInvestigation;
@@ -11,7 +12,7 @@ import auroraopencode.requestintent : RequestIntent, answerOnlyRequest, requestI
 import auroraopencode.goalmode : goalActive, goalAnswerDelivered, goalPromptBlock;
 import std.array : appender, join, split;
 import std.algorithm : canFind, min, max;
-import std.string : strip, startsWith, toLower, replace;
+import std.string : strip, startsWith, toLower, replace, indexOf;
 import std.conv : to;
 import std.json : JSONValue, JSONType, parseJSON;
 
@@ -762,7 +763,38 @@ public ChatRequestMessage[] checkpointRequestMessages(
     note.role = "system";
     note.content = session.compactionSummary;
     auto result = [note];
-    result ~= projectContext(session, session.compactedThroughMessageId, false, imageLimit, cache, revision);
+    auto suffix = projectContext(session, session.compactedThroughMessageId, false, imageLimit, cache, revision);
+    const pending = pendingRecoveryIndex(session);
+    if (pending != size_t.max)
+    {
+        const repair = session.messages[pending].content;
+        bool present;
+        foreach (message; suffix) if (message.content.indexOf(repair) >= 0) present = true;
+        if (!present)
+        {
+            ChatRequestMessage instruction;
+            instruction.role = "system";
+            instruction.content = "Internal agent-control instruction:\n" ~ repair;
+            suffix ~= instruction;
+        }
+    }
+    bool conversation;
+    foreach (message; suffix)
+        if (message.role != "system" && message.role != "developer") conversation = true;
+    if (!conversation)
+    {
+        // Compaction can retire the entire human/tool exchange, leaving only
+        // internal checkpoints. Preserve the actual request as a user message;
+        // a system-only request has no conversational turn for several chat
+        // templates and can trap the model in prose about using tools.
+        ChatRequestMessage request;
+        request.role = "user";
+        request.content = latestActualUserRequest(session);
+        if (!request.content.length)
+            request.content = "Application continuation: resume the user's request recorded in the checkpoint and current instructions.";
+        result ~= request;
+    }
+    result ~= suffix;
     return result;
 }
 

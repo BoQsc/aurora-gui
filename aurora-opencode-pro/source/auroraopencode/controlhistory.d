@@ -37,6 +37,19 @@ bool supersededControlState(const ref ChatMessage message)
     return controlStateKind(message) != ControlStateKind.none;
 }
 
+/// Recovery is live until an actual tool result or a new human request owns
+/// the next decision. Checkpoints and summary boundaries cannot supersede it.
+size_t pendingRecoveryIndex(const ref ChatSession session)
+{
+    foreach_reverse (index; activeMessagePath(session))
+    {
+        const ref message = session.messages[index];
+        if (message.role == "tool" || (message.role == "user" && !message.internal)) break;
+        if (controlStateKind(message) == ControlStateKind.recovery) return index;
+    }
+    return size_t.max;
+}
+
 bool turnControlState(const ref ChatMessage message)
 {
     if (!message.internal || message.images.length) return false;

@@ -11,6 +11,10 @@ rejected markup and superseded no-action prose, preserve paired successful tool
 results, and rotate concrete repair strategies. Repeated unsuccessful responses
 back off to 30 seconds instead of spinning. Only the latest repair directive is
 sent after a failure-only streak; the full saved graph remains intact.
+The newest pending repair survives a constrained control-history boundary until
+a tool result or new human instruction takes over. Compaction retains the actual
+user request when the remaining history contains only internal instructions, so
+the next provider request has a conversational turn and the current repair.
 
 Provider recovery defaults to persistent retries. Transport failures use a
 3–30 second backoff. Authentication, unavailable routes and quota errors without
@@ -87,7 +91,10 @@ provider. It injects three initial 503s, two mid-goal 429s, a truncated real SSE
 response, three late 502s and three real command exits with status 75. It requires
 all deliverables, 71 independent final checks, persisted goal and turn completion,
 and no input requests or Continue messages. Completion-only loops fail the run.
-The provider credential stays in proxy memory; logs contain fault metadata.
+The provider credential stays in proxy memory; logs contain fault metadata and
+request fingerprints. The proxy remains on loopback and preserves the hosted
+wire profile. A pending repair omitted from the actual provider request or a
+system-only task request fails the run.
 
 ```text
 python benchmarks/live_goal_resilience.py --live --output ABSOLUTE_NEW_OUTPUT_DIRECTORY --timeout 1800
