@@ -421,7 +421,7 @@ public string verificationInputsSignature(string workspace, JSONValue inputs, re
     {
         enforce(input.type == JSONType.string, "Invalid input path.");
         const path = canonicalPath(absolutePath(input.str, workspace));
-        enforce(checkoutIdentity(path) == checkoutIdentity(workspace), "Input leaves checkout.");
+        enforce(checkoutOwnsPath(workspace, path), "Input leaves checkout.");
         string signature;
         if (auto cached = path in inventories) signature = *cached;
         else

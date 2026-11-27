@@ -1,7 +1,7 @@
 module auroraopencode.recipeevidence;
 import auroraopencode.effectfacts : effectFactBool;
 import auroraopencode.core : ChatMessage;
-import auroraopencode.checkout : canonicalPath, checkoutIdentity;
+import auroraopencode.checkout : canonicalPath, checkoutIdentity, checkoutOwnsPath;
 import auroraopencode.verificationrecipe : verificationInputsFingerprint, verificationInputsSignature, checkedRunRecipe;
 import std.file : read, readText, getSize, exists;
 import std.digest : toHexString;
@@ -145,7 +145,7 @@ struct RecipeEvidenceCache
             }
             else
             {
-                if (checkoutIdentity(path) != ownerScope[0 .. separator] ||
+                if (!checkoutOwnsPath(workspace, path) ||
                     fileHash(path, 64 * 1024) != value["recipeSha256"].str) return false;
                 if (auto cached = path in recipes) recipe = *cached;
                 else { recipe = parseJSON(readText(path)); recipes[path] = recipe; }

@@ -56,5 +56,15 @@ int main()
         assert(executionState(lost).remaining.length, "A changed assertion subject or missing assertion was accepted");
     }
     writeln("PASS corrected equality literals retain assertion subjects, operators and all other checker logic");
+    enum generatorBody = "; assert all(math.isclose(total(*a),e,rel_tol=0,abs_tol=1e-9) for a,e in checks)";
+    enum tupleExpected = "import math; from invoice import total; checks=[((0,),(5,)),((100,True),(95,))]" ~ generatorBody;
+    enum scalarExpected = "import math; from invoice import total; checks=[((0,),5),((100,True),90)]" ~ generatorBody;
+    ChatSession generator; check(generator, tupleExpected, true); check(generator, scalarExpected, false);
+    assert(!executionState(generator).remaining.length,
+        "A corrected generator checker retaining nested argument tuples cannot resolve its wrong expected values");
+    ChatSession missingInput; check(missingInput, tupleExpected, true);
+    check(missingInput, "import math; from invoice import total; checks=[((0,),5)]" ~ generatorBody, false);
+    assert(executionState(missingInput).remaining.length, "A generator revision dropped an original invocation");
+    writeln("PASS generator checks retain nested argument tuples while correcting expected values");
     return 0;
 }

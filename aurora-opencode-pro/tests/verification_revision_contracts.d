@@ -38,6 +38,9 @@ int main()
     root.injectToolResultForTesting("write", "Wrote app.d", false, `{"filePath":"app.d"}`, 1);
     assert(root.verificationStatusForTesting() == "required");
 
+    // Zero denotes a self-scoped checked-run receipt, not a bound revision.
+    // Exercise delayed-revision rejection with an actual nonzero generation.
+    invalidateToolWorkspace(workspace);
     const checkedRevision = toolWorkspaceRevision(workspace);
     invalidateToolWorkspace(workspace); // another chat edits after the check settles
     root.injectToolResultForTesting("verify", `{}`, false, `{}`, 0, 0, "", null,

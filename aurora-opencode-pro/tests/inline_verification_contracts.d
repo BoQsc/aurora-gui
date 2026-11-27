@@ -1,12 +1,12 @@
 module inline_verification_contracts;
 
-import auroraopencode.verificationrecipe : runVerificationRecipe, VerificationRun;
+import auroraopencode.verificationrecipe : runVerificationRecipe, VerificationRun, verificationInputsSignature;
 import auroraopencode.recipeevidence : RecipeEvidenceCache;
 import auroraopencode.core : ChatMessage;
 import auroraopencode.checkout : checkoutIdentity, checkoutOwnsPath;
 import core.time : MonoTime;
 import std.conv : to;
-import std.file : mkdirRecurse, write, exists, tempDir;
+import std.file : mkdirRecurse, write, exists, tempDir, remove;
 import std.path : absolutePath, buildPath;
 import std.json : JSONValue, parseJSON;
 import std.stdio : writeln, File;
@@ -25,6 +25,37 @@ void main()
         `{"inputs":["source/output.txt"],"steps":[{"kind":"tests","command":{"program":"checker"}}]}`,
         plain, delegate(JSONValue command) { ++plainRuns; return VerificationRun("checked", false, false, "tests"); });
     assert(plainResult.passed && plainRuns == 1, plainResult.output);
+    ChatMessage plainProof;
+    plainProof.id = "plain-inline"; plainProof.toolName = "verify";
+    plainProof.toolArgs = `{"inputs":["source/output.txt"],"steps":[{"kind":"tests","command":{"program":"checker"}}]}`;
+    plainProof.content = plainResult.output; plainProof.verificationCheck = plainResult.check;
+    RecipeEvidenceCache plainCache;
+    assert(plainCache.current(plainProof, checkoutIdentity(plain) ~ "|1"),
+        "A plain-directory receipt could run but could not revalidate its identical inputs");
+    write(buildPath(plain, "temporary.pyc"), "untracked cache");
+    remove(buildPath(plain, "temporary.pyc"));
+    RecipeEvidenceCache afterCleanup;
+    assert(afterCleanup.current(plainProof, checkoutIdentity(plain) ~ "|2"),
+        "Unrelated cache cleanup invalidated unchanged explicitly verified inputs");
+    mkdirRecurse(buildPath(plain, "checks"));
+    write(buildPath(plain, "checks", "verify.json"), plainProof.toolArgs);
+    const savedArgs = `{"recipe":"checks/verify.json"}`;
+    auto savedPlain = runVerificationRecipe(savedArgs, plain,
+        delegate(JSONValue command) { return VerificationRun("checked", false, false, "tests"); });
+    assert(savedPlain.passed);
+    auto savedProof = plainProof; savedProof.id = "plain-saved"; savedProof.toolArgs = savedArgs;
+    savedProof.content = savedPlain.output;
+    RecipeEvidenceCache savedCache;
+    assert(savedCache.current(savedProof, checkoutIdentity(plain) ~ "|3"),
+        "A saved recipe inside a plain task directory lost its accepted proof");
+    write(buildPath(plain, "source", "output.txt"), "changed source");
+    RecipeEvidenceCache changedPlain;
+    assert(!changedPlain.current(plainProof, checkoutIdentity(plain) ~ "|4"),
+        "Receipt revalidation accepted changed deliverable bytes");
+    bool outsideRejected;
+    try { verificationInputsSignature(plain, JSONValue([plain ~ "-outside"])); }
+    catch (Exception) { outsideRejected = true; }
+    assert(outsideRejected, "The signature admitted an input outside the task directory");
     mkdirRecurse(buildPath(plain, "nested", ".git"));
     write(buildPath(plain, "nested", "foreign.txt"), "other checkout");
     assert(!checkoutOwnsPath(plain, buildPath(plain, "nested", "foreign.txt")));

@@ -78,6 +78,12 @@ executions both remain in the transcript.
 Equality assertions can also revise a typed literal expectation while retaining
 the assertion subject, operator and every other line. Removing assertions,
 changing their subjects or relaxing a comparison cannot resolve the old check.
+Parameter tables also support literal nested argument tuples and generator-based
+comparisons. The original calls and comparison logic remain required.
+Receipt revalidation uses the same ownership rule as initial verification:
+plain task directories own their descendants, while external paths and nested
+Git checkouts remain excluded. Cleanup outside declared inputs preserves valid
+proof; changed verified bytes and saved recipes still invalidate it.
 
 ## Diagnostics
 

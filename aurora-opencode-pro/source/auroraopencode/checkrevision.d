@@ -100,13 +100,54 @@ private InlineCases inlineCases(string command)
             { sourceIndex = i + 1; break; }
         if (sourceIndex == size_t.max || arguments.array[sourceIndex].type != JSONType.string) return result;
         const source = arguments.array[sourceIndex].str;
-        auto assignment = matchFirst(source, `(?m)^[ \t]*([A-Za-z_]\w*)[ \t]*=[ \t]*(\[)`);
+        auto assignment = matchFirst(source, `(?:^|[;\n])[ \t]*([A-Za-z_]\w*)[ \t]*=[ \t]*(\[)`);
         if (!assignment.length) return result;
         const name = assignment[1];
         const begin = assignment.pre.length + assignment.hit.length - 1;
         size_t position = begin + 1, columns;
         string[] inputs;
         void space() { while (position < source.length && " \t\r\n".canFind(source[position])) ++position; }
+        string literal(size_t depth = 0)
+        {
+            if (depth > 16) return "";
+            space();
+            if (position >= source.length) return "";
+            if (source[position] == '(' || source[position] == '[')
+            {
+                const open = source[position++], close = open == '(' ? ')' : ']';
+                string value = [open];
+                space();
+                while (position < source.length && source[position] != close)
+                {
+                    const item = literal(depth + 1);
+                    if (!item.length) return "";
+                    value ~= item; space();
+                    if (position < source.length && source[position] == ',')
+                    { value ~= ','; ++position; space(); }
+                    else if (position >= source.length || source[position] != close) return "";
+                }
+                if (position >= source.length) return "";
+                ++position; return value ~ close;
+            }
+            const start = position;
+            if (source[position] == '\'' || source[position] == '"')
+            {
+                const quote = source[position++];
+                while (position < source.length && source[position] != quote)
+                {
+                    if (source[position] == '\\') return "";
+                    ++position;
+                }
+                if (position == source.length) return "";
+                ++position;
+            }
+            else
+            {
+                while (position < source.length && !",)] \t\r\n".canFind(source[position])) ++position;
+                if (!matchFirst(source[start .. position], `^(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)|True|False|None)$`)) return "";
+            }
+            return source[start .. position];
+        }
         while (position < source.length)
         {
             space();
@@ -116,26 +157,9 @@ private InlineCases inlineCases(string command)
             while (position < source.length)
             {
                 space();
-                const start = position;
-                if (position < source.length && (source[position] == '\'' || source[position] == '"'))
-                {
-                    const quote = source[position++];
-                    while (position < source.length && source[position] != quote)
-                    {
-                        if (source[position] == '\\') return result;
-                        ++position;
-                    }
-                    if (position == source.length) return result;
-                    ++position;
-                }
-                else
-                {
-                    while (position < source.length && !",) \t\r\n".canFind(source[position])) ++position;
-                    const scalar = source[start .. position];
-                    if (!matchFirst(scalar, `^(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)|True|False|None)$`)) return result;
-                }
-                if (position == start) return result;
-                values ~= source[start .. position];
+                const value = literal();
+                if (!value.length) return result;
+                values ~= value;
                 space();
                 if (position >= source.length) return result;
                 if (source[position] == ')') { ++position; break; }
@@ -150,10 +174,12 @@ private InlineCases inlineCases(string command)
         }
         if (!inputs.length || position >= source.length || source[position] != ']') return result;
         const end = position + 1;
-        auto loop = matchFirst(source[end .. $], `(?m)^[ \t]*for[ \t]+([A-Za-z_][\w, \t]*)[ \t]+in[ \t]+` ~ name ~ `[ \t]*:`);
+        auto loop = matchFirst(source[end .. $], `\bfor[ \t]+([A-Za-z_][\w, \t]*)[ \t]+in[ \t]+` ~ name ~ `\b`);
         if (!loop.length) return result;
         auto names = loop[1].split(',');
-        if (names.length != columns || !["expected", "want"].canFind(names[$ - 1].strip())) return result;
+        if (names.length != columns || !["expected", "want", "e"].canFind(names[$ - 1].strip())) return result;
+        if (names[$ - 1].strip() == "e" &&
+            !matchFirst(source[end .. $], `(?:==[ \t]*e\b|isclose\([^;\n]*,[ \t]*e\b)`)) return result;
         auto normalized = arguments.array.dup;
         normalized[sourceIndex] = JSONValue(source[0 .. begin] ~ "<retained-input-cases>" ~ source[end .. $]);
         result.templateCommand = program ~ "\n" ~ JSONValue(normalized).toString();
