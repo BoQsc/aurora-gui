@@ -249,6 +249,14 @@ public string[] checkCommands(const ref ChatMessage message)
     return loaded ? commands : null;
 }
 
+private bool reranCheck(string required, const(string)[] commands)
+{
+    import auroraopencode.checkrevision : retainsInlineCheckCoverage;
+    foreach (command; commands)
+        if (command == required || retainsInlineCheckCoverage(required, command)) return true;
+    return false;
+}
+
 ExecutionState executionState(const ref ChatSession session, bool strictPlan = false)
 {
     ExecutionState state;
@@ -387,7 +395,7 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
                         if (checkCategory(failed.category) != checkCategory(message.verificationCheck)) continue;
                         bool rerun = true;
                         foreach (required; failed.commands)
-                            if (!commands.canFind(required)) { rerun = false; break; }
+                            if (!reranCheck(required, commands)) { rerun = false; break; }
                         if (rerun) failedChecks = failedChecks.remove(i);
                     }
             }

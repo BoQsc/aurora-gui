@@ -61,6 +61,18 @@ Python's interpreter-only `-B` flag does not create a different checker identity
 A validated `goal_complete` in the current turn leads to a final response with no
 further tool audit; a later human request receives its normal tools.
 
+Requests to calculate a value are analysis, including applying a discount or
+adding shipping. They do not require creating an artifact solely to obtain a
+verification receipt. Explicit requests to save or implement still own delivery.
+JSON response-field names such as `repair` and `test` cannot authorize changes.
+
+A passing inline Python parameter-table revision can correct generated expected
+values while resolving the original failed check. Every original input tuple,
+the assertion body, imports, interpreter arguments and surrounding guards must
+remain. Unrelated checks, dropped cases and weakened assertions do not qualify;
+unsupported syntax keeps exact command matching. Original failures and revised
+executions both remain in the transcript.
+
 ## Diagnostics
 
 `agent-lifecycle` records correlate requests, recovery schedules, storage recovery,
@@ -102,8 +114,10 @@ all deliverables, 71 independent final checks, persisted goal and turn completio
 and no input requests or Continue messages. Completion-only loops fail the run.
 The provider credential stays in proxy memory; logs contain fault metadata and
 request fingerprints. The proxy remains on loopback and preserves the hosted
-wire profile. A pending repair omitted from the actual provider request or a
-system-only task request fails the run.
+wire profile. Three identical requests that omit the pending repair, or a
+system-only task request, fail the run. Saved snapshots can lag the runtime;
+a newer repair for the same cause supersedes the saved marker. Mismatches retain
+the actual request body and marker metadata for diagnosis, without credentials.
 The harness enables the native `AURORA_TOOL_ROOT` boundary, omits self-maintenance
 and desktop tools, and fails sustained identical-observation loops. Its progress
 boundary uses actual workspace bytes and independently passed milestones, so
@@ -121,3 +135,22 @@ remote provider. This consumes real provider usage. Artifacts include the entire
 isolated conversation, fault log, progress timeline, independent final verifier
 output and machine-readable result. A failed run is retained; it is never counted
 as a pass after an intervention or an acceptance-checker edit.
+
+The broader opt-in matrix measures simple conversation, decimal calculation,
+unknown-fact lookup, small edits, implementation boundaries, code review,
+read-only failing-test diagnosis, primary-source and conflicting-source research,
+multi-turn scope, native download/archive/data/checksum/background processes, and
+a verified project goal. Real source/command/provider failures are exercised.
+Independent checks own correctness; efficiency budgets are reported separately
+and never cut off productive execution. Each isolated case receives only its
+declared user request(s), without continuation or repair hints from the runner.
+
+```text
+python benchmarks/agent_task_matrix.py --live --output ABSOLUTE_NEW_OUTPUT_DIRECTORY --jobs 3
+```
+
+Use `--cases NAME ...` and `--repeats N` for repeated comparisons against the
+same built executable. Reports retain binary/source hashes, provider timing,
+tool counts, repeated results, final state, replies, grounding checks and
+workspace hashes. Source outages use controlled HTTP documents; primary-source
+research fetches the actual public Python and SQLite documentation.

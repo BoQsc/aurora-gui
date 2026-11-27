@@ -86,6 +86,21 @@ bool processAccountabilityQuestion(string text)
 
 private bool requestedVerb(const(string)[] words, const(string)[] raw, size_t i)
 {
+    // Field names in a response schema are data, even when they happen to be
+    // verbs ("Return JSON keys actual, repair, test"). A later sentence can
+    // still independently authorize implementation.
+    size_t sentence;
+    foreach_reverse (j; 0 .. i)
+        if (raw[j].length && ".!?;".canFind(raw[j][$ - 1])) { sentence = j + 1; break; }
+    bool response, json, fields;
+    foreach (word; words[sentence .. i])
+    {
+        if (fields && word == "then") { fields = false; response = false; json = false; }
+        if (["return", "respond", "reply", "output"].canFind(word)) response = true;
+        if (response && word == "json") json = true;
+        if (json && ["keys", "fields", "properties"].canFind(word)) fields = true;
+    }
+    if (fields) return false;
     // A modal question about an approach is advice, not a command. Restrict
     // this to its clause so a later "Please implement it" still takes effect.
     if (i >= 2 && ["you", "we", "i"].canFind(words[i - 1]) &&
@@ -136,6 +151,39 @@ private bool requestedVerb(const(string)[] words, const(string)[] raw, size_t i)
     }
     if (i >= 3 && words[0] == "i" && words[1] == "said" && words[2] == "to") return true;
     return false;
+}
+
+/// A request for a computed value is evidence gathering, including arithmetic
+/// instructions such as "apply a discount" and "add shipping". An explicit
+/// artifact/change request keeps its implementation intent.
+private bool calculationResultRequest(string text)
+{
+    const words = requestWords(text);
+    const raw = text.toLower().split();
+    size_t first;
+    while (first < words.length && ["please", "now", "just", "so"].canFind(words[first])) ++first;
+    if (first >= words.length || !["calculate", "compute"].canFind(words[first])) return false;
+    foreach (i, word; words)
+    {
+        if (!requestedVerb(words, raw, i)) continue;
+        if (["fix", "repair", "implement", "edit", "change", "refactor", "optimize", "optimise",
+                "create", "remove", "delete", "replace", "rename", "move", "save", "commit",
+                "ship", "publish", "deploy", "install", "launch", "start", "update", "build",
+                "improve", "make", "write", "rebuild", "redesign", "generate", "code", "rewrite",
+                "integrate", "upgrade", "migrate", "enable", "disable", "configure", "download",
+                "copy"].canFind(word)) return false;
+        if (word == "add" || word == "apply")
+        {
+            size_t operand = i + 1;
+            while (operand < words.length && ["a", "an", "the"].canFind(words[operand])) ++operand;
+            if (operand == words.length) return false;
+            const value = words[operand];
+            if (!(value.length && value[0] >= '0' && value[0] <= '9') &&
+                !["tax", "taxes", "shipping", "delivery", "discount", "discounts", "coupon",
+                  "rate", "rates", "rounding", "interest", "fees", "fee", "cap"].canFind(value)) return false;
+        }
+    }
+    return true;
 }
 
 /// A yes/no status question ("so is all done and complete?") mentions
@@ -356,6 +404,7 @@ bool continuationFragment(string text)
 /// for arbitrary tools. The model still sees the complete current instruction.
 RequestIntent requestIntent(string text)
 {
+    if (calculationResultRequest(text)) return RequestIntent.analysis;
     const words = requestWords(text);
     const raw = text.toLower().split();
     bool analysis, continuation, completion, clarification;
@@ -371,7 +420,7 @@ RequestIntent requestIntent(string text)
         if (word == "do" && i + 1 < words.length &&
             ["it", "that", "this", "so"].canFind(words[i + 1]))
             return RequestIntent.implementation;
-        if (["fix", "repair", "implement", "apply", "change", "refactor", "optimize", "optimise",
+        if (["fix", "repair", "implement", "edit", "apply", "change", "refactor", "optimize", "optimise",
                 "create", "add", "remove", "delete", "replace", "rename", "move", "save", "commit",
                 "ship", "publish", "deploy", "install", "launch", "play", "run", "try",
                 "start", "begin",
@@ -683,10 +732,11 @@ bool permissionQuestionReply(string text)
 
 bool artifactChangeRequested(string text)
 {
+    if (calculationResultRequest(text)) return false;
     const words = requestWords(text);
     const raw = text.toLower().split();
     foreach (i, word; words)
-        if (["fix", "repair", "implement", "apply", "change", "refactor", "optimize", "optimise",
+        if (["fix", "repair", "implement", "edit", "apply", "change", "refactor", "optimize", "optimise",
                 "create", "add", "remove", "delete", "replace", "rename", "move", "save", "make", "write",
                 "redesign", "generate", "code", "rewrite", "integrate", "upgrade", "migrate", "configure"].canFind(word) &&
             requestedVerb(words, raw, i)) return true;

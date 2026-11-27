@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import socket
 import subprocess
 import sys
@@ -33,6 +34,25 @@ def read_json(path, fallback=None):
         return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return fallback
+
+
+def recovery_markers(request):
+    return [line for message in request.get("messages", [])
+            if message.get("role") in ("system", "developer", "user")
+            and isinstance(message.get("content"), str)
+            for line in message["content"].splitlines()
+            if line.startswith(("Agent output recovery:", "Execution recovery:"))]
+
+
+def recovery_is_current(expected, actual):
+    if expected in actual:
+        return True
+    pattern = r"^(Agent output recovery:|Execution recovery:) attempt=(\d+) cause=(\S+)"
+    old = re.match(pattern, expected)
+    if not old:
+        return False
+    return any(new and new[1] == old[1] and new[3] == old[3] and int(new[2]) >= int(old[2])
+               for new in (re.match(pattern, marker) for marker in actual))
 
 
 def main():
@@ -65,6 +85,7 @@ def main():
     counts = collections.Counter()
     fired = set()
     provider_records = []
+    missing_recovery_bodies = collections.Counter()
 
     def passed_phases():
         path = private / "receipts.jsonl"
@@ -108,11 +129,12 @@ def main():
             if not self.path.endswith("/chat/completions"):
                 self.forward(payload); return
             request = json.loads(payload)
-            if request.get("tools"):
+            if request.get("tools") and request.get("tool_choice") != "none":
                 if all(m.get("role") in ("system", "developer") for m in request.get("messages", [])):
                     counts["system_only_task_requests"] += 1
-                # Observe only: a missing pending repair fails the test rather
-                # than inserting instructions into the agent's provider call.
+                # Disk snapshots can lag the request's newer runtime recovery.
+                # Observe without changing the wire, and require repeated
+                # identical omissions before declaring a projection loop.
                 _, history = current()
                 for message in reversed(history):
                     if message.get("role") == "tool" or (message.get("role") == "user" and not message.get("internal")):
@@ -120,10 +142,22 @@ def main():
                     content = message.get("content", "")
                     if message.get("internal") and content.startswith(("Agent output recovery:", "Execution recovery:")):
                         marker = content.splitlines()[0]
-                        wire_text = "\n".join(m["content"] for m in request.get("messages", []) if isinstance(m.get("content"), str))
-                        if marker not in wire_text:
-                            counts["missing_recovery_directives"] += 1
-                            record({"kind": "missing_recovery_directive", "marker": marker})
+                        actual = recovery_markers(request)
+                        if not recovery_is_current(marker, actual):
+                            body_hash = hashlib.sha256(payload).hexdigest()
+                            key = (marker, body_hash)
+                            missing_recovery_bodies[key] += 1
+                            counts["recovery_snapshot_mismatches"] += 1
+                            record({"kind": "recovery_snapshot_mismatch", "marker": marker,
+                                    "wireRecoveryMarkers": actual, "bodySha256": body_hash,
+                                    "identicalOmissions": missing_recovery_bodies[key]})
+                            (root / ("recovery-request-" + body_hash + ".json")).write_bytes(payload)
+                            if missing_recovery_bodies[key] >= 3:
+                                counts["missing_recovery_directives"] += 1
+                        elif marker not in actual:
+                            counts["newer_wire_recovery"] += 1
+                            record({"kind": "newer_wire_recovery", "snapshotMarker": marker,
+                                    "wireRecoveryMarkers": actual})
                         break
             counts["chat_attempts"] += 1
             number = counts["chat_attempts"]
@@ -149,6 +183,8 @@ def main():
                     "messages": len(request.get("messages", [])),
                     "roles": [m.get("role") for m in request.get("messages", [])],
                     "bodySha256": hashlib.sha256(payload).hexdigest(),
+                    "recoveryMarkers": recovery_markers(request),
+                    "toolNames": [t.get("function", {}).get("name") for t in request.get("tools", [])],
                     "requestBytes": len(payload), "phasesPassed": sorted(phases),
                     "truncate": truncate})
             self.forward(payload, truncate)
