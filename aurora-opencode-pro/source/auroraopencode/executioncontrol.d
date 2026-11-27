@@ -129,6 +129,34 @@ private struct FailedCheck
     string[] commands;
 }
 
+/// A successful checker whose inputs changed supplies no current proof. It is
+/// not a failed behavior that must be rerun with the identical command forever:
+/// current verification owns that obligation. Retain actual failed steps even
+/// if a malformed report also claims its evidence was invalidated.
+private bool invalidatedCheck(const ref ChatMessage message)
+{
+    if (!message.failed) return false;
+    try
+    {
+        const report = parseJSON(message.content);
+        if (report.type != JSONType.object) return false;
+        const error = "error" in report.object;
+        if (error is null || error.type != JSONType.string ||
+            !["Source inputs or recipe changed during verification; results are stale.",
+                "Reference changed during verification; results are stale."].canFind(error.str)) return false;
+        const steps = "steps" in report.object;
+        if (steps is null || steps.type != JSONType.array || !steps.array.length) return false;
+        foreach (step; steps.array)
+        {
+            if (step.type != JSONType.object) return false;
+            const passed = "passed" in step.object;
+            if (passed is null || passed.type != JSONType.true_) return false;
+        }
+        return true;
+    }
+    catch (Exception) { return false; }
+}
+
 /// One behavioral obligation, whatever surface reported it. A checked `run`
 /// labels a test command "python tests" while the `verify` tool labels the same
 /// work "verify:tests"; comparing the raw labels meant a failure recorded by one
@@ -327,10 +355,10 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
             if (message.verificationScope.length && (message.verificationCheck.indexOf("test") >= 0 || message.verificationCheck.indexOf("interaction") >= 0 || message.verificationCheck.indexOf("render") >= 0))
             {
                 auto commands = checkCommands(message);
-                if (message.failed)
+                if (message.failed && !invalidatedCheck(message))
                     failedChecks ~= FailedCheck(message.toolCallId.length ? message.toolCallId : message.id,
                         message.verificationCheck, commands);
-                else
+                else if (!message.failed)
                     foreach_reverse (i, failed; failedChecks)
                     {
                         if (checkCategory(failed.category) != checkCategory(message.verificationCheck)) continue;

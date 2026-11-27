@@ -21,6 +21,7 @@ import auroraopencode.core;
 import auroraopencode.appui;
 import auroraopencode.events : OpenCodeEvent;
 import auroraopencode.executioncontrol : executionState;
+import auroraopencode.turnpolicy : decideTurn, TurnPolicy, TurnAction;
 import auroraopencode.toolsettlement : settleToolResult, ToolResultPolicy;
 import auroraopencode.tools : runFilesystemHelperMode;
 import core.thread : Thread;
@@ -138,6 +139,51 @@ int main(string[] arguments)
     assert(executionState(ledger).remaining.indexOf("Behavioral check") < 0,
         "A passing verify could not clear the same checked-run failure");
     writeln("PASS a later passing check clears the same behavioral failure across surfaces");
+
+    // Live long-goal regression: passing Python tests wrote __pycache__, so the
+    // input snapshot was invalidated. The final task checks later passed and
+    // goal_complete succeeded, yet these two historical receipts vetoed every
+    // final reply. They must remain unaccepted evidence without manufacturing
+    // behavioral failures that an unrelated current checker cannot resolve.
+    ChatSession invalidated;
+    invalidated.messages ~= ask; invalidated.activeLeafId = ask.id;
+    invalidated.verificationStatus = "failed";
+    ChatMessage rejected = bad;
+    rejected.id = "rejected-snapshot"; rejected.parentId = ask.id;
+    rejected.toolCallId = "rejected-call";
+    rejected.content = `{"passed":false,"error":"Source inputs or recipe changed during verification; results are stale.","failedStep":{"command":{"program":"python","args":["-m","unittest","-q","test_public","test_billing"]}},"steps":[{"passed":true,"command":{"program":"python","args":["-m","unittest","-q","test_public","test_billing"]}}]}`;
+    invalidated.messages ~= rejected; invalidated.activeLeafId = rejected.id;
+    auto rejectedState = executionState(invalidated);
+    assert(rejectedState.verificationRequired && !rejectedState.verified,
+        "An invalidated receipt counted as current verification");
+    assert(rejectedState.remaining.indexOf("Behavioral check") < 0,
+        "Passing tests with an invalidated snapshot created a permanent behavioral failure");
+    auto finalProof = good;
+    finalProof.id = "final-proof"; finalProof.parentId = rejected.id;
+    finalProof.content = `{"passed":true,"steps":[{"passed":true,"command":{"program":"python","args":["-B","run_checks.py","--phase","6"]}}]}`;
+    invalidated.messages ~= finalProof; invalidated.activeLeafId = finalProof.id;
+    ChatMessage finalAnswer;
+    finalAnswer.id = "final-answer"; finalAnswer.parentId = finalProof.id;
+    finalAnswer.role = "assistant"; finalAnswer.content = "All six milestones and final checks passed.";
+    invalidated.messages ~= finalAnswer; invalidated.activeLeafId = finalAnswer.id;
+    invalidated.verificationStatus = "passed";
+    invalidated.goal = "Implement the entire billing delivery.";
+    invalidated.goalStatus = "completed";
+    TurnPolicy completionPolicy; completionPolicy.toolsEnabled = true;
+    auto completed = decideTurn(invalidated, completionPolicy);
+    assert(completed.action == TurnAction.settle && completed.turnStatus == "completed",
+        "A completed verified goal still loops on an invalidated historical receipt");
+
+    // Actual failing behavior remains an obligation until that check passes.
+    // Neither a different successful checker nor a source-staleness label can
+    // conceal it.
+    invalidated.messages[1].content = `{"passed":false,"error":"Source inputs or recipe changed during verification; results are stale.","steps":[{"passed":false}]}`;
+    assert(executionState(invalidated).remaining.indexOf("Behavioral check") >= 0,
+        "A stale-input label erased a real failed test");
+    invalidated.messages[1].content = `{"passed":false,"error":"Verification step failed.","steps":[{"passed":false}]}`;
+    assert(decideTurn(invalidated, completionPolicy).action == TurnAction.request,
+        "A different current check erased an actual failed behavior");
+    writeln("PASS invalidated proof requires current verification without looping after verified goal completion");
 
     // Derived status churn must not append a new user turn; a durable plan change
     // must still re-anchor the state the model reads.

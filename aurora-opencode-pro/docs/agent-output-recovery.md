@@ -42,6 +42,12 @@ chats have no goal-completion ceremony. Persistent goals finish through validate
 saved active work even when a supervisor note was not written. User-paused goals
 remain paused.
 
+A checker that ran successfully but lost its input snapshot is rejected proof,
+not a failed behavioral assertion. It still requires current verification.
+Once a current behavioral check passes, the earlier invalidated receipt cannot
+reopen a completed goal. Actual failed steps remain obligations until rerun;
+an unrelated passing check cannot conceal them. Both kinds remain in history.
+
 ## Diagnostics
 
 `agent-lifecycle` records correlate requests, recovery schedules, storage recovery,
@@ -74,3 +80,21 @@ The actor fixtures also cover exact replay, access restrictions, ordinary task a
 goal stalls, Stop, explicit outage deadlines, storage failure/recovery and retained
 input. These finite fault-injection tests establish the tested recovery paths;
 they do not guarantee model quality or progress during every external outage.
+
+The opt-in live-provider scenario submits one six-milestone billing goal through
+the native session server. Successful responses come from the configured remote
+provider. It injects three initial 503s, two mid-goal 429s, a truncated real SSE
+response, three late 502s and three real command exits with status 75. It requires
+all deliverables, 71 independent final checks, persisted goal and turn completion,
+and no input requests or Continue messages. Completion-only loops fail the run.
+The provider credential stays in proxy memory; logs contain fault metadata.
+
+```text
+python benchmarks/live_goal_resilience.py --live --output ABSOLUTE_NEW_OUTPUT_DIRECTORY --timeout 1800
+```
+
+Run from the application package with an already built application and configured
+remote provider. This consumes real provider usage. Artifacts include the entire
+isolated conversation, fault log, progress timeline, independent final verifier
+output and machine-readable result. A failed run is retained; it is never counted
+as a pass after an intervention or an acceptance-checker edit.
