@@ -183,7 +183,12 @@ def check_research(_, answer, w, f):
     value = json_answer(answer)
     assert value["release"] == f["nonce"] and value["page_limit"] == 240 and value["retries"] is True
     assert value["outdated_limit"] == 80
-    assert set(value["sources"]) == {f["base"] + "/current", f["base"] + "/old"} or set(value["sources"]) == {f["base"] + "/current", f["base"] + "/archive"}
+    sources = value["sources"]
+    current, old, archive = (f["base"] + path for path in ("/current", "/old", "/archive"))
+    assert isinstance(sources, list) and len(sources) == len(set(sources)), "Sources must be unique URLs"
+    assert current in sources and (old in sources or archive in sources), "Current and archived claims need sources"
+    assert set(sources) <= {current, old, archive}, "An unsupported source was cited"
+    assert all(url.removeprefix(f["base"]) in f["requests"] for url in sources), "A cited source was not requested"
     assert f["requests"].count("/current") >= 3 and "/archive" in f["requests"], "Sources were not retrieved after failures/redirect"
 
 
