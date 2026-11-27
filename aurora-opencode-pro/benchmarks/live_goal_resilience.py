@@ -240,6 +240,22 @@ def main():
     seen_signature = None
     last_print = 0
     maximum_observation_repeats = 0
+    observation_counts = collections.Counter()
+    observed_tools = 0
+    last_workspace_state = None
+
+    def workspace_fingerprint():
+        digest = hashlib.sha256()
+        for path in sorted(workspace.rglob("*")):
+            if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc" or path.name.endswith(("-wal", "-shm", "-journal")):
+                continue
+            try:
+                content_hash = hashlib.sha256(path.read_bytes()).digest()
+            except OSError:
+                continue
+            digest.update(path.relative_to(workspace).as_posix().encode())
+            digest.update(b"\0"); digest.update(content_hash)
+        return digest.hexdigest()
 
     def current():
         index = read_json(state / "threads.index.json", {})
@@ -287,26 +303,25 @@ def main():
                             raise RuntimeError("Aurora exited before goal completion")
                     header, messages = current()
                     tools = [m for m in messages if m.get("role") == "tool"]
-                    observations = collections.Counter()
-                    for m in reversed(tools):
-                        if m.get("workspaceChanged") or (not m.get("failed") and m.get("verificationCheck")):
-                            break
+                    workspace_state = (workspace_fingerprint(), tuple(sorted(passed_phases())))
+                    if workspace_state != last_workspace_state:
+                        observation_counts.clear(); last_workspace_state = workspace_state
+                    for m in tools[observed_tools:]:
                         name = m.get("toolName")
-                        if name in ("update_plan", "update_subplan"):
-                            continue
                         try:
                             arguments = json.loads(m.get("toolArgs", "{}"))
                         except ValueError:
                             arguments = {}
                         if name not in ("read", "list") and not (name == "dshell" and arguments.get("command") == "list"):
-                            break
+                            continue
                         target_path = arguments.get("filePath", arguments.get("path", ""))
                         key = (name, os.path.normcase(os.path.normpath(target_path)),
                                hashlib.sha256(m.get("content", "").encode()).hexdigest())
-                        observations[key] += 1
-                    maximum_observation_repeats = max(maximum_observation_repeats, max(observations.values(), default=0))
+                        observation_counts[key] += 1
+                    observed_tools = max(observed_tools, len(tools))
+                    maximum_observation_repeats = max(maximum_observation_repeats, max(observation_counts.values(), default=0))
                     if maximum_observation_repeats >= 9:
-                        raise RuntimeError("Sustained observation loop: the same unchanged file/list result was fetched nine times without an action or check")
+                        raise RuntimeError("Sustained observation loop: the same unchanged file/list result was fetched nine times without workspace or milestone progress")
                     if any(m.get("toolName") in ("rebuild", "sync", "computer", "open") for m in tools):
                         raise RuntimeError("The isolated task requested a forbidden application/desktop operation")
                     if counts["missing_recovery_directives"]:
@@ -322,11 +337,12 @@ def main():
                                                for m in messages[last_tool + 1:])
                         if final_recoveries >= 3:
                             raise RuntimeError("Completion loop: verified goal completed but final replies were repeatedly rejected without further actions")
-                    signature = (header.get("goalStatus"), header.get("turnStatus"), len(messages), len(tools), tuple(sorted(passed_phases())))
+                    signature = (header.get("goalStatus"), header.get("turnStatus"), len(messages), len(tools), workspace_state)
                     if signature != seen_signature:
                         row = dict(seconds=round(time.monotonic() - started, 2), goalStatus=header.get("goalStatus"),
                                    turnStatus=header.get("turnStatus"), taskStatus=header.get("taskStatus"),
                                    verificationStatus=header.get("verificationStatus"), toolResults=len(tools),
+                                   workspaceSha256=workspace_state[0],
                                    failedTools=sum(bool(m.get("failed")) for m in tools),
                                    phasesPassed=sorted(passed_phases()))
                         snapshots.append(row); seen_signature = signature

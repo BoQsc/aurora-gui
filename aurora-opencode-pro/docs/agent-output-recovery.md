@@ -28,7 +28,10 @@ They preserve pending work and automatically resume when the dependency recovers
 Tools always report their failures to the agent. Repeated identical read/search
 results first produce a specific strategy reminder. Repeated ignored reminders
 temporarily focus the next implementation decision on a command, behavioral
-check or edit. Normal inspection returns after that action or a checker failure;
+check or edit. Where available, the focused step uses tracked `verify` commands
+and edits; direct program file viewers cannot bypass it. Already-passed checks on
+unchanged inputs do not reset recovery. Normal inspection returns after a real
+edit, new check result or a checker failure;
 read-only diagnoses retain their inspection tools. Existing process
 polls remain legitimate work. Unknown mutation outcomes require inspecting current
 state before another mutation; this system does not blindly replay tool effects.
@@ -102,7 +105,9 @@ request fingerprints. The proxy remains on loopback and preserves the hosted
 wire profile. A pending repair omitted from the actual provider request or a
 system-only task request fails the run.
 The harness enables the native `AURORA_TOOL_ROOT` boundary, omits self-maintenance
-and desktop tools, and fails sustained identical-observation loops. This boundary
+and desktop tools, and fails sustained identical-observation loops. Its progress
+boundary uses actual workspace bytes and independently passed milestones, so
+program viewers and redundant checks cannot reset the loop detector. This boundary
 checks structured tool paths; arbitrary programs are not an OS sandbox. An
 unconfigured developer source cannot make an unrelated task invoke Aurora's own
 rebuild tool.

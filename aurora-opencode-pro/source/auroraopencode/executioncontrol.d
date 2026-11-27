@@ -162,7 +162,7 @@ private bool invalidatedCheck(const ref ChatMessage message)
 /// work "verify:tests"; comparing the raw labels meant a failure recorded by one
 /// surface could never be cleared by a passing check from the other, so the task
 /// kept demanding a rerun that had already happened.
-private string checkCategory(string check)
+public string checkCategory(string check)
 {
     const lower = check.toLower;
     if (lower.canFind("interaction")) return "interaction";
@@ -176,7 +176,7 @@ private string checkCategory(string check)
 /// surfaces. A failed recipe reports its failing step separately, while a later
 /// successful rerun lists every step, so failures are matched by containment
 /// rather than by whole-payload equality.
-private string[] checkCommands(const ref ChatMessage message)
+public string[] checkCommands(const ref ChatMessage message)
 {
     string[] commands;
     void command(JSONValue value)

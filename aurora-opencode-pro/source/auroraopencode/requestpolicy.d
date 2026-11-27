@@ -94,6 +94,8 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     const focus = !policy.diagnosticReview && !taskInvestigation(session) &&
         session.contract.intent == "implementation" && session.contract.currentIntent != "analysis" &&
         !ready && observationRecovery(session).focused();
+    bool trackedChecks;
+    foreach (tool; policy.availableTools) if (tool.name == "verify") trackedChecks = true;
     // Ready-to-answer means "produce the reply". Only an answer-only direct
     // question gets the tool-less handoff; a review, inspection, diagnosis or
     // repair still needs the tools to deliver a result, even when it is phrased
@@ -138,9 +140,11 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
             if (focus)
                 system.content ~= "\nRepeated unchanged inspection has not advanced the task. " ~
                     "For this decision use a command/check or a small necessary edit. Run the next " ~
-                    "declared acceptance check rather than reloading source files or rewriting the plan. " ~
+                    "declared acceptance check" ~ (trackedChecks ? " through verify" : "") ~
+                    ", or implement its specific missing behavior. Repeated passing checks and " ~
+                    "Python/shell file viewers do not advance this outcome. " ~
                     "The supplied tools focus on execution and delivery for this step; normal inspection " ~
-                    "returns after that action or a concrete checker failure. Do not ask for Continue or routine approval.\n";
+                    "returns after a real edit, new verification result or concrete checker failure. Do not ask for Continue or routine approval.\n";
         }
         system.content ~= policy.identityBlock ~ sessionInstructionsBlock(session);
         result.messages ~= system;
@@ -175,6 +179,7 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
             if (focus)
             {
                 import std.algorithm : canFind;
+                if (trackedChecks && (tool.name == "run" || tool.name == "bash")) continue;
                 if (!["run", "bash", "verify", "write", "edit", "apply_patch", "patch",
                     "process", "tool_status", "calculate", "goal_complete", "request_input", "task_blocker"].canFind(tool.name)) continue;
             }

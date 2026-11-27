@@ -5,6 +5,7 @@ import auroraopencode.outputguard : outputRecoveryMarker;
 import auroraopencode.outputrecovery : outputRecoveryCount;
 import auroraopencode.taskcontext : taskExcerpt;
 import auroraopencode.contextpolicy : latestActualUserRequest;
+import auroraopencode.executioncontrol : checkCategory, checkCommands;
 import std.conv : to;
 import std.string : startsWith, toLower, indexOf, replace;
 import std.json : JSONValue, JSONType, parseJSON;
@@ -91,9 +92,11 @@ struct ObservationRecovery
 
 /// Identify repeated information independently of JSON argument order and read
 /// defaults. Different ranges/results remain different observations. A process
-/// poll or actual command/check/edit owns its own progress and ends this streak.
+/// poll, real edit, novel check or execution failure ends this streak.
 private string observationKey(const ref ChatMessage message)
 {
+    if (!message.failed && message.verificationCheck.length)
+        return acceptedCheckKey(message);
     string target = message.toolArgs;
     try
     {
@@ -121,8 +124,25 @@ private string observationKey(const ref ChatMessage message)
     catch (Exception) {}
     if (message.toolName != "read" && message.toolName != "list" && message.toolName != "dshell" &&
         message.toolName != "grep" && message.toolName != "glob" && message.toolName != "read_plan" &&
-        message.toolName != "calculate") return "";
+        message.toolName != "calculate" && message.toolName != "run" &&
+        message.toolName != "bash" && message.toolName != "verify") return "";
     return message.toolName ~ "\n" ~ target ~ "\n" ~ sha256Of(message.content).toHexString().idup;
+}
+
+private string acceptedCheckKey(const ref ChatMessage message)
+{
+    string source = message.verificationScope;
+    try
+    {
+        const report = parseJSON(message.content);
+        if (report.type == JSONType.object)
+            if (auto hash = "inputsSha256" in report.object)
+                if (hash.type == JSONType.string) source = hash.str;
+    }
+    catch (Exception) {}
+    auto commands = checkCommands(message);
+    if (!commands.length) commands = [message.toolArgs];
+    return "accepted-check\n" ~ checkCategory(message.verificationCheck) ~ "\n" ~ source ~ "\n" ~ JSONValue(commands).toString();
 }
 
 ObservationRecovery observationRecovery(const ref ChatSession session)
@@ -131,7 +151,24 @@ ObservationRecovery observationRecovery(const ref ChatSession session)
     int[string] observations;
     int inspected;
     bool latestNotice;
-    foreach_reverse (index; activeMessagePath(session))
+    const path = activeMessagePath(session);
+    bool[string] accepted;
+    bool[size_t] newChecks;
+    const begin = path.length > 2048 ? path.length - 2048 : 0;
+    foreach (index; path[begin .. $])
+    {
+        const ref message = session.messages[index];
+        if ((message.role == "user" && !message.internal) || message.workspaceChanged)
+            accepted = null;
+        if (message.role != "tool") continue;
+        if (message.failed && (message.toolName == "run" || message.toolName == "bash" || message.toolName == "verify"))
+            accepted = null;
+        if (message.failed || !message.verificationCheck.length) continue;
+        const key = acceptedCheckKey(message);
+        if (!(key in accepted)) newChecks[index] = true;
+        accepted[key] = true;
+    }
+    foreach_reverse (index; path[begin .. $])
     {
         const ref message = session.messages[index];
         if (message.role == "user" && !message.internal) break;
@@ -139,7 +176,13 @@ ObservationRecovery observationRecovery(const ref ChatSession session)
         { ++result.notices; latestNotice = true; }
         if (message.role != "tool") continue;
         if (++inspected > 128) break;
-        if (message.workspaceChanged || (!message.failed && message.verificationCheck.length)) break;
+        if (message.workspaceChanged || (index in newChecks)) break;
+        // A concrete execution failure needs targeted inspection. A successful
+        // file-viewer command and a duplicate passing checker do not retire an
+        // unresolved observation loop or manufacture new verification progress.
+        if (message.failed && (message.toolName == "run" || message.toolName == "bash" ||
+            message.toolName == "verify" || message.toolName == "write" || message.toolName == "edit" ||
+            message.toolName == "apply_patch")) break;
         if (message.toolName == "update_plan" || message.toolName == "update_subplan") continue;
         const key = observationKey(message);
         if (!key.length) break;

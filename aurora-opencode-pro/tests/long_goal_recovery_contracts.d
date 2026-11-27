@@ -56,11 +56,39 @@ int main()
         OpenCodeToolDef("write", "write", "{}"), OpenCodeToolDef("goal_complete", "complete", "{}")];
     auto focused = prepareAgentRequest(loop, policy);
     assert(!hasTool(focused, "read") && !hasTool(focused, "dshell") && !hasTool(focused, "update_plan") && !hasTool(focused, "rebuild"));
-    assert(hasTool(focused, "run") && hasTool(focused, "verify") && hasTool(focused, "write"), "Recovery lost every productive tool");
+    assert(!hasTool(focused, "run") && hasTool(focused, "verify") && hasTool(focused, "write"),
+        "Focused recovery left a direct file-viewer bypass or lost its productive tools");
     assert(focused.messages[0].content.indexOf("next declared acceptance check") >= 0);
     policy.diagnosticReview = true;
     assert(hasTool(prepareAgentRequest(loop, policy), "read"), "A read-only diagnosis was forced to mutate");
     policy.diagnosticReview = false;
+    ChatMessage viewer; viewer.role = "tool"; viewer.toolName = "run";
+    viewer.toolArgs = `{"program":"python","args":["-B","-c","print(open('source.txt').read())"]}`;
+    viewer.content = read.content; add(loop, viewer);
+    assert(observationRecovery(loop).focused() && !hasTool(prepareAgentRequest(loop, policy), "read"),
+        "A Python file viewer reset the observation loop");
+    RequestPolicy fallback = policy;
+    fallback.availableTools = [OpenCodeToolDef("run", "run", "{}"), OpenCodeToolDef("write", "write", "{}")];
+    assert(hasTool(prepareAgentRequest(loop, fallback), "run"), "A provider without verify lost its execution fallback");
+    ChatMessage receipt; receipt.role = "tool"; receipt.toolName = "verify";
+    receipt.verificationCheck = "verify:tests"; receipt.verificationScope = "stable";
+    receipt.toolArgs = `{"inputs":["source.txt"],"steps":[{"kind":"tests","command":{"program":"checker"}}]}`;
+    receipt.content = `{"inputsSha256":"A","passed":true,"steps":[{"command":{"program":"checker"}}]}`;
+    add(loop, receipt);
+    assert(!observationRecovery(loop).focused(), "A new check result did not retire recovery");
+    foreach (notice; 0 .. 2)
+    {
+        foreach (i; 0 .. 3) add(loop, read);
+        say(loop, "user", stagnantToolGuidance(loop), true);
+    }
+    // A new call ID/receipt with unchanged inputs and command supplies no new
+    // progress. It must not reopen read tools and restart the same file tour.
+    add(loop, receipt);
+    assert(observationRecovery(loop).focused() && !hasTool(prepareAgentRequest(loop, policy), "read"),
+        "An already-passed unchanged checker reset no-progress recovery");
+    receipt.content = `{"inputsSha256":"B","passed":true,"steps":[{"command":{"program":"checker"}}]}`;
+    add(loop, receipt);
+    assert(!observationRecovery(loop).focused(), "A check on changed actual inputs was ignored");
     ChatMessage check; check.role = "tool"; check.toolName = "run";
     check.failed = true; check.content = "A concrete checker failure identifying the next repair";
     add(loop, check);
