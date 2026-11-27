@@ -118,6 +118,10 @@ string planProgressGuidance(const ref ChatSession session)
         (session.verificationStatus == "passed" && !hasIncompleteTaskSteps(session))) return "";
     const progress = planProgress(session);
     const hasPlan = session.taskSteps.length > 0;
+    import auroraopencode.requestintent : requestIntent, RequestIntent;
+    const intent = requestIntent(latestActualUserRequest(session));
+    if (!hasPlan && (intent == RequestIntent.analysis || intent == RequestIntent.clarification ||
+        intent == RequestIntent.conversation)) return "";
     // A first suggestion for unplanned work arrives early; later suggestions
     // keep the normal cadence.
     const window = !progress.nudged && !hasPlan ? planCreationWindow : planProgressWindow;

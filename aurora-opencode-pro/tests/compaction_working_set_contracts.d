@@ -43,6 +43,16 @@ int main()
         assert(large.parametersJson==tool.parametersJson && large.description==tool.description);
         assert(semanticSchema(parseJSON(small.parametersJson))==semanticSchema(parseJSON(tool.parametersJson)),
             "Small-context schema altered fields, required properties, enums or types");
+        const schema = parseJSON(small.parametersJson);
+        if (auto properties = "properties" in schema.object)
+            foreach (name; ["timeout", "offset"])
+                if (auto field = name in properties.object)
+                {
+                    const original = parseJSON(tool.parametersJson)["properties"][name];
+                    if (auto description = "description" in original.object)
+                        assert("description" in field.object && (*field)["description"] == *description,
+                            "Compaction removed timeout units or cursor indexing");
+                }
     }
     assert(fullBytes>compactBytes+5000,"Small-context tool prose still crowds out the working set");
     writeln("SCHEMA full=",fullBytes," small=",compactBytes," saved=",fullBytes-compactBytes);

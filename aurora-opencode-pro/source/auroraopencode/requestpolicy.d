@@ -18,14 +18,16 @@ import std.json : JSONValue, JSONType, parseJSON;
 
 // Small contexts need room for the files the tools return. Keep the complete
 // schema contract (fields/types/enums/requirements), reducing prose only.
-private void compactSchemaDescriptions(ref JSONValue value)
+private void compactSchemaDescriptions(ref JSONValue value, string field = "")
 {
     if (value.type == JSONType.object)
     {
         auto object = value.object;
-        object.remove("description");
+        // Units and indexing are part of the execution contract. Removing
+        // these made timeout=180 look like seconds instead of milliseconds.
+        if (field != "timeout" && field != "offset") object.remove("description");
         foreach (key, ref child; object)
-            compactSchemaDescriptions(child);
+            compactSchemaDescriptions(child, key);
         value = JSONValue(object);
     }
     else if (value.type == JSONType.array)
@@ -196,6 +198,23 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     ChatRequestMessage contract;
     contract.role = "system"; contract.content = responseContract;
     result.messages ~= contract;
+    if (policy.compactionEnabled && !policy.diagnosticReview && !finalAnswer && !policy.summaryOnly &&
+        checkpointOnActivePath(session))
+    {
+        import auroraopencode.sourceobservations : retainedSourceContext;
+        import std.algorithm : min;
+        const capacity = compactionBudgetBytes(policy.contextLimit);
+        const used = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools) + 64;
+        if (capacity > used)
+        {
+            const snapshots = retainedSourceContext(session, min(cast(size_t)6000, (capacity - used) / 2));
+            if (snapshots.length)
+            {
+                ChatRequestMessage evidence; evidence.role = "system"; evidence.content = snapshots;
+                result.messages ~= evidence;
+            }
+        }
+    }
     const fixedBytes = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools) + 64;
     result.summaryByteBudget = compactionSummaryCapacity(policy.contextLimit, fixedBytes);
     result.oldAnchor = checkpointOnActivePath(session) ? session.compactedThroughMessageId : "";

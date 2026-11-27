@@ -74,7 +74,10 @@ string answerContract(string request, string verbosity, bool executionGrounding 
         requestIntent(request) == RequestIntent.changeRequest)
         result ~= "This is authorized implementation work: carry it through to the requested result. When the deliverable is a running " ~
             "program or visible UI, launch it and exercise the user's actual path; a compile or synthetic check is not proof of " ~
-            "visible behavior. Do not hand back a build for the user to run.\n";
+            "visible behavior. Do not hand back a build for the user to run. " ~
+            "Use existing acceptance checks early to guide the work. Add requested tests and focused regression coverage for gaps; " ~
+            "do not duplicate an entire supplied checker merely to increase test volume. Run every required check, preserving its requirements. " ~
+            "Reuse a passing result only while its relevant inputs and execution context are unchanged.\n";
     else if (verbosity.indexOf("Target 40 words") >= 0)
         result ~= "Use at most three short bullets or sentences unless the user explicitly needs a detailed treatment. " ~
             "A request for tradeoffs does not require an exhaustive catalogue. Omit hypothetical future requirements.\n";

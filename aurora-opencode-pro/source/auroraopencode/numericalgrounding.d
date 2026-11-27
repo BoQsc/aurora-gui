@@ -26,6 +26,9 @@ enum numericalGroundingInstruction =
     "Execute a safe read-only probe of the existing referenced Python implementation with the stated inputs before reporting its current numerical result. " ~
     "Compute the required result separately from the original rule; do not substitute the intended behavior for what the current code returns. " ~
     "Use python -B or an equivalent cache-free invocation. No file changes or verification recipe are required. " ~
+    "Batch independent calculations in that probe where practical. Once its output agrees with the inspected implementation and stated inputs, " ~
+    "use the observed result; do not repeat the probe, inventory, import-path inspection or disassembly merely for confidence. " ~
+    "A concrete contradiction, changed input or changed source justifies further investigation. " ~
     "If execution is unavailable, report that limitation accurately and distinguish source-based reasoning from an observed result.";
 
 private bool callsModule(string source, string moduleName)

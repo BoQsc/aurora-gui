@@ -102,6 +102,17 @@ not an observation of current code. This adds no artifact or verification recipe
 Simple questions, supplied arithmetic, explicit no-execution requests and
 execution-disabled reviews retain their lightweight paths; unavailable execution
 is reported as a limitation rather than becoming an endless analysis retry.
+Successful numerical probes are reused when they agree with the inspected code
+and inputs; changed sources, inputs or concrete contradictions still justify
+further checks. Read-only answers do not acquire a plan-creation reminder from
+tool count alone.
+
+Rolling context checkpoints retain small source observations with their actual
+call IDs and quoted output. Known writes/edits invalidate the affected snapshot;
+unknown workspace changes invalidate the set. These are historical context, not
+freshness claims or verification receipts, and never remove inspection tools.
+Compact tool schemas preserve timeout units and cursor indexing. Context byte
+budgets do not impose a limit on productive tool use.
 
 ## Diagnostics
 
