@@ -188,6 +188,11 @@ ToolSettlement settleToolResult(const ref ChatSession session,
 bool advanceToolTaskState(ref ChatSession session, const ref ToolSettlement settled,
     const ref OpenCodeEvent event, string arguments, string priorStatus, string priorScope)
 {
+    if (!settled.message.failed && event.toolName == "goal_complete")
+    {
+        import auroraopencode.goalmutation : reconcileCompletedGoalPlan;
+        reconcileCompletedGoalPlan(session);
+    }
     import auroraopencode.toolprogresspolicy : isPlainDocumentMutation, isSubstantiveMutation;
     import auroraopencode.turnpolicy : hasIncompleteTaskSteps;
     import auroraopencode.taskflow : taskInvestigation;

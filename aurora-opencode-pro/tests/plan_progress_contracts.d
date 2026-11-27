@@ -77,6 +77,7 @@ void main()
     assert(planProgress(s).results==0);auto next=prepareAgentRequest(s,policy);
     foreach(m;next.messages)assert(m.content.indexOf(planProgressMarker)<0);
     TurnPolicy turn;turn.toolsEnabled=true;s.taskSteps=null;
+    add("assistant","The requested answer is complete.");
     assert(decideTurn(s,turn).action==TurnAction.settle,"Missing optional plan prevented completion");
     writeln("PASS optional initial planning; early unplanned suggestion; phase-timed and five-result reviews; reset/reload/branch safety; unchanged tools and no completion debt");
 }

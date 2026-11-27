@@ -28,7 +28,8 @@ int main()
     auto journal = new RepositoryRuntime(repository, buildPath(directory, "events.jsonl"));
     ChatSession initial; initial.id = "autonomous-chat"; initial.model = "fixture";
     const stalledGoal = environment.get("AURORA_CONTRACT_GOAL_STALL", "") == "1";
-    if (stalledGoal)
+    const completeGoal = environment.get("AURORA_CONTRACT_COMPLETE_GOAL", "") == "1";
+    if (stalledGoal || completeGoal)
     { initial.goal = "Deliver and verify the requested fixture"; initial.goalStatus = "active"; }
     ActorConfiguration config; config.baseUrl = base; config.apiKey = "fixture";
     config.workspace = workspace; config.recordTrace = true;
@@ -119,6 +120,12 @@ int main()
     assert(sessionToJson(view) == value, "Tool progress projection changed the conversation model");
     assert(value["messages"].array[$ - 1]["content"].str.indexOf("READY") == 0);
     assert(value["verificationStatus"].str == "passed");
+    if (completeGoal)
+    {
+        assert(value["goalStatus"].str == "completed");
+        foreach (step; value["taskSteps"].array)
+            assert(step["status"].str == "completed", "Advisory plan did not reflect accepted completion");
+    }
     if (stalledGoal) assert(value["goalStatus"].str == "active",
         "a prose-only goal continuation paused the user's goal");
     const trace = actor.recordedTrace();

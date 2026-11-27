@@ -61,7 +61,8 @@ int main()
         if (mode == "mixed-offer") write(buildPath(workspace, "allowed.txt"), "Allowed input");
         auto actor = new ConversationActor(initial, config, null);
         auto view = new ActorTestView(initial, actor);
-        assert(actor.post(ActorCommand(ActorCommandKind.start, "Analyze the tradeoffs of this design.")) == ActorAdmission.accepted);
+        assert(actor.post(ActorCommand(ActorCommandKind.start, mode == "task-stall"
+            ? "Implement and verify the requested fixture." : "Analyze the tradeoffs of this design.")) == ActorAdmission.accepted);
         JSONValue latest;
         bool sawWait, sawFailure, stopped, paused;
         auto quietUntil = MonoTime.init;
@@ -109,11 +110,24 @@ int main()
                     paused = true; quietUntil = MonoTime.currTime + 500.msecs;
                 }
             }
+            if ((mode == "bad-output" || mode == "unoffered" || mode == "task-stall") && !paused && latest.type == JSONType.object)
+            {
+                int repairs;
+                foreach (message; view.model.messages)
+                    if (message.content.indexOf("Agent output recovery:") >= 0) ++repairs;
+                if (repairs >= 5)
+                {
+                    assert(view.model.turnStatus == "running", "An internal counter ended unfinished recovery");
+                    assert(actor.post(ActorCommand(ActorCommandKind.stop)) == ActorAdmission.accepted);
+                    paused = true; quietUntil = MonoTime.currTime + 500.msecs;
+                }
+            }
             if (latest.type == JSONType.object)
             {
                 const status = latest["turnStatus"].str;
                 if (mode == "retry-stop") settled = stopped && status == "interrupted" && MonoTime.currTime >= quietUntil;
-                else if (mode == "task-stall") settled = status == "completed";
+                else if (mode == "task-stall" || mode == "bad-output" || mode == "unoffered")
+                    settled = paused && status == "interrupted" && MonoTime.currTime >= quietUntil;
                 else if (mode == "goal-stall")
                     settled = paused && status == "interrupted" && MonoTime.currTime >= quietUntil;
                 else if (mode == "budget" || mode == "transient-cap" || mode == "bad-output" || mode == "unoffered")
@@ -131,9 +145,10 @@ int main()
         const snapshot = actor.finalSnapshot();
         const state = parseJSON(snapshot);
 
-        if (persistent && mode != "retry-stop" && mode != "goal-stall")
+        if (persistent && mode != "retry-stop" && mode != "goal-stall" && mode != "bad-output" && mode != "unoffered")
             assert(state["goalStatus"].str == "active", mode ~ " discarded the active goal");
-        if (mode == "retry-stop") assert(state["goalStatus"].str == "paused");
+        if (mode == "retry-stop" || mode == "bad-output" || mode == "unoffered")
+            assert(state["goalStatus"].str == "paused");
         if (mode == "goal-stall")
         {
             // The app keeps a stalled goal running and escalates its directive;
@@ -147,7 +162,8 @@ int main()
                 "a stalled goal was not given another action turn");
             bool escalated;
             foreach (message; state["messages"].array)
-                if (message["content"].str.indexOf("Progress audit") >= 0) escalated = true;
+                if (message["content"].str.indexOf("cause=unfinished_outcome") >= 0 ||
+                    message["content"].str.indexOf("cause=goal_without_action") >= 0) escalated = true;
             assert(escalated, "a repeated goal stall did not escalate its directive");
         }
         if (mode == "task-stall")

@@ -14,11 +14,13 @@ enum controlHistoryLimit = 32;
 /// Reusable control records that are explicitly superseded by a newer record
 /// of the same kind. Only the newest of each kind needs to reach the provider;
 /// keeping the whole streak sent thousands of stale copies.
-enum ControlStateKind { none, checkpoint, continuation, progress }
+enum ControlStateKind { none, checkpoint, continuation, progress, recovery }
 
 ControlStateKind controlStateKind(const ref ChatMessage message)
 {
     if (!message.internal || message.images.length) return ControlStateKind.none;
+    if (message.content.startsWith("Agent output recovery:") ||
+        message.content.startsWith("Execution recovery:")) return ControlStateKind.recovery;
     if (message.content.startsWith(durableTaskCheckpointPrefix))
         return ControlStateKind.checkpoint;
     if (message.content.startsWith(taskContinuationMarker))

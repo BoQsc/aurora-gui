@@ -118,6 +118,8 @@ string planReplacementError(const ref ChatSession session,
 {
     const error = planUpdateError(session, arguments, session.taskSteps);
     if (error.length) return error;
+    import auroraopencode.planmode : experimentalStrictPlanEnabled;
+    if (!experimentalStrictPlanEnabled()) return "";
     const root = parseJSON(arguments);
     const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
     const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], session.taskSteps, !replacement, incrementalPlan(root)) : session.taskSteps;

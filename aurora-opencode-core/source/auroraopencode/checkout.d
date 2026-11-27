@@ -7,7 +7,7 @@ import std.digest.sha : sha256Of;
 import std.exception : enforce;
 import std.file : exists, isDir;
 import std.path : absolutePath, buildNormalizedPath, buildPath, dirName;
-import std.string : startsWith, toLower;
+import std.string : startsWith, endsWith, toLower;
 
 version (Windows)
 {
@@ -69,6 +69,23 @@ public string checkoutIdentity(string path)
     }
     version (Windows) return full.toLower();
     else return full;
+}
+
+/// Git checkouts retain their existing isolation. A plain task directory owns
+/// its descendants too: without .git, checkoutIdentity(file) deliberately
+/// falls back to the file itself, which is not a different checkout.
+public bool checkoutOwnsPath(string workspace, string path)
+{
+    const task = checkoutIdentity(workspace);
+    const input = checkoutIdentity(path);
+    if (task == input) return true;
+    if (exists(buildPath(task, ".git")) || exists(buildPath(input, ".git"))) return false;
+    const root = canonicalPath(workspace);
+    const candidate = canonicalPath(path);
+    version (Windows) enum separator = "\\";
+    else enum separator = "/";
+    const prefix = root.endsWith(separator) ? root : root ~ separator;
+    return candidate == root || candidate.startsWith(prefix);
 }
 
 private __gshared Mutex registry;

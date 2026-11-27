@@ -68,12 +68,14 @@ int main()
         "An unfinished goal silently held instead of recovering");
     assert(outputRecoveryAllowed("task_audit_stalled", false, true, false, false, false),
         "An ordinary task audit silently held unfinished work");
-    assert(!outputRecoveryAllowed("task_audit_stalled", true, true, false, false, false),
-        "Task audit recovery was unbounded");
+    assert(outputRecoveryAllowed("task_audit_stalled", true, true, false, false, false),
+        "An internal audit counter stopped unfinished work");
     assert(outputRecoveryAllowed("replayed_prose", false, true, false, false, false),
         "A real replay still gets bounded recovery");
-    assert(!outputRecoveryAllowed("replayed_prose", true, true, false, false, false),
-        "Exhausted recovery stays stopped");
+    assert(outputRecoveryAllowed("replayed_prose", true, true, false, false, false),
+        "Repeated malformed output must remain recoverable");
+    assert(!outputRecoveryAllowed("replayed_prose", false, true, true, false, false));
+    assert(!outputRecoveryAllowed("replayed_prose", false, true, false, true, false));
     assert(outputIssueDescription("goal_audit_stalled").indexOf("goal") >= 0);
     assert(outputIssueDescription("replayed_prose").indexOf("same prose") >= 0,
         "A real replay keeps its explicit description");

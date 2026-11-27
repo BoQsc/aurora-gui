@@ -232,10 +232,16 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
             state.remaining ~= "Outcome: " ~ taskExcerpt(text, 240) ~
                 (done.length ? ". Acceptance: " ~ taskExcerpt(done, 240) : "") ~ "\n";
     }
-    foreach (step; session.taskSteps)
-        outcome(step.id, step.text, step.done, supportedStep(session, step, proofs), step.evidence);
-    foreach (plan; session.nestedPlans) foreach (step; plan.steps)
-        outcome(step.id, step.text, step.done, supportedStep(session, step, proofs), step.evidence);
+    // A stale advisory checklist cannot reopen delivered, verified work.
+    // Required actions and current verification remain separate obligations.
+    const reconcilePlan = !strictPlan && session.verificationStatus == "passed" && taskHasActionEvidence(session);
+    if (!reconcilePlan)
+    {
+        foreach (step; session.taskSteps)
+            outcome(step.id, step.text, step.done, supportedStep(session, step, proofs), step.evidence);
+        foreach (plan; session.nestedPlans) foreach (step; plan.steps)
+            outcome(step.id, step.text, step.done, supportedStep(session, step, proofs), step.evidence);
+    }
     foreach (item; session.contract.workItems) if (item.required)
         outcome(item.step.id, item.step.text, item.step.done, supportedStep(session, item.step, proofs), item.step.evidence);
     import auroraopencode.taskflow : taskRequiresPlan;
@@ -276,6 +282,7 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
         {
             ++state.tools;
             if (message.workspaceChanged) ++state.effects;
+            if (!message.failed && message.workspaceChanged) state.attempts = 0;
             // A Plan-mode refusal is the user's gate working, not a failed
             // attempt to recover; do not feed it back as an observed obstacle.
             if (message.failed && !planModeBlockedTool(message) &&
@@ -364,6 +371,9 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
 /// many successful lookups the model performed. One notice per failure window.
 string executionToolRecovery(const ref ChatSession session)
 {
+    import auroraopencode.agentloop : stagnantToolGuidance;
+    const stagnant = stagnantToolGuidance(session);
+    if (stagnant.length) return stagnant;
     int[string] failures;
     foreach_reverse (index; activeMessagePath(session))
     {

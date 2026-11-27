@@ -2,7 +2,7 @@ module auroraopencode.verificationrecipe;
 
 import auroraopencode.core : OpenCodeToolDef, ChatImageAttachment;
 import auroraopencode.attachments : attachmentImageForInlineData;
-import auroraopencode.checkout : canonicalPath, checkoutIdentity;
+import auroraopencode.checkout : canonicalPath, checkoutIdentity, checkoutOwnsPath;
 import aurora.image : loadImage, encodePng;
 import std.algorithm : canFind, sort;
 import std.conv : to;
@@ -58,7 +58,10 @@ public JSONValue checkedRunRecipe(JSONValue command)
     enforce(["compile", "tests", "interaction"].canFind(kind), "Unknown run check kind.");
     enforce(!("background" in command.object) || command["background"].type != JSONType.true_,
         "Checked runs must finish in the foreground.");
-    auto inputs = command["inputs"];
+    const declaredInputs = "inputs" in command.object;
+    enforce(declaredInputs !is null && declaredInputs.type == JSONType.array && declaredInputs.array.length,
+        "Checked run requires inputs naming the actual deliverables and checker files. Supply inputs with check, or omit check for an ordinary run.");
+    auto inputs = *declaredInputs;
     auto fields = command.object.dup;
     fields.remove("inputs"); fields.remove("check"); fields.remove("no_change_needed");
     JSONValue step; step["kind"] = kind; step["command"] = JSONValue(fields);
@@ -84,7 +87,7 @@ private string fingerprint(string workspace, JSONValue inputs, bool delegate() c
         enforce(++entries <= 20_000 && depth <= 64 && !isSymlink(path), "Verification inputs exceed the traversal bound or include a link.");
         const inputCheckout = checkoutIdentity(path);
         const taskCheckout = checkoutIdentity(workspace);
-        enforce(inputCheckout == taskCheckout,
+        enforce(checkoutOwnsPath(workspace, path),
             "Verification input " ~ path ~ " belongs to checkout " ~ inputCheckout ~
             ", but the task checkout is " ~ taskCheckout ~
             ". Move the input into the task checkout or run verify from its checkout.");
@@ -231,7 +234,7 @@ RecipeResult runVerificationRecipe(string arguments, string workspace,
             path = absolutePath(saved.str, workspace);
             const recipeCheckout = checkoutIdentity(path);
             const taskCheckout = checkoutIdentity(workspace);
-            enforce(recipeCheckout == taskCheckout,
+            enforce(checkoutOwnsPath(workspace, path),
                 "Recipe " ~ path ~ " belongs to checkout " ~ recipeCheckout ~
                 ", but the task checkout is " ~ taskCheckout ~
                 ". Run verify from the recipe's checkout or move the recipe into the task checkout.");

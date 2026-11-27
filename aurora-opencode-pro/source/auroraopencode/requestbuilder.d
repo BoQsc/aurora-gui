@@ -5,7 +5,7 @@ import auroraopencode.imagehistory : requestHistoryImageIndices, isScreenshot;
 import auroraopencode.imagecontext : retiredImageIds, imageReferenceId;
 import std.algorithm : canFind;
 import std.conv : to;
-import auroraopencode.outputguard : outputFailurePrefix;
+import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker;
 import std.string : startsWith;
 import auroraopencode.grepformat : compactGrepHistory;
 import auroraopencode.controlhistory : controlHistoryBoundary, supersededControlState, turnControlState,
@@ -21,6 +21,19 @@ public ChatRequestMessage[] projectRequestMessages(
         ChatRequestMessage[] messages;
         if (sourcePositions !is null) *sourcePositions = null;
         const path = activeMessagePath(session);
+        // Keep rejected no-action answers in saved history without teaching
+        // subsequent requests to reproduce them. Preserve paired tool results.
+        bool[size_t] supersededAnswers;
+        bool repairing;
+        foreach_reverse (index; path)
+        {
+            const ref message = session.messages[index];
+            if (message.role == "tool" || (message.role == "user" && !message.internal)) repairing = false;
+            if (message.internal && (message.content.startsWith(outputRecoveryMarker) ||
+                message.content.startsWith("Execution recovery: "))) repairing = true;
+            if (repairing && message.role == "assistant" && !message.toolCalls.length)
+                supersededAnswers[index] = true;
+        }
         size_t controlBoundary;
         size_t instructionBoundary;
         foreach (i, index; path)
@@ -51,10 +64,10 @@ public ChatRequestMessage[] projectRequestMessages(
         // instead (see controlHistoryCompactionNeeded).
         // A retire index of 0 means "keep every record of this kind": the drop
         // test is `slot < retireIndex`, which stays false for an ordinary slot.
-        size_t retireCheckpoint, retireContinuation, retireProgress;
+        size_t retireCheckpoint, retireContinuation, retireProgress, retireRecovery;
         {
-            size_t checkpoints, continuations, progressNotes;
-            size_t lastCheckpoint, lastContinuation, lastProgress;
+            size_t checkpoints, continuations, progressNotes, recoveries;
+            size_t lastCheckpoint, lastContinuation, lastProgress, lastRecovery;
             foreach (i, index; path)
             {
                 if (i < instructionBoundary) continue;
@@ -63,12 +76,16 @@ public ChatRequestMessage[] projectRequestMessages(
                     case ControlStateKind.checkpoint: ++checkpoints; lastCheckpoint = i; break;
                     case ControlStateKind.continuation: ++continuations; lastContinuation = i; break;
                     case ControlStateKind.progress: ++progressNotes; lastProgress = i; break;
+                    case ControlStateKind.recovery: ++recoveries; lastRecovery = i; break;
                     case ControlStateKind.none: break;
                 }
             }
             if (checkpoints > controlHistoryLimit) retireCheckpoint = lastCheckpoint;
             if (continuations > controlHistoryLimit) retireContinuation = lastContinuation;
             if (progressNotes > controlHistoryLimit) retireProgress = lastProgress;
+            // Failure-only streaks should not fill a long task's context with
+            // copies of its repair directive. Counts stay in durable history.
+            if (recoveries > 4) retireRecovery = lastRecovery;
         }
         auto historyImages = requestHistoryImageIndices(session, path, slot,
             imageLimit);
@@ -76,6 +93,7 @@ public ChatRequestMessage[] projectRequestMessages(
         while (slot < path.length)
         {
             const message = session.messages[path[slot]];
+            if (path[slot] in supersededAnswers) { ++slot; continue; }
             const controlKind = controlStateKind(message);
             if (message.internal && (message.content.startsWith("Plan progress checkpoint: ") ||
                 message.content.startsWith("Progress guidance: ") ||
@@ -86,7 +104,8 @@ public ChatRequestMessage[] projectRequestMessages(
 
             if ((controlKind == ControlStateKind.checkpoint && slot < retireCheckpoint) ||
                 (controlKind == ControlStateKind.continuation && slot < retireContinuation) ||
-                (controlKind == ControlStateKind.progress && slot < retireProgress))
+                (controlKind == ControlStateKind.progress && slot < retireProgress) ||
+                (controlKind == ControlStateKind.recovery && slot < retireRecovery))
             {
                 ++slot;
                 continue;

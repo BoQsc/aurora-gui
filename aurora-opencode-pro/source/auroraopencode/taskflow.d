@@ -1146,10 +1146,8 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
                             return "Error: '" ~ id.str ~ "' is an action ID. Update it in work_items, not plan. " ~
                                 "read_plan view=details collection=outcomes returns outcome IDs; collection=actions returns action IDs.";
             steps = normalizedPlan(session, *plan, previous, false, incrementalPlan(root));
-            int active;
-            foreach (step; steps)
-                if (step.status == "in_progress" && ++active > 1)
-                    return "Error: at most one plan outcome may be in_progress.";
+            // Advisory plans may reflect concurrent work. Ordering and a
+            // single active step belong only to explicitly enabled strict mode.
         }
         // Ordinary mode does not enforce the tracked-plan upkeep cycle, but
         // work items still record real outcomes. Completing one with invented

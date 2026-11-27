@@ -136,6 +136,7 @@ import auroraopencode.requestbuilder : projectRequestMessages;
 import auroraopencode.restorestore : RestoreBundle, readRestoreBundle, readThreadHistory, historyFilePath;
 import auroraopencode.outputguard : agentOutputIssue, outputFailurePrefix,
     outputRecoveryMarker, outputIssueDescription;
+import auroraopencode.agentloop : recoverAgent;
 import auroraopencode.outputrecovery : answerReplayed, outputRecoveryCount,
     maxOutputRecoveries, auditStallIssue, goalAuditRecoveryCount,
     outputRecoveryAllowed, unfinishedTaskRecoveryInstruction;
@@ -14554,7 +14555,6 @@ private string _suggestExcludeId;
     private ref inout(int) _autoContinuePendingSession() inout @property { return _execution.autoContinuePendingSession; }
     private ref inout(MonoTime) _autoContinueRetryAt() inout @property { return _execution.autoContinueRetryAt; }
     private ref inout(int) _autoContinueRetries() inout @property { return _execution.autoContinueRetries; }
-    private static immutable int autoContinueRetryLimit = 3;
     private static immutable long autoContinueRetryDelayMs = 400;
     private static immutable int failureGuidanceThreshold = 3;
     // Successful context calls are not automatically useful progress. Count
@@ -15487,27 +15487,34 @@ private string _suggestExcludeId;
         return session.messages.length > 0;
     }
 
-    /// Flag conversations left `running` by a process that is gone. A fresh
-    /// launch owns no in-flight request, so any persisted `running` turn is
-    /// stale and must read as "stopped without completing" in the sidebar. Used
-    /// on a plain relaunch, where there is no resume note to drive the richer
-    /// resume path (that path marks its own leftover turns, after collecting
-    /// the ones it continues).
+    /// A relaunch has no surviving effects. Recover saved running turns and
+    /// active goals from their evidence, without silently pausing the goal.
     private void markStaleRunningTurns()
     {
         materializeRunningThreads();
+        foreach (index; 0 .. _sessions.length)
+            if (goalActive(_sessions[index])) loadThreadHistoryNow(cast(int) index);
         bool changed;
-        foreach (ref session; _sessions)
-            if (session.messages.length > 0 && session.turnStatus == "running")
+        foreach (index, ref session; _sessions)
+            if (session.messages.length > 0 && (session.turnStatus == "running" || goalActive(session)))
             {
+                const wasRunning = session.turnStatus == "running";
+                if (!wasRunning && taskAwaitingInput(session)) continue;
                 session.turnStatus = "interrupted";
-                pauseActiveGoal(session);
                 recordInterruptedReads(session);
-                logInfo("turn marked interrupted by restart (no resume note): " ~
-                    session.id);
+                if (!_resumeTargets.canFind(cast(int) index)) _resumeTargets ~= cast(int) index;
+                logInfo("recovering saved active work after restart: " ~ session.id);
                 changed = true;
             }
         if (!changed) return;
+        _resumeTarget = _resumeTargets[0];
+        _resumeOwnerId = _sessions[_resumeTarget].id;
+        _resumePrompt = "Continuation request: the application restarted while this task or goal was active. " ~
+            "Resume the durable objective and remaining outcomes from successful results. " ~
+            "Inspect current files and external state before retrying an operation whose result was interrupted; " ~
+            "it may already have happened. Do not replay successful side effects or the last summary. " ~
+            "Choose a concrete next action and continue through recoverable failures.";
+        _resumeCountdown = resumeDelayTicks;
         refreshSessionRowStatus();
         markDirty();
     }
@@ -23495,7 +23502,7 @@ private void pollButtonSuggestionRequest()
         {
             setTurnActiveMarker(true, session.id);
             setTurnInFlight(true);
-            startChatRequest(sessionIndex, false);
+            scheduleAgentContinuation(sessionIndex, decision.recoveryDelayMs);
             return;
         }
         markUnreadIfBackground(sessionIndex);
@@ -23536,7 +23543,7 @@ private void pollButtonSuggestionRequest()
         return error;
     }
 
-    private void failAssistantMessage(string error)
+    private void failAssistantMessage(string error, bool recovering = false)
     {
         error = clarifyProviderRequestError(error);
         const sessionIndex = turnOwnerSessionIndex();
@@ -23583,12 +23590,12 @@ private void pollButtonSuggestionRequest()
         auto message = &session.messages[replyIndex];
         message.error = error;
         message.failed = true;
-        session.turnStatus = "failed";
-        session.taskStatus = "blocked";
+        session.turnStatus = recovering ? "running" : "failed";
+        session.taskStatus = recovering ? "active" : "blocked";
         markUnreadIfBackground(sessionIndex);
         publishThreadUpdated(*session);
         publishMessageEvent(AgentEventKind.itemUpdated, *session, *message);
-        publishRuntimeEvent(AgentEventKind.turnFailed, *session,
+        if (!recovering) publishRuntimeEvent(AgentEventKind.turnFailed, *session,
             runtimeTurnId(*session), "", "", errorPayload(error));
         if (_streamBubble !is null)
         {
@@ -23958,8 +23965,8 @@ private void pollButtonSuggestionRequest()
             "text_tool_calls";
     }
 
-    /// Recover unusable output without requiring the user to restart the task.
-    /// Never execute printed calls.
+    /// Preserve protocol failures for diagnosis and recover through the same
+    /// scheduled loop as unfinished work. Printed calls never execute.
     private void handleOutputFailure(const ref OpenCodeEvent event)
     {
         const sessionIndex = turnOwnerSessionIndex();
@@ -23968,121 +23975,57 @@ private void pollButtonSuggestionRequest()
         recordRequestTokenUsage(event.requestId, event.totalTokens,
             event.promptTokens, event.completionTokens);
         if (finishCompletionHandoffAfterFailure(outputFailurePrefix ~ outputIssueDescription(event.outputIssue))) return;
-        const path = activeMessagePath(*session);
-        if (path.length > 0 && session.messages[path[$ - 1]].role == "assistant")
-        {
-            auto reply = &session.messages[path[$ - 1]];
-            reply.promptTokens = event.promptTokens;
-            reply.completionTokens = event.completionTokens;
-            reply.totalTokens = event.totalTokens;
-            recordTurnUsage(*reply, event.totalTokens, event.promptTokens,
-                event.completionTokens, event.requestId);
-        }
-        const exhausted = outputRecoveryCount(*session) >= maxOutputRecoveries;
-        const explanationOnly =
-            explanationOnlyRequest(latestActualUserRequest(*session));
-        const taskAudit = auditStallIssue(event.outputIssue);
-        // An active goal keeps recovering while it still owns work. The shared
-        // budget bounds provider retries for ordinary tasks; it never parks a
-        // goal, because active goal work is never put on hold. Each recovery
-        // changes the directive instead of replaying one refusal.
-        const goalKeepsRunning = taskAudit && goalActive(*session) &&
-            !goalIsAnswerTurn(session.goal) && !explanationOnly;
-        const recover = goalKeepsRunning
-            ? toolsEnabledForSession(*session) && !_stopPending &&
-                !computerUseAbortActive()
-            : outputRecoveryAllowed(event.outputIssue, exhausted,
-                toolsEnabledForSession(*session), _stopPending,
-                computerUseAbortActive(), explanationOnly);
+        const recovery = recoverAgent(*session, event.outputIssue);
         logInfo("agent-output request=" ~ to!string(event.requestId) ~
             " thread=" ~ session.id ~ " issue=" ~ event.outputIssue ~
-            " recovery=" ~ (recover ? "continuing" : "stopped"));
-        if (taskAudit)
+            " attempt=" ~ to!string(recovery.attempt) ~
+            " delayMs=" ~ to!string(recovery.delayMs));
+        if (auditStallIssue(event.outputIssue))
         {
-            // A progress audit is an internal control boundary, not a provider
-            // failure. Keep the reply and finish it here; an ordinary task's
-            // exhausted budget settles quietly below instead of painting an
-            // error, while an active goal keeps recovering.
             _suppressDoneStatus = true;
             finishAssistantMessage(false);
         }
-        else failAssistantMessage(outputFailurePrefix ~ (exhausted ? "Recovery exhausted: " : "") ~
-                outputIssueDescription(event.outputIssue) ~
-                (exhausted
-                    ? " Recovery requests also produced no useful action. Work and the active goal are saved; retry with a working provider to continue."
-                    : ""));
-        dropAutoResendSchedule();
-        _autoContinuePendingSession = -1;
-        _autoContinueRetries = 0;
-        _activeRequestId = 0;
-        _activeRequestSession = -1;
-        if (!recover)
-        {
-            if (taskAudit)
-            {
-                settleStalledAudit(sessionIndex);
-                return;
-            }
-            updateStatus("Stopped repeated agent output. See the conversation for details.");
-            refreshBubbleActions();
-            // A steering prompt belongs to the turn that just ended: drain it
-            // before a queued follow-up opens the next turn, so the transcript
-            // and the next request keep the order the user typed.
-            appendQueuedGuidance(*session);
-            startNextQueuedFollowUp(sessionIndex);
-            return;
-        }
+        else failAssistantMessage(outputFailurePrefix ~ outputIssueDescription(event.outputIssue), true);
+        if (_stopPending || _turnCancelled || computerUseAbortActive()) return;
         ChatMessage guidance;
-        guidance.role = "user";
-        guidance.internal = true;
-        guidance.content = outputRecoveryMarker ~ (taskAudit
-            ? (goalKeepsRunning
-                ? goalStallInstruction(*session, goalAuditRecoveryCount(*session))
-                : unfinishedTaskRecoveryInstruction)
-            :
-            " the previous response failed to produce a usable action. Its text was " ~
-            "preserved for diagnosis and excluded from this request. Resume the latest " ~
-            "user instruction from the successful tool results. If an action is needed, " ~
-            "use the provided function-call channel and tool schemas; do not print XML " ~
-            "invocations or repeat earlier prose. Otherwise give a concise result or " ~
-            "supported result. " ~
-            "Recover internally and complete the authorized outcomes; do not ask the user to retry.");
-        if (outputRecoveryCount(*session) > 0 && _settings.diagnosticModel.length)
-            _execution.diagnosticRequestsRemaining = 4;
+        guidance.role = "user"; guidance.internal = true;
+        guidance.content = recovery.guidance;
         appendMessage(*session, guidance);
-        session.turnStatus = "running";
-        session.taskStatus = "active";
-        publishThreadUpdated(*session);
-        markDirty();
+        if (recovery.attempt == 2 && _settings.diagnosticModel.length)
+            _execution.diagnosticRequestsRemaining = 1;
+        scheduleAgentContinuation(sessionIndex, recovery.delayMs);
         rebuildMessageColumn();
-        updateStatus("Recovering agent output…");
-        if (!_toolContinuationPaused) startChatRequest(sessionIndex);
     }
 
-    /// End an exhausted progress audit without a failure row or another
-    /// request. The reply and recorded work stay. An ordinary task stays active
-    /// for Continue. An active goal is never paused here: its recovery branch
-    /// keeps requesting work while the goal owns unfinished outcomes.
-    private void settleStalledAudit(int sessionIndex)
+    private void scheduleAgentContinuation(int sessionIndex, int delayMs = 0)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        if (_turnCancelled || _stopPending || computerUseAbortActive()) return;
+        dropAutoResendSchedule();
+        _activeRequestId = 0; _activeRequestSession = -1;
+        _autoContinuePendingSession = sessionIndex;
+        _autoContinueRetryAt = MonoTime.currTime + msecs(delayMs);
+        _execution.missingWorkSince = MonoTime.init;
         auto session = &_sessions[sessionIndex];
-        // Same typed-order rule as the ordinary settle: guidance first, then a
-        // queued follow-up. This drain sets taskStatus to active, so the audit's
-        // own settled status is assigned afterwards and stays authoritative.
-        appendQueuedGuidance(*session);
-        session.turnStatus = "completed";
-        session.taskStatus = session.verificationStatus == "required" ||
-            session.verificationStatus == "failed" ? "verifying" : "active";
-        updateStatus("Unfinished work remains recorded. Press Continue to resume it.");
-        setTurnInFlight(false);
-        freezeTurnTiming();
-        markUnreadIfBackground(sessionIndex);
-        publishThreadUpdated(*session);
-        markDirty();
-        rebuildMessageColumn();
-        refreshBubbleActions();
-        startNextQueuedFollowUp(sessionIndex);
+        session.turnStatus = "running"; session.taskStatus = "active";
+        publishThreadUpdated(*session); markDirty();
+        setTurnInFlight(true);
+        setTurnActiveMarker(true, session.id);
+        updateStatus(delayMs ? "Recovering automatically · waiting before the next attempt…" : "Continuing the task…");
+        updateSendButton();
+    }
+
+    private void tickAgentContinuation()
+    {
+        const owner = _autoContinuePendingSession;
+        if (owner < 0) return;
+        if (_turnCancelled || _stopPending || computerUseAbortActive())
+        { _autoContinuePendingSession = -1; return; }
+        if (_durabilityBlocked || _toolContinuationPaused || _client.busy() ||
+            _pendingToolResults > 0 || _execution.compactionClient !is null ||
+            MonoTime.currTime < _autoContinueRetryAt) return;
+        _autoContinuePendingSession = -1;
+        startChatRequest(owner, false);
     }
 
     private static bool hasSubstantiveMutation(
@@ -24544,8 +24487,7 @@ private void pollButtonSuggestionRequest()
         setComputerUseExplanationOnly(false);
         if (_durabilityBlocked)
         {
-            stopActiveTurn();
-            updateStatus("Tool intent could not be saved. No tools were started; retry after storage recovers.");
+            recoverUnstartedTools("Conversation storage is recovering; no tools were started.");
             return;
         }
         const revisionKey = buildNormalizedPath(workspace).toLower();
@@ -24556,7 +24498,7 @@ private void pollButtonSuggestionRequest()
         if (!_execution.dispatchAfterCommit(cast(RepositoryRuntime) _runtime, requestId,
             delegate() { scheduleToolBatch(receiver, requestId, workerCalls, workspace,
                 cancellation, changeContext); }))
-            failAssistantMessage("Tool intent could not be queued. No tools were started; retry after storage recovers.");
+            recoverUnstartedTools("Tool intent could not be queued; no tools were started.");
     }
 
     /// A stable signature for a batch of tool calls (name + arguments), used
@@ -24578,15 +24520,29 @@ private void pollButtonSuggestionRequest()
         scheduleToolBatch(client, requestId, calls, workspace, cancellation, changeContext);
     }
 
+    private void recoverUnstartedTools(string reason)
+    {
+        logAgentLifecycle(_loadedRuntimeId, _activeRequestId, "tools.admission_recovery");
+        const calls = _pendingToolCalls.dup;
+        foreach (call; calls)
+        {
+            if (call.id in _reportedToolCallIds) continue;
+            OpenCodeEvent result;
+            result.kind = OpenCodeEventKind.toolResult; result.requestId = _activeRequestId;
+            result.toolCallId = call.id; result.toolName = call.name;
+            result.toolFailed = true; result.toolState = ToolState.resourceBlocked;
+            result.text = "Error: " ~ reason ~ " Continue from recorded results after storage recovers.";
+            applyToolResult(result);
+        }
+    }
+
     private void checkDispatchAdmission()
     {
         if (!_execution.expireQueuedEffect()) return;
         if (_pendingToolCalls.length == 0)
         {
-            failAssistantMessage("Request did not start within 30 seconds while waiting for conversation storage. " ~
-                "Its queued admission was revoked. Retry after storage recovers.");
-            _activeRequestId = 0;
-            _activeRequestSession = -1;
+            failAssistantMessage("Request admission expired while waiting for storage; no request was started.", true);
+            scheduleAgentContinuation(turnOwnerSessionIndex(), 3000);
             refreshBubbleActions();
             updateSendButton();
             return;
@@ -27480,6 +27436,7 @@ private void pollButtonSuggestionRequest()
         if (!historyReady(sessionIndex, HistoryAction("", HistoryActionKind.startRequest,
             0, 0, userTurn, submittedTicks))) return;
         _execution.toolContinuationPending = false;
+        _autoContinuePendingSession = -1;
         _execution.missingWorkSince = MonoTime.init;
         const preparationStartedTicks = submittedTicks ? submittedTicks : MonoTime.currTime.ticks;
         // Any new request supersedes a scheduled re-send. A request the user
@@ -27698,7 +27655,8 @@ private void pollButtonSuggestionRequest()
         }
         if (_durabilityBlocked)
         {
-            failAssistantMessage("Conversation could not be saved. The request was not started; retry after storage recovers.");
+            scheduleAgentContinuation(sessionIndex, 3000);
+            updateStatus("Saving conversation · continuing automatically when storage recovers…");
             return;
         }
         if (checkpointCreated && startModelCompaction(sessionIndex,
@@ -27758,9 +27716,8 @@ private void pollButtonSuggestionRequest()
         if (!queued)
         {
             _requestTokenKeyIds.remove(requestId);
-            failAssistantMessage("Request could not be queued. Retry after conversation storage recovers.");
-            _activeRequestId = 0;
-            _activeRequestSession = -1;
+            failAssistantMessage("Request could not be queued; no request was started.", true);
+            scheduleAgentContinuation(sessionIndex, 3000);
             refreshBubbleActions();
             return;
         }
@@ -27783,7 +27740,7 @@ private void pollButtonSuggestionRequest()
         updateSendButton();
         // Optional: give a brand-new conversation a rewritten name with one
         // tiny, no-thinking request instead of echoing the first message.
-        if (userTurn && openingTurn(*session))
+        if (userTurn && !_autoResending && openingTurn(*session))
             scheduleQuickTitle(sessionIndex);
     }
 
@@ -27838,6 +27795,10 @@ private void pollButtonSuggestionRequest()
         _autoResendMessage = messageIndex;
         _autoResendResetMs = resetMs;
         _lastAutoResendSeconds = -1;
+        _sessions[sessionIndex].turnStatus = "running";
+        _sessions[sessionIndex].taskStatus = "active";
+        publishThreadUpdated(_sessions[sessionIndex]); markDirty();
+        setTurnInFlight(true);
         logInfo("sending this turn again automatically in " ~
             to!string(delayMs) ~ " ms [auto-retry " ~
             to!string(_autoResendCount + 1) ~ "]");
@@ -27897,6 +27858,9 @@ private void pollButtonSuggestionRequest()
         if (autoResendPendingFor(sessionIndex, messageIndex))
         {
             dropAutoResendSchedule();
+            setTurnInFlight(false);
+            _sessions[sessionIndex].turnStatus = "interrupted";
+            publishThreadUpdated(_sessions[sessionIndex]); markDirty();
             updateStatus("Automatic retry stopped. Retry sends this turn again now.");
             refreshBubbleActions();
             return;
@@ -33873,22 +33837,13 @@ private void pollButtonSuggestionRequest()
 
     private static int availableContextFromError(string failureText)
     {
-        const marker = "available context size (";
-        const offset = failureText.indexOf(marker);
-        if (offset < 0) return 0;
-        const start = cast(size_t) offset + marker.length;
-        size_t end = start;
-        while (end < failureText.length && failureText[end] >= '0' &&
-            failureText[end] <= '9') ++end;
-        if (end == start || !failureText[end .. $].startsWith(" tokens)"))
-            return 0;
-        try return to!int(failureText[start .. end]);
-        catch (Exception) return 0;
+        import auroraopencode.agentloop : providerContextLimit;
+        return providerContextLimit(failureText);
     }
 
     private bool scheduleContextOverflowRetry(string failureText)
     {
-        if (_contextOverflowRetryUsed || _receivedFirstDelta) return false;
+        if (_receivedFirstDelta) return false;
         int available = availableContextFromError(failureText);
         const sessionIndex = turnOwnerSessionIndex();
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
@@ -34967,7 +34922,7 @@ private void pollButtonSuggestionRequest()
                 _execution.toolContinuationPending = false;
                 continue;
             }
-            if (_client.busy() || _pendingToolResults > 0 ||
+            if (_durabilityBlocked || _client.busy() || _pendingToolResults > 0 ||
                 _execution.compactionClient !is null) continue;
             logAgentLifecycle(session.id, _activeRequestId, "tools.continuing");
             startChatRequest(cast(int) index, false);
@@ -34981,7 +34936,8 @@ private void pollButtonSuggestionRequest()
             turnOperationLabel;
         const operations = turnOwnedOperations(_stopPending, _client.busy(),
             _execution.compactionClient !is null, _pendingToolResults,
-            _pendingToolCalls.length, _execution.toolContinuationPending,
+            _pendingToolCalls.length, _execution.toolContinuationPending ||
+                _autoContinuePendingSession >= 0 || _autoResendPending,
             _execution.effectPending(), _eventScratch.length > 0 ||
             _client.hasPendingEvents(), hasPendingSubagents(_loadedRuntimeId),
             _toolContinuationPaused);
@@ -35001,10 +34957,14 @@ private void pollButtonSuggestionRequest()
                 details["turnTiming"] = _turnTiming;
                 logAgentLifecycle(_loadedRuntimeId, _activeRequestId,
                     "execution.missing_operation", details);
-                failAssistantMessage("Execution stalled: no active operation remains for this turn. " ~
-                    "Your messages and completed tool results were preserved. Retry to continue.");
-                _activeRequestId = 0;
-                _activeRequestSession = -1;
+                auto owner = turnOwnerSessionIndex();
+                if (owner < 0) owner = _processingRuntimeSession;
+                if (owner < 0 || owner >= cast(int) _sessions.length) return;
+                const recovery = recoverAgent(_sessions[owner], "missing_operation");
+                ChatMessage guidance; guidance.role = "user"; guidance.internal = true;
+                guidance.content = recovery.guidance;
+                appendMessage(_sessions[owner], guidance);
+                scheduleAgentContinuation(owner, recovery.delayMs);
                 refreshBubbleActions();
                 updateSendButton();
                 return;
@@ -35068,7 +35028,7 @@ private void pollButtonSuggestionRequest()
         {
             _durabilityBlocked = false;
             _runtimeErrorReported = false;
-            updateStatus("Conversation storage recovered. Retry the interrupted request.");
+            updateStatus("Conversation storage recovered · resuming pending work…");
         }
         _executionServicedSinceTick = true;
         _servicingExecution = true;
@@ -35318,7 +35278,9 @@ private void pollButtonSuggestionRequest()
                     }
                     _requestTokenKeyIds.remove(event.requestId);
                     if (finishCompletionHandoffAfterFailure(event.text)) break;
-                    failAssistantMessage(event.text);
+                    const automatic = _execution.retryPolicy.resend(event.text, cast(uint) _autoResendCount,
+                        _execution.outageWait, false, event.retryExhausted);
+                    failAssistantMessage(event.text, automatic.retry || availableContextFromError(event.text) > 0);
                     if (!scheduleContextOverflowRetry(event.text))
                         scheduleAutoResend(event.text, event.retryExhausted);
                     if (_activeRequestId == event.requestId)
@@ -35410,6 +35372,7 @@ private void pollButtonSuggestionRequest()
 
         // Send a turn that failed for a reason waiting will fix, on its own.
         tickAutoResend();
+        tickAgentContinuation();
 
         // The client replays a transient upstream failure (429 "the model
         // provider is temporarily unavailable") until it is answered, which can

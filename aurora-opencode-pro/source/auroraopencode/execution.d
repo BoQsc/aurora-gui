@@ -249,6 +249,8 @@ public class ThreadEngine
     {
         pendingRouting = OrchestrationBatch.init;
         toolContinuationPending = false;
+        autoContinuePendingSession = -1;
+        autoResendPending = false;
         if (turnInFlight || pendingToolResults > 0 || _queuedEffect !is null)
             logAgentLifecycle(threadId, activeRequestId, "execution.cancelled");
         _protocol = reduceExecution(_protocol, ExecutionCommand(ExecutionCommandKind.stop)).state;

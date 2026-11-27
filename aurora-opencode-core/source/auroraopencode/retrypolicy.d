@@ -8,11 +8,11 @@ import std.string : toLower, indexOf, startsWith;
 public enum RetryReason { none, providerBusy, transientFailure, quotaLimit, transportFailure, invalidRequest, budgetExhausted }
 public struct RetryDecision { bool retry; RetryReason reason; int delayMs; }
 
-/// Bounds recovery from an unavailable provider, not useful generation or a
-/// user task's duration. Zero explicitly requests an unlimited outage budget.
+/// Recovery is persistent by default. An explicitly configured positive budget
+/// remains available for unattended clients that need a finite outage deadline.
 public struct ProviderRetryPolicy
 {
-    Duration outageBudget = 120.seconds;
+    Duration outageBudget = Duration.zero;
 
     bool available(Duration elapsed) const pure nothrow @safe @nogc
     {
@@ -29,13 +29,16 @@ public struct ProviderRetryPolicy
     RetryDecision resend(string failure, uint attempt, Duration elapsed,
         bool manual = false, bool exhausted = false) const
     {
-        if (exhausted || !available(elapsed))
+        // A transport request has its own bounded quick retries. Exhausting
+        // those attempts is not permission to abandon the owning conversation.
+        if ((exhausted && outageBudget > Duration.zero) || !available(elapsed))
             return RetryDecision(false, RetryReason.budgetExhausted, 0);
         const delay = replayDelayMs(failure, attempt);
-        if (delay < 0 && !manual) return RetryDecision(false, RetryReason.invalidRequest, 0);
+        if (delay < 0 && !manual && outageBudget > Duration.zero)
+            return RetryDecision(false, RetryReason.invalidRequest, 0);
         const reset = quotaResetDelayMs(failure) > 0;
         return RetryDecision(true, reset ? RetryReason.quotaLimit : RetryReason.transportFailure,
-            reset ? cast(int) delay : boundedDelay(cast(int) (delay < 0 ? 3000 : delay), elapsed));
+            reset ? cast(int) delay : boundedDelay(cast(int) (delay < 0 ? (manual ? 3000 : 60_000) : delay), elapsed));
     }
 
     RetryDecision decide(uint status, uint nextAttempt, Duration elapsed,
@@ -63,7 +66,7 @@ public ProviderRetryPolicy configuredProviderRetryPolicy()
             const milliseconds = to!long(value);
             if (milliseconds >= 0) policy.outageBudget = milliseconds.msecs;
         }
-        catch (Exception) {} // Invalid configuration retains the finite default.
+        catch (Exception) {} // Invalid configuration retains persistent recovery.
     return policy;
 }
 

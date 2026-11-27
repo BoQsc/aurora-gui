@@ -26,6 +26,7 @@ int main()
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
     window.setRoot(root);
+    scope(exit) root.shutdownClient();
 
     const startupDeadline = Clock.currTime + 5.seconds;
     while (root.startupPendingForTesting() && Clock.currTime < startupDeadline)
@@ -72,6 +73,7 @@ int main()
     root.appendOwnedToolResultForTesting("implementation", "edit", "Applied the implementation.", "{}", 1, 0, "+implemented");
     root.setTaskStateForTesting("Implement and verify the feature.", "completed",
         "passed");
+    root.addConversationForTesting(["assistant"], ["Implementation and checks are complete."]);
     assert(!root.completionWouldContinueForTesting(),
         "completed work still reported a scheduled continuation");
     root.startTurnClockForTesting();
@@ -88,6 +90,7 @@ int main()
     // sent on the first stop.
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["Hello there."]);
+    root.addConversationForTesting(["assistant"], ["Hello."]);
     root.startTurnClockForTesting();
     root.queueFollowUpForTesting("Summarize this chat.");
     assert(!root.completionWouldContinueForTesting(),

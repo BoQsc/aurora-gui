@@ -178,32 +178,48 @@ int main()
     assert(failedActor.post(ActorCommand(ActorCommandKind.start, "Accepted before a failed journal write")) == ActorAdmission.accepted);
     Thread.sleep(50.msecs);
     auto steering = ActorCommand(ActorCommandKind.steer, "Accepted steering");
-    steering.imagesJson = `[{"mimeType":"image/png","name":"accepted.png","base64Data":"accepted-pixels"}]`;
+    steering.imagesJson = `[{"mimeType":"image/png","name":"accepted.png","base64Data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="}]`;
     steering.context = "Accepted file context";
     assert(failedActor.post(steering) == ActorAdmission.accepted);
     assert(failedActor.post(ActorCommand(ActorCommandKind.followUp, "Accepted follow-up")) == ActorAdmission.accepted);
     assert(failedActor.post(ActorCommand(ActorCommandKind.setDraft, "Unsent draft retained")) == ActorAdmission.accepted);
     failedGate.release();
-    const failedDeadline = MonoTime.currTime + 5.seconds;
-    while (!failedActor.isClosed() && MonoTime.currTime < failedDeadline) Thread.sleep(2.msecs);
-    assert(failedActor.isClosed() && failedActor.fault().length);
-    bool visibleFailure;
-    foreach (change; failedActor.takeChanges())
-        if (change.kind == ActorChangeKind.fault) { visibleFailure = true; assert(!change.busy); }
-    assert(visibleFailure, "A failed owner closed without a reserved terminal notification");
-    auto failedState = parseJSON(failedActor.finalSnapshot());
-    assert(failedState["turnStatus"].str == "failed" && failedState["goalStatus"].str == "active");
-    assert(failedState["queuedFollowUps"].array[0].str == "Accepted before a failed journal write",
-        "Storage failure discarded accepted user input before it reached the graph");
-    assert(failedState["queuedFollowUps"].array[1].str == "Accepted follow-up" &&
+    // Storage failure is a waiting operation, not a dead conversation owner.
+    Thread.sleep(150.msecs);
+    assert(!failedActor.isClosed() && !failedActor.fault().length);
+    assert(failedActor.post(ActorCommand(ActorCommandKind.snapshot)) == ActorAdmission.accepted);
+    auto failedState = parseJSON("{}");
+    const snapshotDeadline = MonoTime.currTime + 5.seconds;
+    while (!("messages" in failedState.object) && MonoTime.currTime < snapshotDeadline)
+    {
+        foreach (change; failedActor.takeChanges())
+        {
+            assert(change.kind != ActorChangeKind.fault, change.text);
+            if (change.kind == ActorChangeKind.snapshot) failedState = parseJSON(change.text);
+        }
+        Thread.sleep(2.msecs);
+    }
+    assert(failedState["turnStatus"].str == "running" && failedState["goalStatus"].str == "active");
+    bool acceptedPrompt;
+    foreach (message; failedState["messages"].array)
+        if (message["content"].str == "Accepted before a failed journal write") acceptedPrompt = true;
+    assert(acceptedPrompt, "Storage recovery discarded the accepted user prompt");
+    assert(failedState["queuedFollowUps"].array[0].str == "Accepted follow-up" &&
         failedState["queuedGuidance"].array[0].str == "Accepted steering" && failedState["draft"].str == "Unsent draft retained");
-    assert(failedState["queuedGuidanceContext"].array[0]["images"].array[0]["base64Data"].str == "accepted-pixels" &&
+    assert(failedState["queuedGuidanceContext"].array[0]["images"].array[0]["blob"].str.length &&
         failedState["queuedGuidanceContext"].array[0]["text"].str == "Accepted file context",
-        "Storage failure discarded an accepted attachment or hidden context");
+        "Storage recovery discarded an accepted attachment or hidden context");
+    // Stop remains immediate while the disk is unavailable. Restoring the path
+    // lets the retained journal drain without another user message or provider.
+    failedActor.stop(); Thread.sleep(100.msecs);
+    rename(badPath, badPath ~ ".offline");
+    const recoveryDeadline = MonoTime.currTime + 6.seconds;
+    while (brokenJournal.lastError().length && MonoTime.currTime < recoveryDeadline) Thread.sleep(5.msecs);
+    assert(!brokenJournal.lastError().length && !brokenJournal.effectsBlocked(),
+        "Restored storage never resumed durable admission");
+    assert(brokenJournal.history().length > 3, "Accepted events were not replayed to recovered storage");
     failedActor.close();
-    bool incomplete;
-    try failedActor.recordedTrace(); catch (Exception) { incomplete = true; }
-    assert(incomplete, "A failed reduction advertised a complete replay recording");
+    assert(failedActor.recordedTrace().length, "Normal storage recovery lost its execution trace");
     auto deferredInitial = initial; deferredInitial.id = "deferred";
     auto deferred = new ConversationActor(deferredInitial, config, null, budget, ActorStart.deferred);
     assert(budget.active() == 0 && !deferred.activity().closed);

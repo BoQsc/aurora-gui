@@ -222,6 +222,13 @@ public final class RepositoryRuntime : AgentRuntime
             if (failureRevision == _checkpointFailureRevision &&
                 _lastError.length == 0) _effectsBlocked = false;
     }
+    /// An execution owner may instead replay every journal event that failed
+    /// admission. Its ordered queue must be fully durable before this call;
+    /// a newer failure still fences effects through the revision comparison.
+    void acknowledgeJournalReplay(ulong failureRevision)
+    {
+        acknowledgeSnapshot(failureRevision);
+    }
     bool effectsBlocked() { synchronized (this) return _effectsBlocked; }
     bool checkpoint(AgentRuntimeEvent event)
     {

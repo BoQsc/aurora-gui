@@ -51,9 +51,9 @@ int main()
     }
     append(s,"assistant","The requested interaction is fully corrected.");
     auto exhausted = decideTurn(s,p);
-    assert(exhausted.action == TurnAction.settle && exhausted.turnStatus == "completed" &&
-        exhausted.taskStatus == "verifying" && exhausted.status.indexOf("Execution recovery") < 0,
-        "Exhausted recovery stopped the chat with a failed turn instead of ending normally");
+    assert(exhausted.action == TurnAction.request && exhausted.turnStatus == "running" &&
+        exhausted.taskStatus == "active",
+        "An internal attempt counter abandoned unfinished work");
     writeln("PASS reworded completion, new reads and edits cannot reset unresolved-outcome recovery without stopping the chat");
 
     // A wait consumes its own duration, so the host deadline must include a
@@ -82,11 +82,11 @@ int main()
     }
     append(s, "assistant", "The delivered answer and its evidence are preserved.");
     auto hostInterrupted = decideTurn(s, p);
-    assert(hostInterrupted.action == TurnAction.interrupted &&
-        hostInterrupted.turnStatus == "interrupted" &&
-        hostInterrupted.taskStatus == "verifying", hostInterrupted.status);
+    assert(hostInterrupted.action == TurnAction.request &&
+        hostInterrupted.turnStatus == "running" &&
+        hostInterrupted.taskStatus == "active", hostInterrupted.status);
     assert(!s.messages[$ - 1].failed, "A transient host fault marked the delivered answer as failed");
-    writeln("PASS a persistent host fault interrupts the turn and preserves the delivered answer");
+    writeln("PASS a persistent host fault schedules recovery and preserves the delivered answer");
 
     // Reported regression: a malformed command (a broken python -c one-liner)
     // was recorded as the obstacle, then the next execution of the same tool
@@ -152,6 +152,7 @@ int main()
     s.taskSteps[0].status="completed"; s.verificationStatus="passed";
     append(s,"tool","Changed the requested implementation",false,"edit");
     s.messages[$-1].diffAdditions=1; s.messages[$-1].workspaceChanged=true;
+    append(s,"assistant","The requested outcomes and checks are complete.");
     assert(decideTurn(s,p).action == TurnAction.settle, executionState(s).remaining);
     writeln("PASS progressing outcomes have no fixed request or tool budget");
     RequestPolicy finishedPolicy;finishedPolicy.toolsEnabled=true;
@@ -169,6 +170,9 @@ int main()
     assert(prepareAgentRequest(s,finishedPolicy).tools.length==0,
         "A direct question after completed work exposed tools for another unnecessary audit");
     s.taskSteps ~= TaskStep("Newly discovered required outcome","pending");
+    TaskWorkItem requiredOutcome;
+    requiredOutcome.step = s.taskSteps[$-1]; requiredOutcome.required = true;
+    s.contract.workItems ~= requiredOutcome;
     assert(!executionReadyToAnswer(s) && prepareAgentRequest(s,finishedPolicy).tools.length==1,
         "Final answer handoff hid tools while a real outcome remained");
     writeln("PASS a question answers directly; work that still needs tools is not cut off with no result");
@@ -183,7 +187,7 @@ int main()
     s.taskSteps[0].status="completed";
     TurnPolicy noTools; noTools.toolsEnabled=false; noTools.finishReason="stop";
     auto blank = decideTurn(s,noTools);
-    assert(blank.action == TurnAction.request && blank.guidance.indexOf("no tools")>=0,
+    assert(blank.action == TurnAction.request && blank.guidance.indexOf("empty_answer")>=0,
         "An empty tool-less reply settled as a completed turn with no result");
     writeln("PASS an empty tool-less reply is retried instead of settling with no result");
 

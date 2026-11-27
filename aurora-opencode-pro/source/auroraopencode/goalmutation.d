@@ -3,6 +3,21 @@ module auroraopencode.goalmutation;
 import auroraopencode.core : ChatSession, TaskContract, activeTaskStateJson, restoreActiveTaskState;
 import auroraopencode.planhistory : recordPlanHistory;
 
+/// Successful goal completion proves the requested outcome. Reflect that in
+/// the advisory plan rather than requiring another model round for checkboxes.
+public void reconcileCompletedGoalPlan(ref ChatSession session)
+{
+    import auroraopencode.planmode : experimentalStrictPlanEnabled;
+    if (experimentalStrictPlanEnabled()) return;
+    bool changed;
+    foreach (ref step; session.taskSteps)
+        if (step.status != "completed") { step.status = "completed"; changed = true; }
+    foreach (ref plan; session.nestedPlans)
+        foreach (ref step; plan.steps)
+            if (step.status != "completed") { step.status = "completed"; changed = true; }
+    if (changed) recordPlanHistory(session, "goal_complete", "Reconciled the advisory plan with the accepted goal completion.");
+}
+
 public void resetTaskForNewGoal(ref ChatSession session)
 {
     if (session.objective.length || session.contract.id.length)

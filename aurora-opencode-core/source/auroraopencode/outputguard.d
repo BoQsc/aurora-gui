@@ -92,12 +92,23 @@ public string agentOutputIssue(string text, const(string)[] toolNames,
     {
         const trimmed = line.strip();
         enum prefix = "<invoke name=\"";
-        if (!trimmed.startsWith(prefix)) continue;
-        const end = trimmed.indexOf("\">", prefix.length);
-        if (end >= 0) ++startsByName[trimmed[prefix.length .. cast(size_t) end]];
+        // Providers also put the calls wrapper and invocation on ONE line.
+        // Only accept a protocol-shaped line, never an inline quoted example.
+        string invocation = trimmed;
+        if (invocation.startsWith("<calls>")) invocation = invocation[7 .. $].strip();
+        while (invocation.startsWith(prefix))
+        {
+            const end = invocation.indexOf('"', prefix.length);
+            if (end < 0) break;
+            ++startsByName[invocation[prefix.length .. cast(size_t) end]];
+            const next = invocation.indexOf(prefix, cast(size_t) end + 1);
+            if (next < 0) break;
+            invocation = invocation[cast(size_t) next .. $];
+        }
     }
-    const completeInvocation = terminal && !structuredCalls &&
-        plain.indexOf("<parameter name=") >= 0 && plain.indexOf("</invoke>") >= 0;
+    // A truncated invocation is unusable too; waiting for its closing tag let
+    // output-limit fragments settle as successful answers.
+    const completeInvocation = terminal && !structuredCalls;
     foreach (name; toolNames)
     {
         const found = name in startsByName;

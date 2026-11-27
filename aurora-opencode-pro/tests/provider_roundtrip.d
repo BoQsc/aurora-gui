@@ -48,7 +48,8 @@ int main()
     settings.developerSourceDir = scratchSource;
     const stalledGoal = environment.get("AURORA_CONTRACT_GOAL_STALL", "") == "1";
     const auditStall = environment.get("AURORA_CONTRACT_GOAL_AUDIT_STALL", "") == "1";
-    settings.autoGoalFromFirstMessage = stalledGoal || auditStall;
+    const completeGoal = environment.get("AURORA_CONTRACT_COMPLETE_GOAL", "") == "1";
+    settings.autoGoalFromFirstMessage = stalledGoal || auditStall || completeGoal;
     saveSettings(settings);
     WindowOptions options;
     options.width = 1200;
@@ -134,11 +135,17 @@ int main()
     assert(readText(buildPath(workspace, "out.txt")) == "success");
     assert(root.verificationStatusForTesting() == "passed");
     assert(root.taskStatusForTesting() == "completed");
+    if (completeGoal) assert(root.goalStatusForTesting() == "completed",
+        "Verified completion was blocked by a stale advisory plan");
     const latency = root.latencyPaintForTesting();
     assert(latency.microseconds[LatencyStage.firstToken] >= 0 &&
         latency.microseconds[LatencyStage.applied] >= latency.microseconds[LatencyStage.firstToken] &&
         latency.microseconds[LatencyStage.paintSubmitted] >= latency.microseconds[LatencyStage.applied],
         "Request trace did not follow its first token into a completed render submission");
+    writeln("client_first_token_to_apply_us=",
+        latency.microseconds[LatencyStage.applied] - latency.microseconds[LatencyStage.firstToken],
+        " client_apply_to_paint_us=",
+        latency.microseconds[LatencyStage.paintSubmitted] - latency.microseconds[LatencyStage.applied]);
     const titleDeadline = MonoTime.currTime + 3.seconds;
     while (root.sessionTitleForTesting(root.currentSessionForTesting()) != "Fixture" &&
         MonoTime.currTime < titleDeadline)

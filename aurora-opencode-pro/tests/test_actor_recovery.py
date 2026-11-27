@@ -133,6 +133,7 @@ try:
     # The app keeps a stalled goal running and only the reader's pause ends it,
     # so the request count depends on when that pause lands. It is bounded, not
     # fixed: one real write, then repeated prose-only action turns.
+    expected.pop("unoffered", None)
     only_modes = set(only.split(",")) if only else set()
     if "goal-stall" in counts:
         # The fixture's provider caps at twelve requests, so a count above
@@ -150,6 +151,10 @@ try:
             f"output recovery left its bound: {counts['bad-output']}"
         del counts["bad-output"]
     only_modes.discard("bad-output")
+    if "unoffered" in counts:
+        assert 5 <= counts["unoffered"] <= 9, dict(counts)
+        del counts["unoffered"]
+    only_modes.discard("unoffered")
     # Task recovery is bounded, not a fixed count: the write turn plus the
     # bounded completion-recovery turns, then the turn settles with the
     # unfinished verification recorded.
@@ -162,6 +167,6 @@ try:
     else:
         assert counts == expected, f"Unexpected retries or tool recovery loops: {dict(counts)}"
     assert not failures, failures
-    print("PASS real HTTP retry budgets, quota reset, Stop, bounded output repair and tool-free handoff", dict(counts))
+    print("PASS real HTTP retry budgets, quota reset, Stop, persistent output repair and tool-free handoff", dict(counts))
 finally:
     server.shutdown()

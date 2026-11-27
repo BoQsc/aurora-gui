@@ -148,11 +148,10 @@ int main()
         Thread.sleep(5.msecs);
     }
     window.onNativeService();
-    assert(root.storageBlockedForTesting() && !root.turnBusyForTesting());
+    assert(root.storageBlockedForTesting() && root.turnBusyForTesting());
     assert(root.lastAssistantErrorForTesting().indexOf("not started") >= 0);
     rmdir(journal);
     rename(journal ~ ".backup", journal);
-    root.newChatForTesting();
     const recovered = MonoTime.currTime + 7.seconds;
     while (root.storageBlockedForTesting() && MonoTime.currTime < recovered)
     {
@@ -160,6 +159,8 @@ int main()
         Thread.sleep(10.msecs);
     }
     assert(!root.storageBlockedForTesting());
+    assert(root.turnBusyForTesting(), "Storage recovery abandoned the pending request");
+    root.stopActiveTurnForTesting();
     writeln("PASS storage failure refuses effects and recovers after durable snapshot acknowledgement");
 
     root.newChatForTesting();

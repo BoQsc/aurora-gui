@@ -222,7 +222,7 @@ public bool goalOutstandingWork(const ref ChatSession session)
         foreach (step; plan.steps)
             if (step.status != "completed") return true;
     foreach (item; session.contract.workItems)
-        if (item.step.status != "completed") return true;
+        if (item.required && item.step.status != "completed") return true;
     return session.verificationStatus == "required" ||
         session.verificationStatus == "failed";
 }
@@ -639,12 +639,8 @@ public string goalCompletionError(const ref ChatSession session, string argument
             "an audit that finds the goal unmet is a result to act on, not completion. " ~
             "Call goal_complete only once the requested outcome is achieved and its checks pass. " ~
             "If an essential user-owned fact prevents completion, call request_input with that fact and blocked_steps.";
-    if (!answerGoal && goalRequestWithoutNewEvidence(session))
-        return "This goal's latest request has no new work recorded after it, and the recorded plan and " ~
-            "verification predate that request. Answering or starting the goal is not completion: do the work " ~
-            "the request asks for, or record the new outcome with update_plan, then call goal_complete only " ~
-            "when the whole goal is finished. If the delivered result already satisfies everything, the user " ~
-            "can clear the goal instead of certifying it twice.";
+    // Resume and status questions do not invalidate current deliverable proof.
+    // Actual mutations invalidate verification through the workspace revision.
     // Report remaining work before asking the model to repair receipt IDs.
     // Otherwise an already-finished archive sent the agent through thirteen
     // history lookups only to discover it still needed an accepted check.
@@ -683,15 +679,19 @@ public string goalCompletionError(const ref ChatSession session, string argument
     else if (auto evidence = "evidence" in value.object)
         if (evidence.type != JSONType.array)
             return "goal_complete evidence must be an array of tool-call IDs.";
-    foreach (step; session.taskSteps)
-        if (step.status != "completed")
-            return "The checklist still has unfinished outcomes. Finish them or update the plan, then call goal_complete.";
-    foreach (plan; session.nestedPlans)
-        foreach (step; plan.steps)
+    import auroraopencode.planmode : experimentalStrictPlanEnabled;
+    if (experimentalStrictPlanEnabled() || session.verificationStatus != "passed")
+    {
+        foreach (step; session.taskSteps)
             if (step.status != "completed")
-                return "A nested plan still has unfinished steps. Finish them before completing the goal.";
+                return "The checklist still has unfinished outcomes. Finish them or update the plan, then call goal_complete.";
+        foreach (plan; session.nestedPlans)
+            foreach (step; plan.steps)
+                if (step.status != "completed")
+                    return "A nested plan still has unfinished steps. Finish them before completing the goal.";
+    }
     foreach (item; session.contract.workItems)
-        if (item.step.status != "completed")
+        if (item.required && item.step.status != "completed")
         {
             import auroraopencode.taskcontext : taskExcerpt;
             const label = taskExcerpt(item.step.text, 120);

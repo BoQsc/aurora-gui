@@ -22,6 +22,11 @@ actor_mode = "--actor" in sys.argv or "--actor-recipe" in sys.argv or registry_m
 recipe_mode = "--actor-recipe" in sys.argv
 audit_stall = "--goal-audit-stall" in sys.argv
 recovery_requests = 0
+repair_output = "--repair-output" in sys.argv
+empty_output = "--empty-output" in sys.argv
+outage_recovery = "--outage-recovery" in sys.argv
+complete_goal = "--complete-goal" in sys.argv
+fault_rounds = 5 if repair_output or empty_output or outage_recovery else 0
 
 def call(identity, name, arguments):
     return {"id": identity, "type": "function",
@@ -63,7 +68,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
         if request.get("model") == "actor-branch-fixture":
             branch_requests.append(request)
             latest = next((m.get("content", "") for m in reversed(request["messages"]) if m["role"] == "user"), "")
-            if latest == "Unexpected tool call":
+            recovering = any("Agent output recovery:" in m.get("content", "")
+                             for m in request["messages"] if isinstance(m.get("content"), str))
+            if latest == "Unexpected tool call" and not recovering:
                 tool = call("forbidden", "write", {"filePath": "must-not-exist.txt", "content": "forbidden"})
                 tool["index"] = 0
                 answer = {"choices": [{"delta": {"tool_calls": [tool]}, "finish_reason": "tool_calls"}]}
@@ -107,18 +114,40 @@ class Provider(http.server.BaseHTTPRequestHandler):
                         failures.append("Unpaired or duplicate tool result: " + identity)
                     results.add(identity)
             main_rounds.append(request)
+            # More failures than the former three-repair budget, followed by
+            # real file work and a passing behavioral check. No user restart.
+            if len(main_rounds) <= fault_rounds:
+                if outage_recovery:
+                    payload = b'{"error":{"message":"temporary fixture outage"}}'
+                    self.send_response(503)
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    self.wfile.flush()
+                    return
+                content = ("<｜DSML｜ calls> <｜DSML｜ invoke name=\"run\"> "
+                           "<｜DSML｜ parameter name=\"program\" string=\"true\">git</｜DSML｜ parameter> "
+                           "<｜DSML｜ parameter name=\"args\" string=\"false\">[\"add\",\"--\",\"must-not-run\"]"
+                           "</｜DSML｜ parameter> </｜DSML｜ invoke> </｜DSML｜ calls>" if repair_output else "")
+                row = {"choices": [{"delta": {"content": content}, "finish_reason": "stop"}]}
+                self.respond("data: " + json.dumps(row) + "\n\ndata: [DONE]\n\n", "text/event-stream")
+                return
+            if repair_output and any("DSML" in m.get("content", "") and "must-not-run" in m.get("content", "")
+                                     for m in messages if isinstance(m.get("content"), str)):
+                failures.append("Rejected DSML was replayed into recovery context")
             if any(isinstance(m.get("content"), str) and
                    "Agent output recovery:" in m["content"]
                    for m in messages):
                 recovery_requests += 1
-            number = len(main_rounds)
+            number = len(main_rounds) - fault_rounds
             if actor_mode and number in (2, 3):
                 checkpoints = [m['content'] for m in messages if m.get('role') == 'system'
                                and isinstance(m.get('content'), str)
-                               and 'Plan progress checkpoint: ' in m['content']]
+                               and ('Plan progress checkpoint: ' in m['content'] or 'Plan review reminder: ' in m['content'])]
                 if number == 2 and checkpoints:
                     failures.append('Actor nudged an editing phase already tracked by the plan')
-                if number == 3 and (not checkpoints or json.loads(checkpoints[-1].rsplit('Plan progress checkpoint: ', 1)[1].split('\n')[0])['phase'] != 2):
+                if number == 3 and (not checkpoints or json.loads(checkpoints[-1].replace('Plan review reminder: ', 'Plan progress checkpoint: ').rsplit('Plan progress checkpoint: ', 1)[1].split('\n')[0])['phase'] != 2):
                     failures.append('Actor omitted the verification phase checkpoint')
             if number == 1:
                 test = ("import unittest\nfrom pathlib import Path\n"
@@ -135,7 +164,10 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 tools = ([call("check", "verify", {"recipe": "verify.json"})] if recipe_mode else
                          [call("check", "run", {"program": "python", "args": ["-m", "unittest", "test_fixture"]})])
             elif number == 3:
-                tools = [call("complete-plan", "update_plan", plan("completed"))]
+                tools = ([call("complete-goal", "goal_complete", {
+                    "summary": "Created out.txt and verified its contents with unittest.",
+                    "evidence": ["write-output", "check"]})] if complete_goal else
+                    [call("complete-plan", "update_plan", plan("completed"))])
             else:
                 tools = []
             if tools:
@@ -183,6 +215,8 @@ try:
     if audit_stall:
         env["AURORA_CONTRACT_GOAL_STALL"] = "1"
         env["AURORA_CONTRACT_GOAL_AUDIT_STALL"] = "1"
+    if complete_goal:
+        env["AURORA_CONTRACT_COMPLETE_GOAL"] = "1"
     if "--production" in sys.argv:
         directory = Path(tempfile.mkdtemp(prefix="production-roundtrip-", dir=package / "build"))
         workspace = directory / "workspace"
@@ -219,7 +253,7 @@ try:
                                    ["actor_roundtrip", "actor_mailbox_contracts", "actor_branch_contracts"] if actor_mode else ["provider_roundtrip"])], cwd=package.parent, env=env, timeout=120)
         assert result.returncode == 0, "Desktop round trip failed"
     goal_fixture = audit_stall or stalled_goal
-    expected_rounds = 9 if goal_fixture else 4
+    expected_rounds = (9 if goal_fixture else 4) + fault_rounds
     if goal_fixture:
         # An active goal never settles on a prose-only turn. The fixture waits
         # past the old three-recovery stop, so the count is a lower bound.
@@ -233,7 +267,7 @@ try:
         assert recovery_requests >= 3, \
             "The goal stopped escalating recovery after the old budget"
     if actor_mode:
-        assert len(branch_requests) == 7, f"Unexpected branch request count: {len(branch_requests)}"
+        assert len(branch_requests) == 8, f"Unexpected branch request count: {len(branch_requests)}"
     if "--production" not in sys.argv and not actor_mode:
         assert len(title_after_rounds) == 1 and 1 <= title_after_rounds[0] <= expected_rounds, \
             f"Title was lost, repeated or launched before the opening request: {title_after_rounds}"

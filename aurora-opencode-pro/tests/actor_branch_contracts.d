@@ -119,7 +119,7 @@ int main()
     const rejection = MonoTime.currTime + 5.seconds;
     while (!rejectedTool && MonoTime.currTime < rejection)
     {
-        take(); rejectedTool = !projection.busy && mirror.turnStatus == "failed";
+        take(); rejectedTool = !projection.busy && mirror.turnStatus == "completed";
         assert(!actor.fault().length, actor.fault()); Thread.sleep(2.msecs);
     }
     assert(rejectedTool && !exists(buildPath(directory, "must-not-exist.txt")));

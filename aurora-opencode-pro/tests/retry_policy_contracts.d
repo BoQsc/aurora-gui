@@ -17,7 +17,13 @@ int main()
     assert(quotaResetDelayMs("resets in 999999999999999999999999999999999 days") == 86_400_000);
     auto unlimited = ProviderRetryPolicy(Duration.zero);
     assert(unlimited.resend("Connection reset", 1000, 100_000.seconds).retry);
-    assert(!unlimited.resend("Connection reset", 1000, 100_000.seconds, false, true).retry);
+    assert(unlimited.resend("Connection reset", 1000, 100_000.seconds, false, true).retry,
+        "Exhausting one transport request abandoned persistent conversation recovery");
+    const persistent = ProviderRetryPolicy.init;
+    assert(persistent.outageBudget == Duration.zero);
+    assert(persistent.resend("HTTP 401 invalid key", 1000, 100_000.seconds).delayMs == 60_000);
+    assert(persistent.resend("Quota exhausted", 1000, 100_000.seconds).retry);
+    assert(persistent.resend("HTTP 422 route unavailable", uint.max, 100_000.seconds).retry);
     assert(autoResendDelayMs("Connection reset", 0) == 3000);
     assert(autoResendDelayMs("Connection reset", 100) == 30_000);
     assert(!policy.decide(429, 0, 10.seconds).retry);

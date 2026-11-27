@@ -3,16 +3,36 @@ module inline_verification_contracts;
 import auroraopencode.verificationrecipe : runVerificationRecipe, VerificationRun;
 import auroraopencode.recipeevidence : RecipeEvidenceCache;
 import auroraopencode.core : ChatMessage;
-import auroraopencode.checkout : checkoutIdentity;
+import auroraopencode.checkout : checkoutIdentity, checkoutOwnsPath;
 import core.time : MonoTime;
 import std.conv : to;
-import std.file : mkdirRecurse, write, exists;
+import std.file : mkdirRecurse, write, exists, tempDir;
 import std.path : absolutePath, buildPath;
 import std.json : JSONValue, parseJSON;
 import std.stdio : writeln, File;
 
 void main()
 {
+    // Reproduced by a live provider: in a plain task folder every file was
+    // mistaken for a separate checkout, making every behavioral check fail.
+    const plain = buildPath(tempDir(), "aurora-nonrepo-check-" ~ to!string(MonoTime.currTime.ticks));
+    mkdirRecurse(buildPath(plain, "source"));
+    write(buildPath(plain, "source", "output.txt"), "verified output");
+    assert(checkoutOwnsPath(plain, buildPath(plain, "source", "output.txt")));
+    assert(!checkoutOwnsPath(plain, plain ~ "-outside"));
+    int plainRuns;
+    auto plainResult = runVerificationRecipe(
+        `{"inputs":["source/output.txt"],"steps":[{"kind":"tests","command":{"program":"checker"}}]}`,
+        plain, delegate(JSONValue command) { ++plainRuns; return VerificationRun("checked", false, false, "tests"); });
+    assert(plainResult.passed && plainRuns == 1, plainResult.output);
+    mkdirRecurse(buildPath(plain, "nested", ".git"));
+    write(buildPath(plain, "nested", "foreign.txt"), "other checkout");
+    assert(!checkoutOwnsPath(plain, buildPath(plain, "nested", "foreign.txt")));
+    auto nestedResult = runVerificationRecipe(
+        `{"inputs":["nested/foreign.txt"],"steps":[{"kind":"tests","command":{"program":"checker"}}]}`,
+        plain, delegate(JSONValue command) { ++plainRuns; return VerificationRun("must not run", false, false, "tests"); });
+    assert(!nestedResult.passed && plainRuns == 1, "Nested Git checkout isolation was lost");
+    writeln("PASS non-Git task inputs verify while outside paths and nested Git checkouts remain isolated");
     const workspace = absolutePath("inline-check-" ~ to!string(MonoTime.currTime.ticks));
     mkdirRecurse(workspace);
     write(buildPath(workspace, "deliverable.txt"), "requested output");

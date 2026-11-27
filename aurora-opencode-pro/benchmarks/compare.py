@@ -438,12 +438,13 @@ def compile_aurora_driver(output: Path) -> None:
     cmd = [
         "dmd", "-i",
         "-I" + str(PACKAGE / "source"),
+        "-I" + str(PACKAGE / "shared"),
         "-I" + str(ROOT / "aurora-opencode-core" / "source"),
         "-I" + str(ROOT / "vendor" / "aurora-d-0.4.5" / "source"),
         "-J" + str(PACKAGE / "assets"),
         "-of" + str(output),
         str(PACKAGE / "tests" / "benchmark_app_path.d"),
-        "user32.lib", "gdi32.lib", "shell32.lib", "wininet.lib",
+        "user32.lib", "gdi32.lib", "shell32.lib", "wininet.lib", "winmm.lib",
     ]
     result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     if result.returncode:

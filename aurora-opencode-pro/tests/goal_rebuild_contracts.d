@@ -281,7 +281,7 @@ int main()
         writeln("PASS a premature launch leaves the rebuild note for the relaunch");
     }
 
-    // Without a note (a plain relaunch) nothing is replayed.
+    // A saved active goal resumes even if a crash left no supervisor note.
     settleIdleGoal("active");
     root.clearPendingResumeForTesting();
     const notePath = buildPath(state, "restart-resume.json");
@@ -289,8 +289,16 @@ int main()
     const plainBefore = root.totalMessageCountForTesting();
     root.prepareResumeForTesting();
     pump();
-    assert(root.totalMessageCountForTesting() == plainBefore,
-        "a plain relaunch started an unsolicited goal turn");
+    assert(root.totalMessageCountForTesting() > plainBefore,
+        "a plain relaunch abandoned a saved active goal");
+    assert(root.goalStatusForTesting() == "active", "Restart silently paused the goal");
+    root.stopActiveTurnForTesting();
+    settleIdleGoal("paused");
+    root.clearPendingResumeForTesting();
+    const pausedRelaunchBefore = root.totalMessageCountForTesting();
+    root.prepareResumeForTesting(); pump();
+    assert(root.totalMessageCountForTesting() == pausedRelaunchBefore,
+        "Restart resumed an explicitly paused goal");
     writeln("goal rebuild contracts passed");
     return 0;
 }

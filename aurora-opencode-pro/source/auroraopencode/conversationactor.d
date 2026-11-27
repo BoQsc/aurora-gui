@@ -1,6 +1,8 @@
 module auroraopencode.conversationactor;
 
 import auroraopencode.executioncontrol : executionToolRecovery;
+import auroraopencode.agentloop : recoverAgent, rejectedContextBudget;
+import auroraopencode.lifecyclediagnostics : logAgentLifecycle, lifecycleErrorCategory;
 
 import auroraopencode.core;
 import auroraopencode.conversationencode;
@@ -153,6 +155,9 @@ public final class ConversationActor
     private string initialIdentity, configurationIdentity;
     private bool replaying;
     private bool journalStarted;
+    private AgentRuntimeEvent[] pendingJournal;
+    private ulong journalFailureRevision;
+    private MonoTime journalRetryAt;
     private string[] frameIds;
     private size_t replayId;
     private string frameTime;
@@ -163,11 +168,13 @@ public final class ConversationActor
     // watchdog lasts as long as the entire outage budget.
     private long frameMs, outageWaitMs, retryAtMs = -1;
     private uint resendCount;
-    private bool quotaWait, offeredTools;
+    private bool quotaWait, offeredTools, continuationWait;
     private bool[string] offeredToolNames;
     private bool viewed = true;
     private long clientBudgetMs;
     private long initialBudgetMs;
+    private int recoveredContextBudget;
+    private string recoveredContextModel, recoveredContextBase;
     private ActorConfiguration roundConfig, batchConfig;
     private string roundModel;
     private uint diagnosticRemaining;
@@ -440,9 +447,38 @@ public final class ConversationActor
         AgentRuntimeEvent event;
         event.kind = kind; event.threadId = session.id; event.itemId = item;
         event.payloadJson = payload;
-        // This owner may wait for durable admission. The window never waits
-        // for it, and the separate cancellation signal remains available.
-        if (!journal.publish(event)) throw new Exception("Conversation journal admission failed; effects were not started");
+        // Keep accepted graph mutations even when storage is unavailable.
+        // Effects remain fenced until all earlier intents are durable.
+        if (pendingJournal.length || !journal.publish(event))
+        {
+            const first = !pendingJournal.length;
+            pendingJournal ~= event;
+            journalFailureRevision = journal.checkpointFailure().revision;
+            if (first)
+            {
+                journalRetryAt = MonoTime.currTime + 3000.msecs;
+                logAgentLifecycle(session.id, engine.activeRequestId, "storage.retry_pending");
+            }
+        }
+    }
+    private bool flushJournal()
+    {
+        if (journal is null || replaying || !pendingJournal.length) return true;
+        if (MonoTime.currTime < journalRetryAt) return false;
+        while (pendingJournal.length)
+        {
+            if (!journal.publish(pendingJournal[0]))
+            {
+                journalFailureRevision = journal.checkpointFailure().revision;
+                journalRetryAt = MonoTime.currTime + 3000.msecs;
+                return false;
+            }
+            pendingJournal = pendingJournal[1 .. $];
+        }
+        pendingJournal = null;
+        journal.acknowledgeJournalReplay(journalFailureRevision);
+        logAgentLifecycle(session.id, engine.activeRequestId, "storage.recovered");
+        return true;
     }
     private string messageId()
     {
@@ -528,11 +564,21 @@ public final class ConversationActor
         return value;
     }
     private void resetOutage()
-    { outageWaitMs = 0; resendCount = 0; retryAtMs = -1; quotaWait = false; }
+    { outageWaitMs = 0; resendCount = 0; retryAtMs = -1; quotaWait = false; continuationWait = false; }
+    private void deferRequest(int delayMs = 0)
+    {
+        if (engine.turnCancelled) return;
+        continuationWait = true; retryAtMs = frameMs + delayMs;
+        running = true; session.turnStatus = "running"; session.taskStatus = "active";
+        engine.missingWorkSince = MonoTime.init;
+        JSONValue details; details["delayMs"] = delayMs;
+        logAgentLifecycle(session.id, engine.activeRequestId, "execution.recovery_scheduled", details);
+        metadata();
+    }
     private void ensureAssistant()
     {
         if (!session.messages.length || session.messages[$ - 1].role != "assistant" ||
-            session.messages[$ - 1].id != session.activeLeafId || session.messages[$ - 1].toolCalls.length)
+            session.messages[$ - 1].failed || session.messages[$ - 1].id != session.activeLeafId || session.messages[$ - 1].toolCalls.length)
         { ChatMessage message; message.role = "assistant"; if (config.turn.orchestratorEnabled) message.authorId = session.activeAgentId; append(message); }
     }
     private void internalNote(string text)
@@ -589,6 +635,7 @@ public final class ConversationActor
     private void request()
     {
         if (engine.turnCancelled) return;
+        if (!flushJournal()) { deferRequest(3000); return; }
         preparingTools = false; liveTools = null; omittedTools = 0;
         if (diagnosticActive && !diagnosticRemaining) finishDiagnostic();
         const diagnostic = config.diagnosticModel.length && diagnosticRemaining > 0;
@@ -605,6 +652,12 @@ public final class ConversationActor
         refreshVerification();
         if (images.prepare(session, config.request.imageLimit)) engine.invalidateProjection();
         auto policy = config.request;
+        if (recoveredContextModel != session.model || recoveredContextBase != config.baseUrl)
+            recoveredContextBudget = 0;
+        if (recoveredContextBudget > 0 && (policy.contextLimit <= 0 || recoveredContextBudget < policy.contextLimit))
+            policy.contextLimit = recoveredContextBudget;
+        policy.forceCompact = policy.forceCompact || engine.forceCompactNextRequest;
+        engine.forceCompactNextRequest = false;
         // experimental: planmode - the armed conversation's proposal rules.
         if (session.planMode && experimentalPlanModeEnabled() &&
             policy.planPrompt.indexOf(planModePromptBlock()) < 0)
@@ -665,8 +718,12 @@ public final class ConversationActor
             }
         }
         if (journal is null) launch();
-        else if (!engine.dispatchAfterCommit(journal, id, &launch))
-            throw new Exception("Request effect could not be queued for durable admission");
+        else if (!flushJournal() || !engine.dispatchAfterCommit(journal, id, &launch))
+        {
+            OpenCodeEvent failure; failure.kind = OpenCodeEventKind.error; failure.requestId = id;
+            failure.text = "Request effect could not be queued for durable admission; no request was started.";
+            receiver.pushLocalEvent(failure);
+        }
         }
         if (config.modelCompaction && prepared.checkpointCreated)
         {
@@ -989,9 +1046,10 @@ public final class ConversationActor
                 // length of the request that failed.
                 retryAtMs = -1;
                 if (quotaWait) { outageWaitMs = 0; resendCount = 0; quotaWait = false; }
-                else ++resendCount;
-                if (session.messages.length && session.messages[$ - 1].role == "assistant" && session.messages[$ - 1].failed)
-                    session.activeLeafId = session.messages[$ - 1].parentId;
+                else if (!continuationWait && resendCount < uint.max) ++resendCount;
+                // Retain failed branches and their partial output in history;
+                // continuation prompts exclude invalid output on the wire.
+                continuationWait = false;
                 applySteering(); request(); break;
             case ActorCommandKind.childReport: acceptChildReport(command); break;
             case ActorCommandKind.coordinationFailed:
@@ -1046,9 +1104,20 @@ public final class ConversationActor
     private void toolsRequested(const ref OpenCodeEvent event)
     {
         ensureAssistant();
-        if (!config.request.toolsEnabled) { fail("Provider requested tools while tool access was disabled. No tool was executed."); return; }
+        if (!config.request.toolsEnabled)
+        {
+            OpenCodeEvent failure; failure.kind = OpenCodeEventKind.error;
+            failure.outputIssue = "unavailable_tools";
+            failure.text = "Provider requested tools while tool access was disabled. No tool was executed.";
+            failed(failure); return;
+        }
         auto calls = normalizeToolCalls(event.toolCalls, session.messages, session.activeLeafId, event.requestId);
-        if (!calls.length) { fail("Provider returned an empty tool batch"); return; }
+        if (!calls.length)
+        {
+            OpenCodeEvent failure; failure.kind = OpenCodeEventKind.error;
+            failure.outputIssue = "empty_tool_batch"; failure.text = "Provider returned an empty tool batch";
+            failed(failure); return;
+        }
         auto assistant = &session.messages[$ - 1];
         assistant.toolCalls = calls.dup;
         assistant.promptTokens = event.promptTokens; assistant.completionTokens = event.completionTokens;
@@ -1069,7 +1138,11 @@ public final class ConversationActor
             engine.pendingToolCalls = null; engine.pendingToolResults = 0;
             if (diagnosticActive) { finishDiagnostic(); request(); return; }
             if (!goalActive(session) && completionHandoffPending(session)) completeFromEvidence();
-            else fail("Provider requested tools that were unavailable for this request. No tool was executed.");
+            else
+            {
+                const recovery = recoverAgent(session, "unavailable_tools");
+                internalNote(recovery.guidance); deferRequest(recovery.delayMs);
+            }
             return;
         }
         OpenCodeToolCall[] allowed;
@@ -1092,13 +1165,9 @@ public final class ConversationActor
                 internalNote(executionDiagnosisMarker ~ "The review requested an unavailable tool. Use only the supplied read-only tools and report findings for the main model.");
                 request(); return;
             }
-            if (outputRecoveryCount(session) >= maxOutputRecoveries)
-                fail("Provider repeatedly requested unavailable tools. The task was preserved; no unavailable tool was executed.");
-            else
-            {
-                internalNote(outputRecoveryMarker ~ "The requested tools were not available. Choose a useful action from the supplied tools; do not invent tool names.");
-                request();
-            }
+            const recovery = recoverAgent(session, "unavailable_tools");
+            internalNote(recovery.guidance);
+            deferRequest(recovery.delayMs);
             return;
         }
         calls = allowed;
@@ -1135,8 +1204,13 @@ public final class ConversationActor
         void launch()
         { if (!token.cancelled()) scheduleToolBatch(receiver, id, calls, workspace, token, context); }
         if (journal is null) launch();
-        else if (!engine.dispatchAfterCommit(journal, id, &launch))
-            throw new Exception("Tool intent was not admitted; no tools were started");
+        else if (!flushJournal() || !engine.dispatchAfterCommit(journal, id, &launch))
+        {
+            OpenCodeEvent failure; failure.kind = OpenCodeEventKind.error; failure.requestId = id;
+            failure.outputIssue = "tool_admission";
+            failure.text = "Request was not started: tool intent was not admitted; no tools were started.";
+            receiver.pushLocalEvent(failure);
+        }
     }
     private void toolResult(const ref OpenCodeEvent event)
     {
@@ -1234,7 +1308,7 @@ public final class ConversationActor
             const review = planProgressGuidance(session);
             if (review.length) internalNote(review);
         }
-        request();
+        deferRequest();
     }
     private void applySteering()
     {
@@ -1278,7 +1352,7 @@ public final class ConversationActor
         if (decision.settleGoal == "completed")
         { session.goalStatus = "completed"; recordGoalOutcome(session, "completed", frameUnix); }
         if (decision.action == TurnAction.reportChild) session.turnStatus = "completed";
-        if (decision.continues()) { metadata(); request(); return; }
+        if (decision.continues()) { deferRequest(decision.recoveryDelayMs); return; }
         running = false; engine.activeRequestId = 0;
         if (!viewed) session.unread = true;
         if (session.messages.length && session.messages[$ - 1].id == session.activeLeafId)
@@ -1302,6 +1376,22 @@ public final class ConversationActor
     }
     private void failed(const ref OpenCodeEvent event)
     {
+        if (engine.pendingToolResults > 0 &&
+            (event.text.indexOf("Request was not started:") == 0 || event.outputIssue == "admission_timeout"))
+        {
+            const calls = engine.pendingToolCalls.dup;
+            foreach (call; calls)
+            {
+                if (call.id in engine.reportedToolCallIds) continue;
+                OpenCodeEvent result; result.kind = OpenCodeEventKind.toolResult;
+                result.requestId = engine.activeRequestId; result.toolCallId = call.id;
+                result.toolName = call.name; result.toolFailed = true;
+                result.toolState = ToolState.resourceBlocked;
+                result.text = "Error: tool admission failed; no tool was started. Storage recovery will retry automatically.";
+                toolResult(result);
+            }
+            deferRequest(3000); return;
+        }
         if (diagnosticActive)
         {
             ensureAssistant(); session.messages[$ - 1].failed = true; session.messages[$ - 1].error = event.text; updateLast();
@@ -1315,19 +1405,23 @@ public final class ConversationActor
         if (event.outputIssue.length)
         {
             ensureAssistant(); session.messages[$ - 1].failed = true;
+            import auroraopencode.outputguard : outputFailurePrefix;
+            session.messages[$ - 1].error = outputFailurePrefix ~ event.text; updateLast();
+            const recovery = recoverAgent(session, event.outputIssue);
+            if (recovery.attempt == 2) beginDiagnostic();
+            internalNote(recovery.guidance);
+            deferRequest(recovery.delayMs); return;
+        }
+        const rejectedBudget = rejectedContextBudget(event.text,
+            recoveredContextBudget > 0 ? recoveredContextBudget : config.request.contextLimit);
+        if (rejectedBudget > 0)
+        {
+            recoveredContextBudget = rejectedBudget; recoveredContextModel = session.model;
+            recoveredContextBase = config.baseUrl; engine.forceCompactNextRequest = true;
+            ensureAssistant(); session.messages[$ - 1].failed = true;
             session.messages[$ - 1].error = event.text; updateLast();
-            // An active goal's work is never parked. The provider-retry budget
-            // only stops ordinary tasks; a goal keeps a changed directive until
-            // it validates complete or the user pauses it.
-            const goalRecovers = goalActive(session) &&
-                !goalIsAnswerTurn(session.goal);
-            if (!goalRecovers && outputRecoveryCount(session) >= maxOutputRecoveries)
-            { fail("Provider output repeatedly failed protocol validation. Retry continues the preserved task and goal."); return; }
-            if (outputRecoveryCount(session) > 0) beginDiagnostic();
-            internalNote(outputRecoveryMarker ~ (goalRecovers
-                ? goalStallInstruction(session, goalAuditRecoveryCount(session))
-                : "The provider returned unusable output. Use the structured tool protocol and take a different useful action; do not repeat the rejected output."));
-            request(); return;
+            const recovery = recoverAgent(session, "context_overflow");
+            internalNote(recovery.guidance); deferRequest(recovery.delayMs); return;
         }
         const decision = engine.retryPolicy.resend(event.text, resendCount,
             outageWaitMs.msecs, false, event.retryExhausted);
@@ -1335,6 +1429,7 @@ public final class ConversationActor
         retryAtMs = frameMs + decision.delayMs; quotaWait = decision.reason == RetryReason.quotaLimit;
         outageWaitMs += decision.delayMs;
         fail(event.text, false);
+        logAgentLifecycle(session.id, engine.activeRequestId, "provider.retry_scheduled");
     }
     private void applyEvent(const ref OpenCodeEvent event)
     {
@@ -1467,6 +1562,64 @@ public final class ConversationActor
         { trace = null; traceTruncated = true; return; }
         traceBytes += bytes; trace ~= value;
     }
+    /// A recoverable reducer/host exception must not destroy the conversation
+    /// worker. Fence old effects, preserve uncertain outcomes, and let the next
+    /// model action reconcile external state. Fatal runtime Errors still escape.
+    private void guardFrame(ActorCommand command, OpenCodeEvent event, bool provider,
+        JSONValue recorded = JSONValue.init, bool preserve = false, EventLane lane = EventLane.turn)
+    {
+        try { frame(command, event, provider, recorded, preserve, lane); }
+        catch (Exception error)
+        {
+            if (replaying) throw error;
+            JSONValue details; details["errorCategory"] = lifecycleErrorCategory(error.msg);
+            logAgentLifecycle(session.id, engine.activeRequestId, "execution.reducer_recovery", details);
+            if (config.recordTrace) { traceTruncated = true; trace = null; }
+            if (currentCommandSerial && !currentInputRetained)
+            {
+                retainAcceptedInput(session, currentCommand, frameUnix);
+                currentInputRetained = true;
+            }
+            if (engine.turnCancelled) return;
+            engine.cancellation.cancel();
+            if (activeCancellation !is null) activeCancellation.cancel();
+            engine.client.cancel(); engine.client.closeSession();
+            engine.client = new OpenCodeClient(config.baseUrl, config.apiKey, engine.retryPolicy);
+            engine.client.setEventWake(&notify); engine.client.setOpenCodeSession(sessionRoutingKey(session));
+            foreach (call; engine.pendingToolCalls)
+            {
+                bool recordedResult;
+                foreach_reverse (index; activeMessagePath(session))
+                    if (session.messages[index].role == "tool" && session.messages[index].toolCallId == call.id)
+                    { recordedResult = true; break; }
+                if (recordedResult) continue;
+                ChatMessage unknown; unknown.role = "tool"; unknown.toolName = call.name;
+                unknown.toolCallId = call.id; unknown.toolArgs = call.arguments;
+                unknown.failed = true; unknown.toolState = ToolState.failed;
+                unknown.content = "Operation interrupted by an internal error. Its outcome is unknown. Inspect current external state before retrying this operation; it may already have happened.";
+                append(unknown);
+            }
+            engine.pendingToolCalls = null; engine.pendingToolResults = 0; engine.reportedToolCallIds = null;
+            liveTools = null; preparingTools = false;
+            engine.activeRequestId = 0;
+            if (session.queuedFollowUps.length && !latestActualUserRequestForRecovery().length)
+            {
+                auto next = takeQueuedPrompt(session, false);
+                appendUser(next.text, next.context);
+            }
+            const recovery = recoverAgent(session, "internal_exception");
+            internalNote(recovery.guidance ~ "\nObserved error: " ~ checkpointSnippet(error.msg, 600));
+            deferRequest(recovery.delayMs > 3000 ? recovery.delayMs : 3000);
+            synchronized (mutex) { publishedBusy = running; publishedJobs = jobs.busy(); }
+            notifyView();
+        }
+    }
+    private string latestActualUserRequestForRecovery()
+    {
+        import auroraopencode.contextpolicy : latestActualUserRequest;
+        return latestActualUserRequest(session);
+    }
+
     private void run()
     {
         scope (exit)
@@ -1497,7 +1650,7 @@ public final class ConversationActor
                     foreach (input; pending)
                         if (finish || input.epoch < epoch)
                             processInput(input, true);
-                if (stop || (finish && running)) frame(ActorCommand(ActorCommandKind.stop,
+                if (stop || (finish && running)) guardFrame(ActorCommand(ActorCommandKind.stop,
                     pause || finish ? "" : "preserve-goal"), OpenCodeEvent.init, false);
                 if (finish) return;
                 foreach (input; pending)
@@ -1506,7 +1659,7 @@ public final class ConversationActor
                 foreach (event; events)
                 {
                     synchronized (mutex) if (stopPending || closing) break;
-                    frame(ActorCommand.init, event, true);
+                    guardFrame(ActorCommand.init, event, true);
                 }
                 foreach (kind; [ModelJobKind.title, ModelJobKind.compaction])
                 {
@@ -1515,14 +1668,38 @@ public final class ConversationActor
                     foreach (event; events)
                     {
                         synchronized (mutex) if (stopPending || closing) break;
-                        frame(ActorCommand.init, event, true, JSONValue.init, false, lane);
+                        guardFrame(ActorCommand.init, event, true, JSONValue.init, false, lane);
                     }
                     if (jobs.expired(kind, (MonoTime.currTime - clockOrigin).total!"msecs"))
-                        frame(ActorCommand.init, jobs.timeout(kind), true, JSONValue.init, false, lane);
+                        guardFrame(ActorCommand.init, jobs.timeout(kind), true, JSONValue.init, false, lane);
                 }
+                if (engine.expireQueuedEffect())
+                {
+                    OpenCodeEvent expired; expired.kind = OpenCodeEventKind.error;
+                    expired.requestId = engine.activeRequestId; expired.outputIssue = "admission_timeout";
+                    expired.text = "Request was not started: durable admission expired and was revoked.";
+                    guardFrame(ActorCommand.init, expired, true);
+                }
+                if (running && retryAtMs < 0 && !waitingChildren && !engine.client.busy() &&
+                    !engine.client.hasPendingEvents() && !engine.pendingToolResults && !engine.effectPending())
+                {
+                    if (engine.missingWorkSince == MonoTime.init) engine.missingWorkSince = MonoTime.currTime;
+                    else if (MonoTime.currTime - engine.missingWorkSince >= 5000.msecs)
+                    {
+                        OpenCodeEvent orphan; orphan.kind = OpenCodeEventKind.error;
+                        orphan.requestId = engine.activeRequestId; orphan.outputIssue = "missing_operation";
+                        orphan.text = "The turn lost its active operation; continuing from durable results.";
+                        guardFrame(ActorCommand.init, orphan, true);
+                    }
+                }
+                else engine.missingWorkSince = MonoTime.init;
                 if (retryAtMs >= 0 && (MonoTime.currTime - clockOrigin).total!"msecs" >= retryAtMs)
-                    frame(ActorCommand(ActorCommandKind.retryPending), OpenCodeEvent.init, false);
-                if (snapshot) frame(ActorCommand(ActorCommandKind.snapshot), OpenCodeEvent.init, false);
+                    guardFrame(ActorCommand(ActorCommandKind.retryPending), OpenCodeEvent.init, false);
+                if (snapshot) guardFrame(ActorCommand(ActorCommandKind.snapshot), OpenCodeEvent.init, false);
+                if (!running && pendingJournal.length)
+                {
+                    if (MonoTime.currTime >= journalRetryAt) flushJournal();
+                }
                 synchronized (mutex)
                     if (!commands.length && !stopPending && !closing && !snapshotPending && !engine.client.hasPendingEvents()) wake.wait(20.msecs);
             }
@@ -1539,7 +1716,7 @@ public final class ConversationActor
     private void processInput(Envelope input, bool preserve)
     {
         currentCommandSerial = input.serial; currentCommand = input.command; currentInputRetained = false;
-        frame(input.command, OpenCodeEvent.init, false, JSONValue.init, preserve);
+        guardFrame(input.command, OpenCodeEvent.init, false, JSONValue.init, preserve);
         ActorInputReceiver receiver;
         synchronized (mutex)
         {

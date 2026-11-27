@@ -482,7 +482,7 @@ int main()
         auto escalated = decideTurn(stalled, policy);
         require(escalated.action == TurnAction.request && escalated.advanceGoal,
             "a long-stalled goal was parked instead of receiving an action turn");
-        require(escalated.guidance.indexOf("Progress audit") >= 0,
+        require(escalated.guidance.indexOf("cause=goal_without_action") >= 0 && escalated.recoveryDelayMs > 0,
             "the repeated stall did not escalate the directive");
         require(escalated.taskStatus != "completed",
             "a stalled goal fabricated completion of its work");

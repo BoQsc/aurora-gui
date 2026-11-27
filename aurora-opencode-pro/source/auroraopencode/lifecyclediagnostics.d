@@ -30,7 +30,8 @@ private bool allowedDetail(string key)
         "taskStatus", "turnStatus", "verificationStatus", "finishReason",
         "promptTokens", "completionTokens", "errorCategory", "outputIssue",
         "contextBudget", "messageBytes", "messageCount", "toolCount",
-        "forceCompact", "checkpointCreated", "fallbackCompacted", "applied"])
+        "forceCompact", "checkpointCreated", "fallbackCompacted", "applied",
+        "attempt", "delayMs", "cause"])
         if (key == allowed) return true;
     return false;
 }

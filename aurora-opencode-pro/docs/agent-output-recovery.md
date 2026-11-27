@@ -1,72 +1,76 @@
-# Agent output recovery
+# Agent recovery
 
-Aurora detects printed tool invocations and no-progress replies while tools are
-available. Fenced examples remain ordinary text; printed invocations never
-execute. Malformed responses stay in saved history for diagnosis and are excluded
-from later provider requests.
+Desktop and conversation-actor execution use the shared decision in `turnpolicy.d`
+and the recovery strategy in `agentloop.d`. Failed attempts retain ownership of
+unfinished work. There is no default attempt or outage deadline. Explicit Stop,
+user pause, access restrictions and explicitly selected Plan mode remain binding.
 
-Desktop and conversation-actor execution use one bounded recovery budget: three
-consecutive unsuccessful repairs of unusable provider output. Useful successful
-tools and new human instructions reset it; plan chatter does not. Stop still
-cancels work.
+Malformed tool markup, including inline and truncated DSML, never executes.
+Protocol failures are recorded in history and logs. Recovery requests exclude
+rejected markup and superseded no-action prose, preserve paired successful tool
+results, and rotate concrete repair strategies. Repeated unsuccessful responses
+back off to 30 seconds instead of spinning. Only the latest repair directive is
+sent after a failure-only streak; the full saved graph remains intact.
 
-A goal continuation that answers with prose only is not a provider failure. It
-keeps spending recovery turns on a concrete action: take a useful tool action,
-call `goal_complete`, or record a genuinely user-owned fact with `request_input`
-and continue. The goal stays active and running throughout, because only the
-user can pause it. The recovery budget never settles, stops or pauses an active
-goal chat, and it never adds a failure bubble: each stalled round escalates the
-directive (take one concrete action, change route, reduce the next step) and
-keeps the work running. An ordinary task audit keeps its bounded recovery.
-The session server reports an
-unexpected post-start idle state as `turn_stalled`, not `turn_not_started`.
+Provider recovery defaults to persistent retries. Transport failures use a
+3–30 second backoff. Authentication, unavailable routes and quota errors without
+a reset time are checked at a slower 60-second cadence, with the reason visible.
+A stated quota reset is honored. `AURORA_PROVIDER_OUTAGE_MS` can explicitly select
+a finite outage budget; zero retains the persistent default. A finite transport
+request exhausting its quick attempts cannot exhaust a persistent conversation.
+Retries cannot make an invalid credential valid or make an offline service work.
+They preserve pending work and automatically resume when the dependency recovers.
 
-Completed plans and current accepted checks trigger a short outcome check in the
-existing final request. It keeps the exact user's triggers and constraints in
-view; it adds no separate review request and does not restrict tools. The model
-must close any actual missing behavior, then answer without additional audits.
+Tools always report their failures to the agent. Repeated identical read/search
+results produce a strategy reminder without suppressing calls. Existing process
+polls remain legitimate work. Unknown mutation outcomes require inspecting current
+state before another mutation; this system does not blindly replay tool effects.
 
-Exact-call suppression is removed. Repeated process polls, fresh file reads and
-useful mixed batches execute normally. Repetition diagnosis compares actual
-source facts rather than changing search headings. Distinct substantive edits
-and accepted checks count as progress while a plan step remains active.
+Storage failures preserve accepted prompts, attachments, steering and follow-ups.
+The actor keeps an ordered retry queue and fences effects until preceding intents
+are durable. The desktop retains a scheduled continuation through storage recovery.
+A missing operation restarts from durable evidence. Recoverable reducer exceptions
+fence old effects and preserve uncertain results instead of destroying the actor.
+Fatal runtime errors and process termination still require process restart.
 
-Ordinary chats do not create a persistent goal automatically. Explicit goals
-still finish through `goal_complete`; a summary that declares outstanding work
-cannot certify completion. Old audit markers remain readable in saved history.
-The selected context target and full saved message graph remain intact.
+Ordinary planning is advisory. Parallel steps and parent/child status updates do
+not block tools. Current verified delivery can reconcile stale advisory plan rows;
+required work items, failed checks and unmet goal summaries still prevent false
+completion. Explicit strict planning retains its additional validation. Ordinary
+chats have no goal-completion ceremony. Persistent goals finish through validated
+`goal_complete`; automatic retries cannot pause or complete them. Restart resumes
+saved active work even when a supervisor note was not written. User-paused goals
+remain paused.
 
-## Provider diagnostics
+## Diagnostics
 
-Start Aurora with `AURORA_PROVIDER_TRACE=1` in its environment to capture opt-in
-request and SSE evidence in the normal `logs/errors.log`. Entries have the
-`provider-wire` prefix, request ID, selected model, and request/SSE kind. This
-shows whether invocation markup arrived inside `delta.content` or a provider
-returned actual `delta.tool_calls`. `agent-output` entries link failures and
-recovery decisions to the request and thread.
+`agent-lifecycle` records correlate requests, recovery schedules, storage recovery,
+missing operations and reducer exceptions by conversation and request. Output
+failures also have `agent-output` entries. Errors remain visible while the owning
+turn continues. No recovery depends on enabling optional wire tracing.
 
-Headers are omitted. The configured API key, known credential fields, and
-inline data URLs are redacted. Text fields are limited to 2 KiB and each
-request to 128 KiB; the normal log rotation still applies. This is a diagnostic
-sample, not a complete raw capture. Other conversation and tool text can remain
-in the logs, so inspect them before sharing. Tracing is off by default.
+`AURORA_PROVIDER_TRACE=1` enables redacted, bounded provider request/SSE samples in
+`logs/errors.log`. Headers are omitted; configured keys, known credential fields
+and inline data URLs are redacted. Text fields are limited to 2 KiB and each
+request to 128 KiB. Other conversation/tool text can remain: inspect before sharing.
 
 ## Validation
 
-Local HTTP/SSE tests cover native calls, paired results, streamed argument bursts,
-cancellation, four-round normal settlement, and generated goal recovery. The
-ordinary task settles in four requests. A prose-only goal continuation keeps
-escalating past the old three-recovery limit: the fixture waits for six prose
-turns, confirms the goal is still active and running with no failure row, then
-stops it explicitly. The actor fixture proves the same path and that only the
-explicit user stop pauses the goal.
+The deterministic HTTP/SSE harness injects five consecutive malformed DSML replies,
+empty replies or provider failures, then performs real native file work and a
+behavioral check without user intervention:
 
 ```text
-python aurora-opencode-pro/tests/test_provider_roundtrip.py --actor --stream-tools
-python aurora-opencode-pro/tests/test_provider_roundtrip.py --goal-audit-stall
-python aurora-opencode-pro/tests/run_architecture_checks.py output_recovery_contracts goal_hold_contracts checked_run_contracts
+python aurora-opencode-pro/tests/test_provider_roundtrip.py --repair-output
+python aurora-opencode-pro/tests/test_provider_roundtrip.py --actor --repair-output
+python aurora-opencode-pro/tests/test_provider_roundtrip.py --empty-output
+python aurora-opencode-pro/tests/test_provider_roundtrip.py --actor --empty-output
+python aurora-opencode-pro/tests/test_provider_roundtrip.py --outage-recovery
+python aurora-opencode-pro/tests/test_actor_recovery.py
+python aurora-opencode-pro/tests/run_architecture_checks.py resilient_loop_contracts goal_rebuild_contracts
 ```
 
-These lifecycle fixtures complement the real-provider isolated tasks documented
-in [the execution-flow report](agent-execution-flow-06643.md). They do not measure
-hosted-model reasoning quality or end-to-end task speed.
+The actor fixtures also cover exact replay, access restrictions, ordinary task and
+goal stalls, Stop, explicit outage deadlines, storage failure/recovery and retained
+input. These finite fault-injection tests establish the tested recovery paths;
+they do not guarantee model quality or progress during every external outage.

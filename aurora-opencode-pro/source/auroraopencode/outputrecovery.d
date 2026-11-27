@@ -6,7 +6,8 @@ import auroraopencode.goalmode : goalActive;
 import auroraopencode.taskcontinuation : taskContinuationMarker, taskAwaitingInput;
 import std.string : startsWith, strip;
 
-/// This bounds consecutive unusable provider responses, never useful task work.
+/// Escalation threshold retained for saved histories and older integrations.
+/// It no longer terminates recovery.
 enum maxOutputRecoveries = 3;
 
 private bool usefulTool(string name)
@@ -26,7 +27,7 @@ int goalAuditRecoveryCount(const ref ChatSession session)
     {
         const ref message = session.messages[index];
         if ((message.role == "user" && !message.internal) ||
-            (message.role == "tool" && usefulTool(message.toolName))) break;
+            (message.role == "tool" && !message.failed && usefulTool(message.toolName))) break;
         if (message.internal && message.content.startsWith(outputRecoveryMarker)) ++count;
     }
     return count;
@@ -55,8 +56,8 @@ bool auditStallIssue(string issue)
 bool outputRecoveryAllowed(string issue, bool exhausted, bool toolsEnabled,
     bool stopped, bool aborting, bool explanationOnly)
 {
-    return !exhausted && toolsEnabled &&
-        !stopped && !aborting && !explanationOnly;
+    // Access restrictions govern effects, not repair of a malformed answer.
+    return !stopped && !aborting;
 }
 
 enum unfinishedTaskRecoveryInstruction = " The reply claimed completion but recorded work or verification remains. " ~
