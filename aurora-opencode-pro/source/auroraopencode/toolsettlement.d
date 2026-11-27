@@ -118,6 +118,19 @@ ToolSettlement settleToolResult(const ref ChatSession session,
             if (!satisfiesEvidence(coverage, [kind])) remaining ~= kind;
         receipt["remaining"] = JSONValue(remaining);
         if (scopedVerification) receipt["establishes"] = establishedEvidence(event.verificationCheck);
+        if (acceptedVerification && event.toolName == "verify")
+        {
+            import auroraopencode.checkreconciliation : validatedCheckRevisions;
+            try
+            {
+                string revisionError;
+                const revisions = validatedCheckRevisions(session, toolArgs, policy.workspace,
+                    parseJSON(event.text), revisionError);
+                if (revisions.array.length) receipt["checkRevisionsAccepted"] = revisions;
+                if (revisionError.length) receipt["checkRevisionError"] = revisionError;
+            }
+            catch (Exception) {}
+        }
         if (!scopedVerification) receipt["reason"] = toolFailed ? "The checker failed." : "Checker workspace or source revision does not match the current task.";
         else if (!acceptedVerification)
         {

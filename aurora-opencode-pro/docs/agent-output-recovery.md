@@ -84,6 +84,17 @@ Receipt revalidation uses the same ownership rule as initial verification:
 plain task directories own their descendants, while external paths and nested
 Git checkouts remain excluded. Cleanup outside declared inputs preserves valid
 proof; changed verified bytes and saved recipes still invalidate it.
+For other erroneous model-generated inline checks, `verify.check_revisions`
+records the failed call ID and correction rationale alongside a passing current
+behavioral check covering every original input. Native settlement validates the
+correction before the outcome ledger accepts it. Named tests, saved recipes,
+unrelated inputs, stale proof and invented IDs cannot use this path. Failures,
+correction reasons and replacement executions all remain logged. Recovery with
+an unresolved ledger gap requests an action or check correction before a final
+reply, rather than inviting the same completion claim again.
+Repeated identical inspection in an implementation task focuses the next decision
+after its first recovery reminder. Read-only work keeps its inspection tools;
+new edits, meaningful checks and concrete execution failures update recovery.
 
 ## Diagnostics
 

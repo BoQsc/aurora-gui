@@ -66,5 +66,11 @@ int main()
     check(missingInput, "import math; from invoice import total; checks=[((0,),5)]" ~ generatorBody, false);
     assert(executionState(missingInput).remaining.length, "A generator revision dropped an original invocation");
     writeln("PASS generator checks retain nested argument tuples while correcting expected values");
+    ChatSession userOwned;
+    ChatMessage human; human.role = "user"; human.id = "supplied";
+    human.content = "Preserve this supplied assertion: assert Path('catalog.json').read_bytes() == b'{\"ok\":true}'";
+    userOwned.messages ~= human; userOwned.activeLeafId = human.id;
+    check(userOwned, oldBytes, true); check(userOwned, newBytes, false);
+    assert(executionState(userOwned).remaining.length, "An automatic revision altered an explicitly user-supplied assertion");
     return 0;
 }

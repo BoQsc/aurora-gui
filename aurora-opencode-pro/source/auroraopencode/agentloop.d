@@ -76,9 +76,12 @@ AgentRecovery recoverAgent(const ref ChatSession session, string cause, int atte
             result.guidance ~= "Reconcile current external state before retrying a mutation whose outcome is unknown. Reuse successful actions and checks; do not replay their side effects. ";
             break;
     }
-    result.guidance ~= "If the outcome is already achieved, report it using the existing evidence" ~
-        (session.goalStatus == "active" ? " and call goal_complete" : "") ~
-        ". Planning records the work; updating a checklist is not a prerequisite to taking action.\n" ~
+    if (cause == "unfinished_outcome")
+        result.guidance ~= "The outcome ledger still names an explicit gap. Address that gap with a concrete action or recorded check correction before another final reply. ";
+    else
+        result.guidance ~= "If the outcome is already achieved, report it using the existing evidence" ~
+            (session.goalStatus == "active" ? " and call goal_complete" : "") ~ ". ";
+    result.guidance ~= "Planning records the work; updating a checklist is not a prerequisite to taking action.\n" ~
         "Current request: " ~ taskExcerpt(latestActualUserRequest(session), 1200);
     return result;
 }
@@ -87,7 +90,7 @@ struct ObservationRecovery
 {
     int repeats, notices, sinceNotice;
     string tool, arguments;
-    bool focused() const { return repeats >= 3 && notices >= 2; }
+    bool focused() const { return repeats >= 3 && notices >= 1; }
 }
 
 /// Identify repeated information independently of JSON argument order and read

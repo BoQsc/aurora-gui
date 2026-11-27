@@ -55,6 +55,12 @@ int main()
         OpenCodeToolDef("run", "run", "{}"), OpenCodeToolDef("verify", "verify", "{}"),
         OpenCodeToolDef("write", "write", "{}"), OpenCodeToolDef("goal_complete", "complete", "{}")];
     auto focused = prepareAgentRequest(loop, policy);
+    auto early = loop;
+    early.messages = loop.messages[0 .. 5].dup;
+    early.activeLeafId = early.messages[$ - 1].id;
+    assert(observationRecovery(early).notices == 1 && observationRecovery(early).focused() &&
+        !hasTool(prepareAgentRequest(early, policy), "read"),
+        "Repeated identical inspection still permits another file tour after its first recovery reminder");
     assert(!hasTool(focused, "read") && !hasTool(focused, "dshell") && !hasTool(focused, "update_plan") && !hasTool(focused, "rebuild"));
     assert(!hasTool(focused, "run") && hasTool(focused, "verify") && hasTool(focused, "write"),
         "Focused recovery left a direct file-viewer bypass or lost its productive tools");

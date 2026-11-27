@@ -127,6 +127,7 @@ private struct FailedCheck
 {
     string call, category;
     string[] commands;
+    bool adHoc;
 }
 
 /// A successful checker whose inputs changed supplies no current proof. It is
@@ -249,11 +250,11 @@ public string[] checkCommands(const ref ChatMessage message)
     return loaded ? commands : null;
 }
 
-private bool reranCheck(string required, const(string)[] commands)
+private bool reranCheck(string required, const(string)[] commands, bool revisionAllowed)
 {
     import auroraopencode.checkrevision : retainsInlineCheckCoverage;
     foreach (command; commands)
-        if (command == required || retainsInlineCheckCoverage(required, command)) return true;
+        if (command == required || (revisionAllowed && retainsInlineCheckCoverage(required, command))) return true;
     return false;
 }
 
@@ -330,8 +331,10 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
     state.fingerprint = sha256Of(facts).toHexString().idup;
     auto path = activeMessagePath(session);
     size_t begin;
+    string actualRequest;
     foreach (i, index; path)
-        if (session.messages[index].role == "user" && !session.messages[index].internal) begin = i + 1;
+        if (session.messages[index].role == "user" && !session.messages[index].internal)
+        { begin = i + 1; actualRequest = session.messages[index].content; }
     FailedCheck[] failedChecks;
     string failureTool;
     foreach (index; path[begin .. $])
@@ -386,17 +389,20 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
             if (message.verificationScope.length && (message.verificationCheck.indexOf("test") >= 0 || message.verificationCheck.indexOf("interaction") >= 0 || message.verificationCheck.indexOf("render") >= 0))
             {
                 auto commands = checkCommands(message);
+                import auroraopencode.checkreconciliation : revisableAdHocCheck;
                 if (message.failed && !invalidatedCheck(message))
                     failedChecks ~= FailedCheck(message.toolCallId.length ? message.toolCallId : message.id,
-                        message.verificationCheck, commands);
+                        message.verificationCheck, commands, revisableAdHocCheck(message, actualRequest));
                 else if (!message.failed)
                     foreach_reverse (i, failed; failedChecks)
                     {
                         if (checkCategory(failed.category) != checkCategory(message.verificationCheck)) continue;
+                        import auroraopencode.checkreconciliation : recordedCheckRevision;
+                        const corrected = recordedCheckRevision(message, failed.call);
                         bool rerun = true;
                         foreach (required; failed.commands)
-                            if (!reranCheck(required, commands)) { rerun = false; break; }
-                        if (rerun) failedChecks = failedChecks.remove(i);
+                            if (!reranCheck(required, commands, failed.adHoc)) { rerun = false; break; }
+                        if (rerun || corrected) failedChecks = failedChecks.remove(i);
                     }
             }
         }
@@ -422,7 +428,15 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
         catch (Exception) {}
     }
     foreach (failed; failedChecks)
-        state.remaining ~= "Behavioral check " ~ failed.call ~ " failed and has not passed on a subsequent run. Resolve and rerun that check; an unrelated passing check cannot replace it.\n";
+    {
+        JSONValue revision;
+        revision["failed_call_id"] = failed.call;
+        revision["reason"] = "Explain the original requirement, the checker mistake and how the corrected tests cover it.";
+        state.remaining ~= "Behavioral check " ~ failed.call ~ " failed and has not passed on a subsequent run. Resolve and rerun that check; an unrelated passing check cannot replace it. " ~
+            "If this was your ad hoc inline check with an incorrect expectation or comparison, run the corrected behavioral checks through verify on all original inputs and supply " ~
+            "check_revisions:" ~ JSONValue([revision]).toString() ~ ". " ~
+            "This records an auditable correction; do not change user-owned tests or repeat a final answer while this check remains unresolved.\n";
+    }
     return state;
 }
 
