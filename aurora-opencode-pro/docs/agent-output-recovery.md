@@ -95,6 +95,13 @@ reply, rather than inviting the same completion claim again.
 Repeated identical inspection in an implementation task focuses the next decision
 after its first recovery reminder. Read-only work keeps its inspection tools;
 new edits, meaningful checks and concrete execution failures update recovery.
+Explicit independent numerical questions about local Python code require a safe
+read-only probe of that implementation, keeping observed results separate from
+the requested rule. A calculator expression copied from intended behavior is
+not an observation of current code. This adds no artifact or verification recipe.
+Simple questions, supplied arithmetic, explicit no-execution requests and
+execution-disabled reviews retain their lightweight paths; unavailable execution
+is reported as a limitation rather than becoming an endless analysis retry.
 
 ## Diagnostics
 

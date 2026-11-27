@@ -134,7 +134,7 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         const authorized = intent == RequestIntent.implementation || intent == RequestIntent.continuation ||
             intent == RequestIntent.diagnosis || intent == RequestIntent.changeRequest || actionApprovalRequest(humanRequest);
         if (session.goal.length && session.goalStatus != "active" &&
-            !session.queuedFollowUps.length && !authorized)
+            !session.queuedFollowUps.length && !authorized && !execution.numericalGroundingMissing)
         {
             result.turnStatus = "completed";
             result.status = "Answer complete · goal remains paused.";

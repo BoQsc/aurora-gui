@@ -60,7 +60,7 @@ string normalizedJsonAnswer(string request, string output)
 
 /// A short, stable reminder placed after history, outside lossy checkpoints.
 /// The user's request itself remains the authority; never infer a new task here.
-string answerContract(string request, string verbosity)
+string answerContract(string request, string verbosity, bool executionGrounding = true)
 {
     auto result = "# Current answer contract\n" ~
         "Answer the latest request in its requested scope and format. Newer user corrections override earlier assumptions. " ~
@@ -78,5 +78,7 @@ string answerContract(string request, string verbosity)
     else if (verbosity.indexOf("Target 40 words") >= 0)
         result ~= "Use at most three short bullets or sentences unless the user explicitly needs a detailed treatment. " ~
             "A request for tradeoffs does not require an exhaustive catalogue. Omit hypothetical future requirements.\n";
+    import auroraopencode.numericalgrounding : numericalCodeRequest, numericalGroundingInstruction;
+    if (executionGrounding && numericalCodeRequest(request)) result ~= numericalGroundingInstruction ~ "\n";
     return result;
 }

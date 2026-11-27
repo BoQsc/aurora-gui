@@ -110,7 +110,8 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
         answerOnlyRequest(requestText) &&
         (explanationOnlyRequest(requestText) || stateQuestionRequest(requestText)));
     import auroraopencode.answercontract : answerContract;
-    const responseContract = answerContract(requestText, policy.verbosity);
+    const responseContract = answerContract(requestText, policy.verbosity,
+        policy.toolsEnabled && !policy.diagnosticReview && !policy.summaryOnly && !finalAnswer);
     if (policy.toolsEnabled)
     {
         ChatRequestMessage system;

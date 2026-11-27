@@ -107,7 +107,7 @@ struct ExecutionState
 {
     string fingerprint, remaining, failure;
     int completed, attempts, tools, effects;
-    bool verificationRequired, verified, actionMissing, transientFailure;
+    bool verificationRequired, verified, actionMissing, transientFailure, numericalGroundingMissing;
 
     string guidance() const
     {
@@ -316,6 +316,9 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
         state.remaining ~= "Restore the missing tracked verification input: " ~ missingVerificationInput(session) ~ "\n";
     if (state.verificationRequired)
         state.remaining ~= "Verify the reported behavior on the current deliverable and actual execution path. Direct handler calls do not prove physical input; compilation does not prove behavior.\n";
+    import auroraopencode.numericalgrounding : numericalProbeMissing, numericalGroundingInstruction;
+    state.numericalGroundingMissing = numericalProbeMissing(session);
+    if (state.numericalGroundingMissing) state.remaining ~= numericalGroundingInstruction ~ "\n";
     import std.algorithm : sort;
     auto completedKeys = completedProofs.keys;
     completedKeys.sort();
@@ -503,8 +506,9 @@ bool executionShouldContinue(const ref ChatSession session, bool toolsEnabled, c
     import auroraopencode.taskflow : taskInvestigation;
     import auroraopencode.contextpolicy : latestActualUserRequest;
     import auroraopencode.requestintent : answerOnlyRequest, requestIntent, RequestIntent, actionApprovalRequest;
-    if (!toolsEnabled || planModeProposalPending(session) ||
-        taskAwaitingInput(session) || taskInvestigation(session) ||
+    if (!toolsEnabled || planModeProposalPending(session) || taskAwaitingInput(session)) return false;
+    if (state.numericalGroundingMissing) return true;
+    if (taskInvestigation(session) ||
         (session.contract.currentIntent == "analysis" && session.contract.intent == "analysis")) return false;
     const request = latestActualUserRequest(session);
     if (answerOnlyRequest(request) ||
