@@ -154,8 +154,33 @@ def check_numerical_review(_, answer, *__):
 
 
 def diagnosis_audit(w, p, f, history, root):
-    assert any(m.get("role") == "tool" and m.get("failed") and m.get("toolName") in ("run", "verify") for m in history), "Diagnosis did not execute the requested failing reproducer"
-    return {"passed": True, "failedReproducerCorrectlyExplained": True}
+    import ast
+    observed = False
+    for message in history:
+        if message.get("role") != "tool" or message.get("toolName") not in ("run", "verify"):
+            continue
+        args = json.loads(message.get("toolArgs") or "{}")
+        rows = [(args, message.get("content", ""))]
+        if message.get("toolName") == "verify":
+            rows = [(step["command"], step["output"]) for step in json.loads(message["content"])["steps"]]
+        for command, output in rows:
+            argv = command.get("args", [])
+            invoked = any(argv[i:i + 2] == ["-m", "unittest"] for i in range(len(argv)))
+            if "-c" in argv:
+                try:
+                    source = argv[argv.index("-c") + 1]
+                    try:
+                        tree = ast.parse(source)
+                    except SyntaxError:
+                        tree = ast.parse(source.replace("\\n", "\n"))
+                    invoked |= any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                                   and n.func.attr in ("TextTestRunner", "loadTestsFromName", "main") for n in ast.walk(tree))
+                except (ValueError, SyntaxError):
+                    pass
+            observed |= bool(invoked and "test_cost" in output and "12 != 13" in output
+                             and re.search(r"Ran\s+1\s+test", output) and re.search(r"FAILED\s*\(failures=1\)", output))
+    assert observed, "Diagnosis did not execute and observe the requested failing unittest"
+    return {"passed": True, "failedReproducerCorrectlyExplained": True, "unittestFailureObserved": True}
 
 
 def research_setup(w, _):

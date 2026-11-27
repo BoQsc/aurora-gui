@@ -199,6 +199,16 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     ChatRequestMessage contract;
     contract.role = "system"; contract.content = responseContract;
     result.messages ~= contract;
+    if (policy.toolsEnabled && !policy.diagnosticReview && !finalAnswer && !policy.summaryOnly)
+    {
+        import auroraopencode.numericalgrounding : numericalProbeContext;
+        const observation = numericalProbeContext(session);
+        if (observation.length)
+        {
+            ChatRequestMessage evidence; evidence.role = "system"; evidence.content = observation;
+            result.messages ~= evidence;
+        }
+    }
     if (policy.compactionEnabled && !policy.diagnosticReview && !finalAnswer && !policy.summaryOnly &&
         checkpointOnActivePath(session))
     {

@@ -3,10 +3,23 @@ import json
 
 from task_matrix_runner import completion_loop
 from task_matrix_project import expected, INPUT
-from task_matrix_cases import check_research
+from task_matrix_cases import check_research, diagnosis_audit
 
 
 class MatrixObserverTests(unittest.TestCase):
+    def test_failing_reproducer_is_observed_even_when_wrapper_collects_its_result(self):
+        output = "FAIL: test_cost (test_cost.CostTests.test_cost)\nAssertionError: 12 != 13\nRan 1 test in 0.001s\nFAILED (failures=1)\n"
+        def message(args, text=output, failed=False):
+            return {"role": "tool", "toolName": "run", "toolArgs": json.dumps({"program": "python", "args": args}),
+                    "content": text, "failed": failed}
+        for row in (message(["-B", "-m", "unittest", "test_cost"], failed=True),
+                    message(["-B", "-c", "import unittest; unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromName('test_cost'))"])):
+            self.assertTrue(diagnosis_audit(None, None, None, [row], None)["unittestFailureObserved"])
+        for row in (message(["-m", "unittest"], "ModuleNotFoundError: test_cost", True),
+                    message(["-c", "print('pretend failure')"]), message(["-m", "unittest"], "Ran 1 test\nOK")):
+            with self.assertRaises(AssertionError):
+                diagnosis_audit(None, None, None, [row], None)
+
     def test_redirect_citations_preserve_every_supported_url(self):
         fixture = {"base": "http://127.0.0.1:1234", "nonce": "DOC-test",
                    "requests": ["/current", "/current", "/current", "/old", "/archive"]}

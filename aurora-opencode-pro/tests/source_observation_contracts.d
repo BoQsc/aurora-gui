@@ -75,6 +75,15 @@ int main()
     assert(numericalProbeMissing(numeric), "Efficiency guidance bypassed actual numerical grounding");
     add(numeric, "tool", "44.1", "run", `{"program":"python","args":["-B","-c","import invoice; print(invoice.total(49,True))"]}`);
     assert(!numericalProbeMissing(numeric) && !planProgressGuidance(numeric).length);
+    assert(numericalProbeContext(numeric).indexOf("44.1") >= 0);
+    const handoff = prepareAgentRequest(numeric, policy);
+    bool observation;
+    foreach (m; handoff.messages) if (m.content.indexOf("# Numerical observation handoff") >= 0) observation = true;
+    assert(observation && handoff.tools == withoutMemory.tools, "Numerical evidence handoff removed capabilities");
+    add(numeric, "tool", "Concrete execution failure", "run", "{}", false, true);
+    assert(!numericalProbeContext(numeric).length, "The handoff hid a later concrete failure");
+    add(numeric, "user", "A new question.");
+    assert(!numericalProbeContext(numeric).length, "A new request inherited the earlier numerical handoff");
     writeln("PASS bounded exact source context; per-resource/unknown-effect invalidation; branch and request isolation; unchanged grounding, verification and tool access");
     return 0;
 }
