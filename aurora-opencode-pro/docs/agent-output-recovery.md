@@ -104,7 +104,13 @@ execution-disabled reviews retain their lightweight paths; unavailable execution
 is reported as a limitation rather than becoming an endless analysis retry.
 Successful numerical probes are reused when they agree with the inspected code
 and inputs; changed sources, inputs or concrete contradictions still justify
-further checks. Read-only answers do not acquire a plan-creation reminder from
+further checks. The same probe computes and labels requested expected values
+independently from the original rule. Decimal-string and integer JSON claims
+must also appear in successful calculation output; arguments, expression text,
+receipt metadata and failed tools do not provide that evidence. Decimal identity
+is exact, including equivalent exponent notation, without a float tolerance.
+Unavailable execution and unsupported floating JSON serialization retain their
+existing reporting paths. Read-only answers do not acquire a plan-creation reminder from
 tool count alone.
 
 Rolling context checkpoints retain small source observations with their actual

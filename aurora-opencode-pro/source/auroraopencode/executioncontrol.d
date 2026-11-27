@@ -317,8 +317,12 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
     if (state.verificationRequired)
         state.remaining ~= "Verify the reported behavior on the current deliverable and actual execution path. Direct handler calls do not prove physical input; compilation does not prove behavior.\n";
     import auroraopencode.numericalgrounding : numericalProbeMissing, numericalGroundingInstruction;
-    state.numericalGroundingMissing = numericalProbeMissing(session);
+    import auroraopencode.numericalclaims : unobservedNumericalClaim;
+    const missingClaim = unobservedNumericalClaim(session);
+    state.numericalGroundingMissing = numericalProbeMissing(session) || missingClaim.length > 0;
     if (state.numericalGroundingMissing) state.remaining ~= numericalGroundingInstruction ~ "\n";
+    if (missingClaim.length) state.remaining ~= "Numerical JSON value " ~ missingClaim ~
+        " has no successful calculation output in this turn. Calculate the requested values together, then answer from the observed outputs.\n";
     import std.algorithm : sort;
     auto completedKeys = completedProofs.keys;
     completedKeys.sort();
