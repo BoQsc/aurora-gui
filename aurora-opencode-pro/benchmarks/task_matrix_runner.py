@@ -99,6 +99,10 @@ class ProviderProxy:
                     owner.truncate = False
                 owner.record({"kind": "request", "roles": roles, "bytes": len(payload),
                               "sha256": hashlib.sha256(payload).hexdigest(),
+                              "systemTextBytes": sum(len(m.get("content", "").encode()) for m in request.get("messages", []) if m.get("role") in ("system", "developer") and isinstance(m.get("content", ""), str)),
+                              "toolResultProjections": [{"callId": m.get("tool_call_id"), "bytes": len(m.get("content", "").encode()),
+                                                         "sha256": hashlib.sha256(m.get("content", "").encode()).hexdigest()}
+                                                        for m in request.get("messages", []) if m.get("role") == "tool" and isinstance(m.get("content", ""), str)],
                               "tools": [t.get("function", {}).get("name") for t in request.get("tools", [])],
                               "truncate": bool(cut)})
                 self.forward(payload, cut)

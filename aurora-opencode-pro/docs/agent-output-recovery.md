@@ -128,6 +128,14 @@ or to establish behavior. Failed rewrites invalidate the earlier outline.
 User-named sources take priority under context pressure and retain the scoped
 authority the user gave them; quoting a delegated specification does not retire
 its acceptance criteria.
+Fresh tool batches take priority over this optional memory. Allocation reserves
+the complete latest envelope and rolling-checkpoint space first, so retained
+context cannot displace a new source result that would otherwise fit. Live
+request observations record tool-result byte counts/hashes without content or
+credentials, making projection loss visible.
+Plan updates do not consume that source result or move its protection window.
+The default architecture checks include these source-retention and numerical
+grounding regressions.
 Compact tool schemas preserve timeout units, cursor indexing, checked-run mode
 and receipt-input requirements. Read-only numerical probes use an ordinary run;
 checked runs still require their actual declared inputs. Successful research

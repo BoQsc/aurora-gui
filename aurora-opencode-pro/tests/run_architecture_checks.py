@@ -47,6 +47,9 @@ parser.add_argument('fixtures', nargs='*', default=['liveness_contracts', 'execu
                        'history_mailbox_contracts', 'corrupt_restore_contracts', 'application_crash_restore_contracts',
                        'exit_checkpoint_contracts', 'composer_store_contracts', 'composer_suggestion_ui_contracts', 'followup_suggestions_ui_contracts', 'goal_mode_contracts', 'output_recovery_contracts', 'resilient_loop_contracts',
                        'engine_policy_contracts', 'answer_contract_contracts', 'diagnosis_intent_contracts', 'compaction_working_set_contracts', 'goal_planning_contracts', 'continuation_ownership_contracts', 'queued_followup_contracts', 'request_scope_contracts', 'projection_cache_contracts', 'verification_revision_contracts', 'inline_verification_contracts', 'checked_run_contracts', 'repeat_call_contracts', 'plan_progress_contracts', 'retry_policy_contracts', 'tool_protocol_contracts', 'tool_resource_contracts', 'attachment_collection_contracts', 'orchestration_ownership_contracts', 'orchestrator_headless_smoke', 'actor_mailbox_contracts', 'conversation_projection_contracts', 'conversation_metadata_contracts', 'conversation_registry_contracts', 'conversation_job_contracts', 'actor_owner_performance_contracts', 'scheduler_shutdown_contracts'])
+parser.set_defaults(fixtures=parser.get_default('fixtures') + [
+    'active_observation_contracts', 'source_observation_contracts',
+    'numerical_grounding_contracts', 'numerical_claims_contracts'])
 args = parser.parse_args()
 if args.keep_runs < 1:
     parser.error('--keep-runs must be at least 1')

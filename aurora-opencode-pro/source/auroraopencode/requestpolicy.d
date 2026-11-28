@@ -218,7 +218,13 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
         const used = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools) + 64;
         if (capacity > used)
         {
-            const snapshots = retainedSourceContext(session, min(cast(size_t)6000, (capacity - used) / 2));
+            import auroraopencode.contextcheckpoint : currentToolBatchBytes;
+            const available = capacity - used;
+            const fresh = currentToolBatchBytes(session, policy.imageLimit, projection, policy.revision);
+            const summary = compactionSummaryCapacity(policy.contextLimit, used);
+            const remaining = fresh < available ? available - fresh : 0;
+            const optional = remaining > summary + 128 ? remaining - summary - 128 : 0;
+            const snapshots = retainedSourceContext(session, min(cast(size_t)6000, min(available / 2, optional)));
             if (snapshots.length)
             {
                 ChatRequestMessage evidence; evidence.role = "system"; evidence.content = snapshots;

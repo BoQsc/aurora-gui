@@ -1,7 +1,7 @@
 module auroraopencode.contextpolicy;
 
 import auroraopencode.core : ChatSession, ChatRequestMessage, OpenCodeToolDef, activeMessagePath;
-import auroraopencode.contextcheckpoint : requestMessageBytes, compactionBoundary;
+import auroraopencode.contextcheckpoint : requestMessageBytes, compactionBoundary, currentToolBatchStart;
 import auroraopencode.projectioncache : projectContext, RequestProjectionCache, ProjectionRevision;
 import auroraopencode.controlhistory : pendingRecoveryIndex;
 import auroraopencode.taskcontext : taskContext;
@@ -676,28 +676,21 @@ public bool rollCompactionCheckpoint(ref ChatSession session,
     // The current batch is a working set, not old history. A byte selector
     // may otherwise retire every result from a multi-read batch when that
     // batch exceeds the target tail size, leaving the model nothing to act on.
-    foreach_reverse (i; 0 .. path.length)
+    const currentBatchStart = currentToolBatchStart(session, path);
+    if (currentBatchStart != size_t.max)
     {
-        const ref current = session.messages[path[i]];
-        if (current.role == "user" && !current.internal) break;
-        if (current.role == "assistant" && !current.toolCalls.length && current.content.length)
-            break; // A later answer has already consumed the older tool batch.
-        if (current.role == "assistant" && current.toolCalls.length)
+        const i = currentBatchStart;
+        if (boundary >= i)
         {
-            if (boundary >= i)
+            const before = i ? session.messages[path[i - 1]].id : "";
+            const currentBatch = projectContext(session, before, false, imageLimit, cache, revision);
+            // Planning bookkeeping cannot retire the source/check result
+            // that still owns the next substantive action.
+            if (requestMessageBytes(currentBatch) <= available - summaryBudget - 128)
             {
-                const before = i ? session.messages[path[i - 1]].id : "";
-                const currentBatch = projectContext(session, before, false, imageLimit, cache, revision);
-                // Truly oversized output must still be pageable/compacted.
-                // Pin the complete batch only when it fits the remaining
-                // history capacity, rather than merely the smaller tail target.
-                if (requestMessageBytes(currentBatch) <= available - summaryBudget - 128)
-                {
-                    if (i <= start) return false;
-                    boundary = i - 1;
-                }
+                if (i <= start) return false;
+                boundary = i - 1;
             }
-            break;
         }
     }
     if (boundary == path.length || boundary < start) return false;

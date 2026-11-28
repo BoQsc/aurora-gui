@@ -1,8 +1,9 @@
 module auroraopencode.contextcheckpoint;
 
-import auroraopencode.core : ChatSession, ChatRequestMessage;
+import auroraopencode.core : ChatSession, ChatRequestMessage, activeMessagePath;
 import auroraopencode.projectioncache : projectContext, RequestProjectionCache, ProjectionRevision;
 import std.json : JSONValue;
+import std.algorithm : canFind;
 
 /// Shared request accounting: reasoning, tool envelopes and image token costs
 /// must agree between the context meter and the checkpoint selector.
@@ -16,6 +17,36 @@ size_t requestMessageBytes(const(ChatRequestMessage)[] messages)
         total += m.images.length * 4 * 1400;
     }
     return total;
+}
+
+/// Optional retained memory must not crowd the fresh batch out of a context
+/// that can otherwise hold it. Include its real envelope and control suffix.
+size_t currentToolBatchStart(const ref ChatSession session, const(size_t)[] path)
+{
+    foreach_reverse (i; 0 .. path.length)
+    {
+        const ref message = session.messages[path[i]];
+        if (message.role == "user" && !message.internal) return size_t.max;
+        if (message.role == "assistant" && !message.failed && !message.toolCalls.length && message.content.length) return size_t.max;
+        if (message.role == "assistant" && message.toolCalls.length)
+        {
+            bool data;
+            foreach (call; message.toolCalls)
+                if (!["update_plan", "update_subplan"].canFind(call.name)) data = true;
+            if (data) return i;
+        }
+    }
+    return size_t.max;
+}
+
+size_t currentToolBatchBytes(const ref ChatSession session, size_t imageLimit = 2,
+    RequestProjectionCache cache = null, ProjectionRevision revision = ProjectionRevision.init)
+{
+    const path = activeMessagePath(session);
+    const start = currentToolBatchStart(session, path);
+    if (start == size_t.max) return 0;
+    const before = start ? session.messages[path[start - 1]].id : "";
+    return requestMessageBytes(projectContext(session, before, false, imageLimit, cache, revision));
 }
 
 /// Project once, then walk suffix costs once. Previously every candidate
