@@ -147,8 +147,8 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
                     "declared acceptance check" ~ (trackedChecks ? " through verify" : "") ~
                     ", or implement its specific missing behavior. Repeated passing checks and " ~
                     "Python/shell file viewers do not advance this outcome. " ~
-                    "The supplied tools focus on execution and delivery for this step; normal inspection " ~
-                    "returns after a real edit, new verification result or concrete checker failure. Do not ask for Continue or routine approval.\n";
+                    "All tools remain available. Inspect a missing range or changed dependency when necessary; " ~
+                    "reuse unchanged source already supplied. Do not ask for Continue or routine approval.\n";
         }
         system.content ~= policy.identityBlock ~ sessionInstructionsBlock(session);
         result.messages ~= system;
@@ -180,13 +180,6 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
             if (policy.diagnosticReview && !diagnosticToolAllowed(tool.name)) continue;
             if (!policy.nestedPlans && tool.name == "update_subplan") continue;
             if (!goalActive(session) && tool.name == "goal_complete") continue;
-            if (focus)
-            {
-                import std.algorithm : canFind;
-                if (trackedChecks && (tool.name == "run" || tool.name == "bash")) continue;
-                if (!["run", "bash", "verify", "write", "edit", "apply_patch", "patch",
-                    "process", "tool_status", "calculate", "goal_complete", "request_input", "task_blocker"].canFind(tool.name)) continue;
-            }
             result.tools ~= compactContextTool(tool, policy.contextLimit);
         }
     if (policy.orchestratorEnabled)
@@ -209,9 +202,10 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
             result.messages ~= evidence;
         }
     }
-    if (policy.compactionEnabled && !policy.diagnosticReview && !finalAnswer && !policy.summaryOnly &&
-        checkpointOnActivePath(session))
+    string sourceMemory()
     {
+        if (!policy.compactionEnabled || policy.diagnosticReview || finalAnswer || policy.summaryOnly ||
+            !checkpointOnActivePath(session)) return "";
         import auroraopencode.sourceobservations : retainedSourceContext;
         import std.algorithm : min;
         const capacity = compactionBudgetBytes(policy.contextLimit);
@@ -224,15 +218,17 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
             const summary = compactionSummaryCapacity(policy.contextLimit, used);
             const remaining = fresh < available ? available - fresh : 0;
             const optional = remaining > summary + 128 ? remaining - summary - 128 : 0;
-            const snapshots = retainedSourceContext(session, min(cast(size_t)6000, min(available / 2, optional)));
-            if (snapshots.length)
-            {
-                ChatRequestMessage evidence; evidence.role = "system"; evidence.content = snapshots;
-                result.messages ~= evidence;
-            }
+            return retainedSourceContext(session, min(available / 2, optional));
         }
+        return "";
     }
-    const fixedBytes = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools) + 64;
+    const initialSourceMemory = sourceMemory();
+    if (initialSourceMemory.length)
+    {
+        ChatRequestMessage evidence; evidence.role = "system"; evidence.content = initialSourceMemory;
+        result.messages ~= evidence;
+    }
+    auto fixedBytes = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools) + 64;
     result.summaryByteBudget = compactionSummaryCapacity(policy.contextLimit, fixedBytes);
     result.oldAnchor = checkpointOnActivePath(session) ? session.compactedThroughMessageId : "";
     result.oldSummary = result.oldAnchor.length ? session.compactionSummary : "";
@@ -248,6 +244,24 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
         history = compactRequestMessages(projectContext(session, "", false, policy.imageLimit, projection, policy.revision),
             policy.contextLimit, fixedBytes);
     else history = projectContext(session, "", false, policy.imageLimit, projection, policy.revision);
+    // The first checkpoint can retire the very source just observed. Build its
+    // working memory in this request, rather than one model decision too late.
+    if (result.checkpointCreated && !initialSourceMemory.length)
+    {
+        const newlyRetiredSource = sourceMemory();
+        if (newlyRetiredSource.length)
+        {
+            ChatRequestMessage evidence; evidence.role = "system"; evidence.content = newlyRetiredSource;
+            result.messages ~= evidence;
+            fixedBytes = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools) + 64;
+            bool created, fallback;
+            history = prepareCompactedRequest(session, policy.contextLimit, fixedBytes, created, fallback,
+                policy.imageLimit, projection, policy.revision);
+            result.checkpointCreated = result.checkpointCreated || created;
+            result.fallbackCompacted = result.fallbackCompacted || fallback;
+            result.summaryByteBudget = compactionSummaryCapacity(policy.contextLimit, fixedBytes);
+        }
+    }
     result.contextCompacted = policy.compactionEnabled &&
         (checkpointOnActivePath(session) || result.fallbackCompacted);
     result.messages ~= history;

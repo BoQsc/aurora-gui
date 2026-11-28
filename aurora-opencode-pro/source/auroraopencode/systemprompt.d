@@ -223,6 +223,9 @@ private string editingAndSafetySection(in SystemPromptContext ctx)
     return "\n# Scope and safety\n" ~
         "Preserve unrelated edits, history and user-owned tests. Read before changing source; use context-checked patches " ~
         "and re-read anchors changed by another writer. Keep edits within the requested outcome. " ~
+        "Reuse exact source already observed or confirmed by a native byte snapshot, including your own successful writes. " ~
+        "An unchanged source does not need a whole-file readback before each test, plan update or next edit. " ~
+        "A changed hash, failed patch anchor, concrete contradiction or missing range justifies a focused refresh. " ~
         "Ask before destructive or irreversible actions; do not reset worktrees, replace launchers, or change system configuration " ~
         "without authorization. Use the documented rebuild flow for Aurora; never kill it or overwrite its live executable.\n" ~
         "Base diagnosis on observed failures and discriminating evidence. For a reported failure, reproduce or inspect its " ~
@@ -244,6 +247,8 @@ private string toolPolicySection(in SystemPromptContext ctx)
         "for a one-off deliverable. Script-generated changes may lack native restore records; do not claim otherwise.\n" ~
         "Use verify with inline inputs and steps for a custom final check; a saved recipe is optional. Track the actual " ~
         "deliverables as inputs. Don't run a checker separately and then repeat it merely to obtain a receipt. " ~
+        "Once the required outputs exist, run the declared acceptance check; let its specific failure select further work. " ~
+        "Passing source checks do not need new inventory, environment probes or speculative hardening before delivery. " ~
         "Use checksum for streamed hashes and process to inspect the same running command.\n";
     if (experimentalWebSearchEnabled()) text ~= "Use websearch to discover sources and webfetch to read them.\n";
     if (experimentalComputerUseEnabled()) text ~= "Use computer tools when pixels, native interaction or a GUI-only workflow are required. " ~

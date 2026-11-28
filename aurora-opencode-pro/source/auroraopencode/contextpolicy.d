@@ -802,6 +802,31 @@ public ChatRequestMessage[] prepareCompactedRequest(
     if (contextLimit <= 0 || fixedRequestBytes +
         requestMessageBytes(request) <= compactionBudgetBytes(contextLimit))
         return request;
+    // A whole completed batch can exceed the remaining window because its
+    // provider-required reasoning and large write arguments must travel as one
+    // protocol envelope. Preserve its executed data before retiring that
+    // envelope; the old fallback could discard every fresh source result.
+    import auroraopencode.workingcontext : completedWorkingSet, workingSetTaskContext;
+    import auroraopencode.contextcheckpoint : currentToolBatchBytes;
+    const capacity = compactionBudgetBytes(contextLimit);
+    const fresh = currentToolBatchBytes(session, imageLimit, cache, revision);
+    auto working = fixedRequestBytes + fresh + compactionSummaryCapacity(contextLimit, fixedRequestBytes) + 128 > capacity
+        ? completedWorkingSet(session, request) : null;
+    if (working.length)
+    {
+        size_t olderGroups;
+        foreach (message; working) if (message.toolCalls.length) ++olderGroups;
+        auto rebased = compactRequestMessages(collapseCompletedToolHistory(working, olderGroups),
+            contextLimit, fixedRequestBytes);
+        if (fixedRequestBytes + requestMessageBytes(rebased) <= compactionBudgetBytes(contextLimit))
+        { fallbackCompacted = true; return rebased; }
+        // Keep current observations ahead of duplicated generated state. The
+        // compact native task view still carries every real task instruction,
+        // constraint, decision and the original failed/successful tool data.
+        auto current = workingSetTaskContext(session, working[$-1]);
+        if (fixedRequestBytes + requestMessageBytes(current) <= compactionBudgetBytes(contextLimit))
+        { fallbackCompacted = true; return current; }
+    }
     checkpointCreated = rollCompactionCheckpoint(session, contextLimit, fixedRequestBytes, imageLimit, cache, revision);
     if (checkpointCreated) request = checkpointRequestMessages(session, imageLimit, cache, revision);
     auto bounded = compactRequestMessages(request, contextLimit,

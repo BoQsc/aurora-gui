@@ -4334,6 +4334,8 @@ private ToolExecution runRead(string args, string workspace,
         (window.hasMore
             ? ". Use offset=" ~ to!string(window.lastLine + 1) ~ " to continue.)"
             : ". End of file.)") ~ "\n");
+    import auroraopencode.sourcesnapshot : sourceReadStamp;
+    builder.put(sourceReadStamp(path, builder.data));
     return ToolExecution("read", truncateOutput(builder.data), false);
 }
 
@@ -4457,6 +4459,8 @@ private ToolExecution runWrite(string args, string workspace)
     result.output = (existed ? "Updated " : "Wrote ") ~ path ~ " (" ~
         to!string(content.length) ~ " chars, +" ~ to!string(diff.additions) ~
         " -" ~ to!string(diff.deletions) ~ ").";
+    import auroraopencode.sourcesnapshot : sourceSnapshotPrefix, sourceContentHash;
+    result.output ~= "\n" ~ sourceSnapshotPrefix ~ sourceContentHash(content) ~ "\n";
     result.additions = diff.additions;
     result.deletions = diff.deletions;
     result.diff = diff.unified;

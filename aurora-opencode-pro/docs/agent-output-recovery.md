@@ -1,5 +1,20 @@
 # Agent recovery
 
+Completed tool batches that cannot fit with their provider-required reasoning
+are projected as exact quoted execution data, retaining call IDs, arguments,
+results and failed status. The complete original protocol exchange stays saved;
+an incomplete tool batch is never rebased. This avoids losing every fresh file
+when a large write or multi-read batch overflows a small context window.
+
+Native reads and writes may attach a source byte identity. Source memory can
+retain multiple observed ranges and confirmed written text. After unrelated
+artifact changes, it reuses a resource only if its current complete bytes match
+the native snapshot. External changes, failed refreshes, unknown identities and
+out-of-root resources remain conservative. Snapshot metadata supplies no
+behavioral verification. Memory uses the available context after reserving the
+fresh batch, and the first checkpoint includes newly retired source immediately.
+Repeated-inspection reminders are advisory and retain every ordinary tool.
+
 Read-only diagnosis retains intentionally failing test receipts as observations,
 without requiring an unrequested repair. Implementation checks and mutations
 still require verification. Numerical answers distinguish a test's observed
