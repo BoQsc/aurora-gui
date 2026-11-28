@@ -70,6 +70,17 @@ int main()
     assert(handoff.indexOf("49 * .9 + 5") >= 0, "The answer handoff omitted the actual independent probe formula");
     assert(handoff.indexOf("49.10") >= 0 && handoff.indexOf("48.60") < 0,
         "A corrected probe left the earlier incorrect expected calculation pinned into the handoff");
+    ChatSession recreated; add(recreated, "user", question);
+    add(recreated, "tool", "def total(subtotal, coupon=False): return subtotal * .9", "read", `{"filePath":"invoice.py"}`);
+    add(recreated, "tool", "44.10 49.10 54.00", "run",
+        `{"program":"python","args":["-B","-c","def total(subtotal, coupon=False): return subtotal * .9; print(total(49, True))"]}`);
+    add(recreated, "assistant", `{"current":"44.10","required":"49.10","at_60_with_coupon":"54.00"}`);
+    assert(numericalProbeMissing(recreated), "Executing a copied function established behavior of an unexecuted source file");
+    assert(executionState(recreated).guidance().indexOf("copied source definition") >= 0,
+        "Probe recovery repeated a generic demand without explaining the copied-source grounding gap");
+    add(recreated, "tool", "44.10", "run",
+        `{"program":"python","args":["-B","-c","from invoice import total; print(total(49, True))"]}`);
+    assert(!numericalProbeMissing(recreated) && !continues(recreated), "Actual referenced-code execution did not resolve the missing probe");
     foreach (plain; ["Calculate 19 * 4.75 plus 8 * 3.20.", "Explain Python lists.",
             "Review invoice.py for bugs; do not edit files.",
             "Independently calculate invoice.py results without running code.",

@@ -99,6 +99,10 @@ Explicit independent numerical questions about local Python code require a safe
 read-only probe of that implementation, keeping observed results separate from
 the requested rule. A calculator expression copied from intended behavior is
 not an observation of current code. This adds no artifact or verification recipe.
+Recovery explicitly distinguishes a reconstructed function in `python -c` from
+executing the referenced module. It asks the agent to replace the copied
+definition with an import and reuse its inputs and independent expected formula.
+The existing module-execution requirement is unchanged.
 Simple questions, supplied arithmetic, explicit no-execution requests and
 execution-disabled reviews retain their lightweight paths; unavailable execution
 is reported as a limitation rather than becoming an endless analysis retry.
