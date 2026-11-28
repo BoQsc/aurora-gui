@@ -61,6 +61,15 @@ int main()
             `{"program":"python","args":["-B","-c",` ~ JSONValue(probe).toString() ~ `]}`);
         assert(numericalProbeMissing(notInvoked), "Loading a module or calling another source satisfied numerical grounding");
     }
+    ChatSession revised; add(revised, "user", question);
+    add(revised, "tool", "44.10 48.60", "run",
+        `{"program":"python","args":["-B","-c","from invoice import total; print(total(49, True)); print((49 + 5) * .9)"]}`);
+    add(revised, "tool", "44.10 49.10", "run",
+        `{"program":"python","args":["-B","-c","from invoice import total; print(total(49, True)); print(49 * .9 + 5)"]}`);
+    const handoff = numericalProbeContext(revised);
+    assert(handoff.indexOf("49 * .9 + 5") >= 0, "The answer handoff omitted the actual independent probe formula");
+    assert(handoff.indexOf("49.10") >= 0 && handoff.indexOf("48.60") < 0,
+        "A corrected probe left the earlier incorrect expected calculation pinned into the handoff");
     foreach (plain; ["Calculate 19 * 4.75 plus 8 * 3.20.", "Explain Python lists.",
             "Review invoice.py for bugs; do not edit files.",
             "Independently calculate invoice.py results without running code.",

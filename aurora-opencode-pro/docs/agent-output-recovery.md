@@ -110,8 +110,13 @@ because the probe used a different Python import spelling.
 Successful numerical probes are reused when they agree with the inspected code
 and inputs; changed sources, inputs or concrete contradictions still justify
 further checks. A small source-and-output handoff keeps the successful probe
-beside the answer contract without removing tools. A difference from the
-required rule alone is not a reason to debug imports or the interpreter.
+beside the answer contract without removing tools. It also quotes the actual
+probe command so expected formulas can be compared with the original rule's
+components, exclusions and operation order. Executing a formula does not prove
+that it implements the requested rule. A corrected relevant probe supersedes
+an earlier incorrect expected calculation; it does not pin the original error.
+A difference from the required rule alone is not a reason to debug imports or
+the interpreter.
 Concrete failures and changed sources clear that handoff.
 The same probe computes and labels requested expected values
 independently from the original rule. Decimal-string and integer JSON claims
