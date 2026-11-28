@@ -102,6 +102,11 @@ not an observation of current code. This adds no artifact or verification recipe
 Simple questions, supplied arithmetic, explicit no-execution requests and
 execution-disabled reviews retain their lightweight paths; unavailable execution
 is reported as a limitation rather than becoming an endless analysis retry.
+A literal built-in dynamic import followed by a function call counts
+as execution of the named module; importing it without invoking a function does
+not. This prevents a valid observed answer from entering completion recovery
+because the probe used a different Python import spelling.
+
 Successful numerical probes are reused when they agree with the inspected code
 and inputs; changed sources, inputs or concrete contradictions still justify
 further checks. A small source-and-output handoff keeps the successful probe

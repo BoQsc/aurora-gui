@@ -37,6 +37,10 @@ enum numericalGroundingInstruction =
 
 private bool callsModule(string source, string moduleName)
 {
+    // Python's built-in dynamic import is also a real call into the named
+    // implementation. Loading the module alone supplies no numerical result.
+    if (matchFirst(source, `\b__import__\s*\(\s*["']` ~ moduleName ~
+        `["']\s*\)\s*\.[A-Za-z_]\w*\s*\(`)) return true;
     auto imported = matchFirst(source, `\bimport\s+[^;\n]*\b` ~ moduleName ~ `\b(?:\s+as\s+([A-Za-z_]\w*))?`);
     if (imported.length)
     {

@@ -6,6 +6,7 @@ import auroraopencode.numericalgrounding;
 import auroraopencode.answercontract : answerContract;
 import auroraopencode.turnpolicy;
 import std.conv : to;
+import std.json : JSONValue;
 import std.stdio : writeln;
 import std.string : indexOf;
 
@@ -44,6 +45,22 @@ int main()
     assert(numericalProbeMissing(extension));
     add(extension, "tool", "44.1", "run", `{"program":"python","args":["-B","-c","from invoice import total; print(total(49,True))"]}`);
     assert(!numericalProbeMissing(extension), "An uppercase file extension left an impossible grounding obligation");
+    foreach (probe; [`__import__("invoice").total(49, True)`, `__import__( 'invoice' ).total (49, True)`])
+    {
+        ChatSession dynamicImport; add(dynamicImport, "user", question);
+        add(dynamicImport, "tool", "44.10", "run",
+            `{"program":"python","args":["-B","-c",` ~
+            JSONValue("print(" ~ probe ~ ")").toString() ~ `]}`);
+        assert(!numericalProbeMissing(dynamicImport), "An executed dynamic-import call was rejected as an unexecuted probe");
+        assert(numericalProbeContext(dynamicImport).indexOf("44.10") >= 0);
+    }
+    foreach (probe; [`print(__import__('invoice'))`, `print(__import__('other').total(49, True))`])
+    {
+        ChatSession notInvoked; add(notInvoked, "user", question);
+        add(notInvoked, "tool", "module loaded", "run",
+            `{"program":"python","args":["-B","-c",` ~ JSONValue(probe).toString() ~ `]}`);
+        assert(numericalProbeMissing(notInvoked), "Loading a module or calling another source satisfied numerical grounding");
+    }
     foreach (plain; ["Calculate 19 * 4.75 plus 8 * 3.20.", "Explain Python lists.",
             "Review invoice.py for bugs; do not edit files.",
             "Independently calculate invoice.py results without running code.",
