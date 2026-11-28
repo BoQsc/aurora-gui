@@ -39,6 +39,18 @@ int main()
         "A byte-confirmed native write retained only declarations");
     assert(s.verificationStatus=="required");
     auto written=s;
+    foreach(name;["README.md","vehicle.gd","module.ts","style.css","empty.txt"])
+    {
+        auto generic=written;generic.messages=written.messages[0..1].dup;generic.activeLeafId=human.id;
+        JSONValue text;text["filePath"]=name;text["content"]=name=="empty.txt"?"":"Known actual text for "~name~"\n";
+        const result=executeTool(OpenCodeToolCall("generic","write",text.toString()),workspace);
+        assert(!result.failed,result.output);
+        add(generic,"write",text.toString(),result.output,true);generic.compactedThroughMessageId=generic.activeLeafId;
+        const cached=retainedSourceContext(generic,12000);
+        assert((name=="empty.txt"?cached.indexOf(name)>=0:cached.indexOf("Known actual text for "~name)>=0) && cached.indexOf("byte_identity_matches_at_request")>=0,
+            "Confirmed native text was needlessly restricted to Python");
+        assert(generic.verificationStatus=="required");
+    }
     s.messages.length=1; s.activeLeafId=human.id; s.compactedThroughMessageId="";
     JSONValue readArgs; readArgs["filePath"]="source.py"; readArgs["offset"]=1; readArgs["limit"]=2;
     native=executeTool(OpenCodeToolCall("first-range","read",readArgs.toString()),workspace);

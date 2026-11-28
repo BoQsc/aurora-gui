@@ -14,7 +14,7 @@ enum sourceSnapshotMaxBytes = 1024 * 1024;
 
 string sourceContentHash(string source) { return sha256Of(source).toHexString().idup; }
 
-private string snapshotText(string path, MonoTime deadline)
+private string snapshotText(string path, MonoTime deadline, out bool valid)
 {
     try
     {
@@ -23,6 +23,7 @@ private string snapshotText(string path, MonoTime deadline)
         if (size > sourceSnapshotMaxBytes) return "";
         auto bytes = cast(string)read(path);
         if (MonoTime.currTime >= deadline || bytes.length != size || getSize(path) != size || timeLastModified(path) != modified) return "";
+        valid = true;
         return bytes;
     }
     catch (Exception) { return ""; }
@@ -42,8 +43,9 @@ string sourceReadStamp(string path, string output)
 {
     try
     {
-    const source = snapshotText(path, MonoTime.currTime + 50.msecs);
-    if (!source.length) return "";
+    bool valid;
+    const source = snapshotText(path, MonoTime.currTime + 50.msecs, valid);
+    if (!valid || !source.length) return "";
     const lines = source.splitLines();
     bool observed;
     foreach (line; output.splitLines())
@@ -82,8 +84,9 @@ bool sourceSnapshotCurrent(string path, string hash, string workspace, MonoTime 
             if (normalized == root) break;
             const next = dirName(parent); if (next == parent) return false; parent = next;
         }
-        const source = snapshotText(path, deadline);
-        return source.length && sourceContentHash(source) == hash;
+        bool valid;
+        const source = snapshotText(path, deadline, valid);
+        return valid && sourceContentHash(source) == hash;
     }
     catch (Exception) { return false; }
 }

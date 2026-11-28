@@ -101,10 +101,13 @@ string retainedSourceContext(const ref ChatSession session, size_t budget)
             // Even a failed mutation can have partial effects.
             if (target.length) snapshots.remove(target);
             else snapshots = null;
-            if (message.toolName == "write" && !message.failed && target.endsWith(".py"))
+            if (message.toolName == "write" && !message.failed && target.length)
                 try
                 {
-                    if (declarations(parseJSON(message.toolArgs)["content"].str).length) snapshots[target] = [position];
+                    const content = parseJSON(message.toolArgs)["content"].str;
+                    const identity = sourceSnapshotHash(message.content);
+                    if ((identity.length && identity == sourceContentHash(content)) ||
+                        (target.endsWith(".py") && declarations(content).length)) snapshots[target] = [position];
                 }
                 catch (Exception) {}
         }
@@ -216,7 +219,7 @@ string retainedSourceContext(const ref ChatSession session, size_t budget)
         }
         else { observed = message.content; entry["observed_output"] = observed; }
         auto line = entry.toString() ~ "\n";
-        if (header.length + result.length + line.length > budget && message.toolName == "read" && target.endsWith(".py"))
+        if (header.length + result.length + line.length > budget && observed.length)
         {
             const spare = budget > header.length + result.length + 256 ? budget - header.length - result.length - 256 : 0;
             const location = baseName(target).toLower() in locations;

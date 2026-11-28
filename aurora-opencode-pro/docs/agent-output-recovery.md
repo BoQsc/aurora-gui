@@ -20,6 +20,9 @@ failed-check commands appear during normal work, so the agent can fix and batch
 them before attempting completion. Large commands remain exact in saved history;
 the enforcing ledger is never shortened or waived. Filesystem-host IPC lives in
 application state, separate from the task's temporary files and inventories.
+Confirmed write bodies and exact source excerpts are language independent,
+including Markdown, Godot scripts, TypeScript and CSS. Legacy unstamped writes
+still supply only their old declaration-level context, never invented file bytes.
 
 Read-only diagnosis retains intentionally failing test receipts as observations,
 without requiring an unrequested repair. Implementation checks and mutations
