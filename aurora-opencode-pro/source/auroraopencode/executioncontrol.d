@@ -214,7 +214,11 @@ public string[] checkCommands(const ref ChatMessage message)
     void steps(JSONValue root, string key)
     {
         if (auto value = key in root.object)
-            if (value.type == JSONType.object) command(*value);
+            if (value.type == JSONType.object)
+            {
+                if (auto nested = "command" in value.object) command(*nested);
+                else command(*value);
+            }
         if (auto value = key in root.object)
             if (value.type == JSONType.array)
                 foreach (step; value.array)
@@ -224,7 +228,10 @@ public string[] checkCommands(const ref ChatMessage message)
     bool loaded;
     try
     {
-        const report = parseJSON(message.content);
+        string reportText = message.content;
+        const guidanceAt = reportText.indexOf("\nAssistant check-recovery guidance (not program output): ");
+        if (message.failed && guidanceAt >= 0) reportText = reportText[0 .. guidanceAt];
+        const report = parseJSON(reportText);
         if (report.type == JSONType.object)
         {
             loaded = true;
@@ -440,9 +447,13 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
         revision["failed_call_id"] = failed.call;
         revision["reason"] = "Explain the original requirement, the checker mistake and how the corrected tests cover it.";
         state.remaining ~= "Behavioral check " ~ failed.call ~ " failed and has not passed on a subsequent run. Resolve and rerun that check; an unrelated passing check cannot replace it. " ~
-            "If this was your ad hoc inline check with an incorrect expectation or comparison, run the corrected behavioral checks through verify on all original inputs and supply " ~
-            "check_revisions:" ~ JSONValue([revision]).toString() ~ ". " ~
-            "This records an auditable correction; do not change user-owned tests or repeat a final answer while this check remains unresolved.\n";
+            "Pending invocation(s), each recorded as program followed by JSON arguments: " ~ JSONValue(failed.commands).toString() ~ ". " ~
+            "Use the original workspace and input coverage; batch pending invocations in one verify call when useful. ";
+        if (failed.adHoc)
+            state.remaining ~= "If this ad hoc inline check had an incorrect expectation or comparison, run the corrected behavioral checks through verify on all original inputs and supply " ~
+                "check_revisions:" ~ JSONValue([revision]).toString() ~ ". This records an auditable correction. ";
+        else state.remaining ~= "This is a named checker; the recorded invocation must actually pass. ";
+        state.remaining ~= "Do not change user-owned tests or repeat a final answer while this check remains unresolved.\n";
     }
     return state;
 }

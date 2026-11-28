@@ -74,6 +74,16 @@ string retainedSourceContext(const ref ChatSession session, size_t budget)
         }
         else if (message.workspaceChanged ||
             ["apply_patch", "patch", "remove", "move", "rename", "copy"].canFind(message.toolName)) snapshots = null;
+        else if (message.failed && (message.toolName == "verify" || message.verificationCheck.startsWith("verify:")))
+        {
+            // A native unchanged-workspace observation covers only this root,
+            // never an absolute source reference in another checkout.
+            auto observedRoot = isAbsolute(workspace) ? buildNormalizedPath(workspace).replace("\\", "/") : "";
+            version (Windows) observedRoot = observedRoot.toLower();
+            if (observedRoot.endsWith("/")) observedRoot = observedRoot[0 .. $ - 1];
+            foreach (snapshot; snapshots.keys)
+                if (!observedRoot.length || !snapshot.startsWith(observedRoot ~ "/")) snapshots.remove(snapshot);
+        }
         if (message.toolName != "read" || !target.length) continue;
         if (message.failed || message.content.startsWith("Error:")) snapshots.remove(target);
         else snapshots[target] = position;

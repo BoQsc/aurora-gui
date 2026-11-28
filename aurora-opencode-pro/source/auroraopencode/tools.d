@@ -6620,6 +6620,10 @@ private ToolExecution runTrackedCheck(string name, string arguments, string work
     ToolCancellation cancellation, ToolOutputObserver observer)
 {
     import auroraopencode.verificationrecipe : runVerificationRecipe, VerificationRun;
+    import auroraopencode.workspacefingerprint : workspaceFingerprint;
+    const observedRoot = checkoutIdentity(workspace);
+    const beforeWorkspace = workspaceFingerprint(observedRoot,
+        cancellation is null ? null : &cancellation.cancelled);
     auto recipe = runVerificationRecipe(arguments, workspace,
         (JSONValue command) {
             const step = runProgramTool(command.toString(), workspace, cancellation, observer, true);
@@ -6631,6 +6635,12 @@ private ToolExecution runTrackedCheck(string name, string arguments, string work
     verified.images = recipe.images;
     verified.verification = VerificationEvidence(recipe.check.length ? recipe.check : "verify:",
         workspace, 0, recipe.passed, recipe.passed ? 0 : 1);
+    if (!recipe.passed && beforeWorkspace.length)
+    {
+        verified.workspaceUnchanged = beforeWorkspace == workspaceFingerprint(observedRoot,
+            cancellation is null ? null : &cancellation.cancelled);
+        verified.workspaceObservationOnly = verified.workspaceUnchanged;
+    }
     return verified;
 }
 

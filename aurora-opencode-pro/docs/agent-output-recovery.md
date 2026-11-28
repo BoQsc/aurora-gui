@@ -131,6 +131,12 @@ Rolling context checkpoints retain small source observations with their actual
 call IDs and quoted output. Known writes/edits invalidate the affected snapshot;
 unknown workspace changes invalidate the set. These are historical context, not
 freshness claims or verification receipts, and never remove inspection tools.
+failed tracked checks retain local observations only when native before/after
+snapshots prove the complete bounded workspace byte-identical. The failed check
+remains unresolved and supplies no passing receipt. Partial effects, files or
+directories outside declared checker inputs, incomplete snapshots and references
+outside the observed workspace remain conservative. Program output cannot claim
+that the workspace is unchanged.
 Successful Python writes also retain explicitly labeled requested declarations;
 oversized Python reads can retain observed declarations. These small outlines
 preserve API names through compaction without pretending to retain full bodies
@@ -143,6 +149,11 @@ the complete latest envelope and rolling-checkpoint space first, so retained
 context cannot displace a new source result that would otherwise fit. Live
 request observations record tool-result byte counts/hashes without content or
 credentials, making projection loss visible.
+Failed-check recovery supplies the actual pending program and arguments rather
+than requiring reconstruction from a call ID. Named checks still have to pass;
+the inline-hypothesis correction path is suggested only when it is applicable.
+For a multi-step recipe, only its failed step is pending; earlier successful
+steps are not turned into fresh obligations by the recovery note.
 Plan updates do not consume that source result or move its protection window.
 The default architecture checks include these source-retention and numerical
 grounding regressions.

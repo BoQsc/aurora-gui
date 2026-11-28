@@ -310,12 +310,12 @@ private final class ToolJob : WorkItem
         try
         {
             result = executeTool(call, workspace, batch.cancellation, batch.context, &progress);
-            changed = ((call.name == "verify" || result.verification.check.startsWith("verify:")) && result.failed) ||
+            changed = ((call.name == "verify" || result.verification.check.startsWith("verify:")) && result.failed && !result.workspaceUnchanged) ||
                 (mutationCandidate() && result.verification.check.length == 0 && !result.workspaceUnchanged);
             const separateSourceUnobserved = result.workspaceObservationOnly &&
                 batch.developerSource.length && checkoutIdentity(batch.developerSource) != checkoutIdentity(workspace);
             if ((changed || separateSourceUnobserved) && batch.developerSource.length &&
-                (call.name == "sync" || call.name == "run" || call.name == "bash"))
+                (call.name == "sync" || call.name == "run" || call.name == "bash" || call.name == "verify"))
                 invalidateToolWorkspace(batch.developerSource);
         }
         catch (Throwable error)
