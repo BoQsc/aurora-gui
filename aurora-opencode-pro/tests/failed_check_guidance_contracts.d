@@ -1,6 +1,7 @@
 module failed_check_guidance_contracts;
 import auroraopencode.core;
 import auroraopencode.executioncontrol;
+import auroraopencode.requestpolicy;
 import std.string : indexOf, split;
 import std.stdio : writeln;
 
@@ -18,6 +19,12 @@ int main()
     assert(pending.indexOf("tests.test_routes.CliTests.test_atomic") >= 0,
         "Recovery supplied a call ID without the concrete pending checker invocation");
     assert(pending.indexOf("check_revisions") < 0, "Named-test recovery suggested an unsupported inline-check correction");
+    RequestPolicy policy; policy.toolsEnabled=true;
+    policy.availableTools=[OpenCodeToolDef("read","read","{}"),OpenCodeToolDef("run","run","{}")];
+    bool live;
+    foreach(message;prepareAgentRequest(s,policy).messages)
+        if(message.content.indexOf("# Pending failed checks")>=0 && message.content.indexOf("tests.test_routes.CliTests.test_atomic")>=0)live=true;
+    assert(live,"Pending exact check invocations were hidden until an attempted final reply");
     ChatMessage passing = failed; passing.id = "unrelated"; passing.parentId = failed.id;
     passing.toolCallId = passing.id; passing.failed = false; passing.content = "Passed";
     passing.toolArgs = `{"program":"python","args":["-B","-m","unittest","discover","-v"]}`;

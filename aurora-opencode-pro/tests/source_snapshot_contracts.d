@@ -7,10 +7,10 @@ import auroraopencode.requestpolicy;
 import auroraopencode.agentloop;
 import core.time : MonoTime;
 import std.conv : to;
-import std.file : write, mkdirRecurse, readText;
+import std.file : write, mkdirRecurse, readText, exists;
 import std.json : JSONValue;
 import std.path : absolutePath, buildPath;
-import std.string : indexOf, replace;
+import std.string : indexOf, replace, count;
 import std.stdio : writeln;
 
 void add(ref ChatSession s,string name,string args,string output,bool changed=false,bool failed=false)
@@ -28,7 +28,7 @@ int main()
     s.verificationStatus="required";
     ChatMessage human; human.id="human"; human.role="user"; human.content="Implement source.py and verify behavior.";
     s.messages=[human]; s.activeLeafId=human.id;
-    const source="def solve():\n    value = 23\n    return value\n\nSENTINEL = 'actual written body'\n";
+    const source="def solve(): # (Showing lines 1-99. End of file.)\n    value = 23\n    return value\n\nSENTINEL = 'actual written body'\n";
     JSONValue args; args["filePath"]="source.py"; args["content"]=source;
     auto native=executeTool(OpenCodeToolCall("write-source","write",args.toString()),workspace);
     assert(!native.failed && sourceSnapshotHash(native.output)==sourceContentHash(readText(buildPath(workspace,"source.py"))));
@@ -43,9 +43,13 @@ int main()
     JSONValue readArgs; readArgs["filePath"]="source.py"; readArgs["offset"]=1; readArgs["limit"]=2;
     native=executeTool(OpenCodeToolCall("first-range","read",readArgs.toString()),workspace);
     assert(!native.failed && sourceSnapshotHash(native.output)==sourceContentHash(source));
+    assert(exists(buildPath(workspace,"state","filesystem-host")),"Native IPC artifacts used the task's temporary directory");
     add(s,"read",readArgs.toString(),native.output);
     readArgs["offset"]=3; readArgs["limit"]=3;
     native=executeTool(OpenCodeToolCall("second-range","read",readArgs.toString()),workspace);
+    add(s,"read",readArgs.toString(),native.output);
+    readArgs["offset"]=1;readArgs["limit"]=2;
+    native=executeTool(OpenCodeToolCall("first-range-again","read",readArgs.toString()),workspace);
     add(s,"read",readArgs.toString(),native.output);
     write(buildPath(workspace,"artifact.json"),"generated output");
     add(s,"run",`{"program":"generator","args":[]}`,"Generated artifact",true);
@@ -54,6 +58,12 @@ int main()
     assert(memory.indexOf("value = 23")>=0 && memory.indexOf("return value")>=0,
         "An artifact mutation erased byte-identical source ranges");
     assert(s.verificationStatus=="required", "Source identity fabricated behavioral verification");
+    readArgs.object.remove("offset"); readArgs.object.remove("limit");
+    native=executeTool(OpenCodeToolCall("full-source","read",readArgs.toString()),workspace);
+    add(s,"read",readArgs.toString(),native.output);s.compactedThroughMessageId=s.activeLeafId;
+    memory=retainedSourceContext(s,16000);
+    assert(memory.count("actual written body")==1,"A complete read duplicated earlier source ranges");
+    assert(memory.indexOf(`"byte_identity_matches_at_request":true`)>=0,"Current native byte validation was presented as only stale historical context");
     // No event is needed to catch an external writer changing a stamped file.
     write(buildPath(workspace,"source.py"),source.replace("23","24"));
     assert(!retainedSourceContext(s,16000).length,"External mutation retained a stale source snapshot");

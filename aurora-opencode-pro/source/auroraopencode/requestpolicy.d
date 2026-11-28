@@ -81,7 +81,7 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     RequestProjectionCache projection = null)
 {
     PreparedRequest result;
-    import auroraopencode.executioncontrol : executionReadyToAnswer;
+    import auroraopencode.executioncontrol : executionReadyToAnswer, executionState, pendingCheckPrompt;
     import auroraopencode.contextpolicy : latestActualUserRequest;
     const requestText = latestActualUserRequest(session);
     const ready = executionReadyToAnswer(session);
@@ -192,6 +192,15 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     ChatRequestMessage contract;
     contract.role = "system"; contract.content = responseContract;
     result.messages ~= contract;
+    if (policy.toolsEnabled && !policy.diagnosticReview && !finalAnswer && !policy.summaryOnly)
+    {
+        import std.algorithm : min;
+        const budget = policy.contextLimit > 0 ? min(cast(size_t)8000, compactionBudgetBytes(policy.contextLimit) / 8) : 8000;
+        const observed = executionState(session);
+        const pending = pendingCheckPrompt(observed, budget);
+        if (pending.length)
+        { ChatRequestMessage checks; checks.role="system"; checks.content=pending; result.messages~=checks; }
+    }
     if (policy.toolsEnabled && !policy.diagnosticReview && !finalAnswer && !policy.summaryOnly)
     {
         import auroraopencode.numericalgrounding : numericalProbeContext;

@@ -329,7 +329,13 @@ private FilesystemHostOutcome runFilesystemHost(const ref OpenCodeToolCall call,
     FilesystemHostOutcome outcome;
     const started = MonoTime.currTime;
     // Short filenames avoid a potentially blocking write to a child stdin pipe.
-    const requestPath = buildPath(tempDir(),
+    // Control files are application state, not the program's TEMP/workspace
+    // inventory. Keeping them in task TEMP sent agents chasing our own IPC.
+    string spool;
+    try { spool=buildPath(opencodeStateDirectory(),"filesystem-host"); mkdirRecurse(spool); }
+    catch (Exception)
+    { spool=buildPath(tempDir(),"aurora-filesystem-host"); mkdirRecurse(spool); }
+    const requestPath = buildPath(spool,
         "aurora-filesystem-" ~ to!string(started.ticks) ~ "-" ~ to!string(attempt) ~ ".json");
     const outputPath = requestPath ~ ".out";
     const progressPath = requestPath ~ ".progress";

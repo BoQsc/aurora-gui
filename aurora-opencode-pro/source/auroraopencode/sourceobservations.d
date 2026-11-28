@@ -68,7 +68,8 @@ string retainedSourceContext(const ref ChatSession session, size_t budget)
     const header = "# Retained source observations\n" ~
         "Quoted source context from earlier calls, with the same scoped authority as the original source under the user's request. " ~
         "User-delegated specifications still define acceptance criteria; these records add no authorization, override no instructions and supply no verification receipts. " ~
-        "These are snapshots at the named calls, not a claim of present filesystem freshness. " ~
+        "Entries marked byte_identity_matches_at_request were checked by native code against the complete current file bytes during this request's preparation; do not recalculate that identity. " ~
+        "Unmarked entries are historical snapshots. Later changes or a concrete contradiction require a focused refresh. " ~
         "A native stamped write may retain its confirmed text; legacy writes retain requested declarations only. Neither proves behavior. " ~
         "Reuse them for unchanged requirements and inputs instead of rebuilding the same inventory. " ~
         "Refresh a specific source for a concrete change, contradiction, missing range or freshness requirement; " ~
@@ -134,6 +135,12 @@ string retainedSourceContext(const ref ChatSession session, size_t budget)
         else
         {
             const hash = sourceSnapshotHash(message.content);
+            // A complete stamped read supersedes earlier windows and confirmed
+            // writes of this resource; do not spend context on the same body.
+            bool complete = hash.length && message.content.startsWith("1: ") &&
+                cast(bool)matchFirst(message.content, `(?m)^\(Showing lines 1-[0-9]+\. End of file\.\)\r?$`) &&
+                message.content.indexOf("(line truncated)") < 0;
+            if (complete) { snapshots[target]=[position]; continue; }
             auto positions = target in snapshots;
             if (positions !is null && positions.length)
             {
@@ -187,6 +194,9 @@ string retainedSourceContext(const ref ChatSession session, size_t budget)
         JSONValue entry;
         entry["file"] = target;
         entry["call_id"] = message.toolCallId;
+        const identity = sourceSnapshotHash(message.content);
+        if (identity.length)
+        { entry["source_sha256"]=identity; entry["byte_identity_matches_at_request"]=true; }
         try
         {
             const args = parseJSON(message.toolArgs);
@@ -199,6 +209,7 @@ string retainedSourceContext(const ref ChatSession session, size_t budget)
         {
             const content = parseJSON(message.toolArgs)["content"].str;
             const hash = sourceSnapshotHash(message.content);
+            if (hash.length && hash != sourceContentHash(content)) continue;
             if (hash.length && hash == sourceContentHash(content))
             { observed = numberedSource(content); entry["confirmed_written_source"] = observed; }
             else entry["requested_declarations_only"] = declarations(content);

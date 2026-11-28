@@ -211,8 +211,8 @@ int main(string[] args)
     grepCase("grep_file_names_only", search, ["context.txt"], ["needle-é"]);
 
     const validPlan = executeTool(call("update_plan", parseJSON(`{"plan":[{"step":"Inspect fixture","kind":"research","status":"completed"},{"step":"Make change","kind":"edit","status":"in_progress"}]}`)), root);
-    const invalidPlan = executeTool(call("update_plan", parseJSON(`{"plan":[{"step":"Make change","kind":"in_progress"}]}`)), root);
-    record("plan_schema_status_and_kind_remain_distinct", !validPlan.failed && invalidPlan.failed && invalidPlan.output.indexOf("invalid kind") >= 0, 0);
+    const invalidPlan = executeTool(call("update_plan", parseJSON(`{"plan":[{"step":"Make change","kind":"in_progress","status":"in_progress"}]}`)), root);
+    record("plan_schema_status_and_kind_remain_distinct", !validPlan.failed && invalidPlan.failed && invalidPlan.output.indexOf("invalid plan kind") >= 0, 0);
     write(args[2], JSONValue(outcomes).toPrettyString());
     return 0;
 }

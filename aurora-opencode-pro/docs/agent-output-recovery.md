@@ -14,6 +14,12 @@ out-of-root resources remain conservative. Snapshot metadata supplies no
 behavioral verification. Memory uses the available context after reserving the
 fresh batch, and the first checkpoint includes newly retired source immediately.
 Repeated-inspection reminders are advisory and retain every ordinary tool.
+Byte-validated entries explicitly identify their freshness at request preparation;
+a complete stamped read supersedes older ranges of the same file. Unresolved
+failed-check commands appear during normal work, so the agent can fix and batch
+them before attempting completion. Large commands remain exact in saved history;
+the enforcing ledger is never shortened or waived. Filesystem-host IPC lives in
+application state, separate from the task's temporary files and inventories.
 
 Read-only diagnosis retains intentionally failing test receipts as observations,
 without requiring an unrequested repair. Implementation checks and mutations

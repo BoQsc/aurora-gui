@@ -105,7 +105,7 @@ private bool diagnosticBlockedTool(const ref ChatMessage message)
 /// searches, edits and rewritten answers are deliberately not completion facts.
 struct ExecutionState
 {
-    string fingerprint, remaining, failure;
+    string fingerprint, remaining, failure, pendingChecks;
     int completed, attempts, tools, effects;
     bool verificationRequired, verified, actionMissing, transientFailure, numericalGroundingMissing;
 
@@ -121,6 +121,25 @@ struct ExecutionState
             (failure.length ? "Observed obstacle: " ~ failure ~ "\n" : "") ~ remaining ~
             " Reuse current passing checks. A plan update is needed only when the actual work changes.";
     }
+}
+
+/// The enforcing ledger stays complete. A constrained request can carry a
+/// call-ID index instead of a truncated executable command; exact originals
+/// remain available through history. This is presentation, never a waiver.
+string pendingCheckPrompt(const ref ExecutionState state, size_t budget)
+{
+    if (!state.pendingChecks.length) return "";
+    const header = "# Pending failed checks\nThese actual failed invocations remain unresolved. " ~
+        "Fix the specific cause and rerun them before completion; batch independent pending checks with the final acceptance check when useful.\n";
+    if (header.length + state.pendingChecks.length <= budget) return header ~ state.pendingChecks;
+    string calls;
+    import std.string : splitLines;
+    foreach (line; state.pendingChecks.splitLines())
+    {
+        const end = line.indexOf(" failed and has not passed");
+        if (end > 0 && header.length + calls.length + end + 200 < budget) calls ~= line[0..end] ~ "\n";
+    }
+    return header ~ "Exact commands exceed this context allocation. Retrieve the original failed invocations through read_history by these call IDs; never execute a shortened script.\n" ~ calls;
 }
 
 private struct FailedCheck
@@ -456,6 +475,7 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
         JSONValue revision;
         revision["failed_call_id"] = failed.call;
         revision["reason"] = "Explain the original requirement, the checker mistake and how the corrected tests cover it.";
+        const pendingBegin = state.remaining.length;
         state.remaining ~= "Behavioral check " ~ (calls.length == 1 ? failed.call : JSONValue(calls).toString()) ~
             " failed and has not passed on a subsequent run. Resolve and rerun that check; an unrelated passing check cannot replace it. " ~
             "Pending invocation(s), each recorded as program followed by JSON arguments: " ~ JSONValue(failed.commands).toString() ~ ". " ~
@@ -465,6 +485,7 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
                 "check_revisions:" ~ JSONValue([revision]).toString() ~ ". This records an auditable correction. ";
         else state.remaining ~= "This is a named checker; the recorded invocation must actually pass. ";
         state.remaining ~= "Do not change user-owned tests or repeat a final answer while this check remains unresolved.\n";
+        state.pendingChecks ~= state.remaining[pendingBegin..$];
     }
     return state;
 }
