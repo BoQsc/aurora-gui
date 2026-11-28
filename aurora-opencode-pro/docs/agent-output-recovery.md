@@ -121,6 +121,13 @@ Rolling context checkpoints retain small source observations with their actual
 call IDs and quoted output. Known writes/edits invalidate the affected snapshot;
 unknown workspace changes invalidate the set. These are historical context, not
 freshness claims or verification receipts, and never remove inspection tools.
+Successful Python writes also retain explicitly labeled requested declarations;
+oversized Python reads can retain observed declarations. These small outlines
+preserve API names through compaction without pretending to retain full bodies
+or to establish behavior. Failed rewrites invalidate the earlier outline.
+User-named sources take priority under context pressure and retain the scoped
+authority the user gave them; quoting a delegated specification does not retire
+its acceptance criteria.
 Compact tool schemas preserve timeout units, cursor indexing, checked-run mode
 and receipt-input requirements. Read-only numerical probes use an ordinary run;
 checked runs still require their actual declared inputs. Successful research

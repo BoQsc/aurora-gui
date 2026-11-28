@@ -84,6 +84,26 @@ int main()
     assert(!numericalProbeContext(numeric).length, "The handoff hid a later concrete failure");
     add(numeric, "user", "A new question.");
     assert(!numericalProbeContext(numeric).length, "A new request inherited the earlier numerical handoff");
+    ChatSession written;
+    written.contract.workspace = s.contract.workspace; written.verificationStatus = "required";
+    add(written, "user", "Implement and verify the package.");
+    JSONValue payload; payload["filePath"] = "package.py";
+    payload["content"] = "from collections import deque\ndef solve(edges, start, end):\n" ~
+        "    # BODY_IS_NOT_A_VERIFICATION_RECEIPT\n" ~ "    return None\n";
+    add(written, "tool", "Wrote package.py", "write", payload.toString(), true);
+    written.compactedThroughMessageId = written.activeLeafId;
+    const api = retainedSourceContext(written, 2500);
+    assert(api.indexOf("requested_declarations_only") >= 0 && api.indexOf("def solve(edges, start, end)") >= 0);
+    assert(api.indexOf("BODY_IS_NOT_A_VERIFICATION_RECEIPT") < 0 && written.verificationStatus == "required");
+    add(written, "tool", "Partial failed rewrite", "write", payload.toString(), true, true);
+    assert(!retainedSourceContext(written, 2500).length, "A failed rewrite retained its earlier declaration snapshot");
+    add(written, "user", "Implement the package according to requirements.txt.");
+    add(written, "tool", "1: def unrelated(): pass\n", "read", `{"filePath":"other.py"}`);
+    add(written, "tool", "1: The requested acceptance rule remains authoritative.\n", "read", `{"filePath":"requirements.txt"}`);
+    written.compactedThroughMessageId = written.activeLeafId;
+    const ordered = retainedSourceContext(written, 2500);
+    assert(ordered.indexOf(`"file":"requirements.txt"`) < ordered.indexOf(`"file":"other.py"`),
+        "An unrelated file displaced the user-named acceptance source");
     writeln("PASS bounded exact source context; per-resource/unknown-effect invalidation; branch and request isolation; unchanged grounding, verification and tool access");
     return 0;
 }
