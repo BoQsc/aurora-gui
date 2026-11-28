@@ -3,10 +3,21 @@ import json
 
 from task_matrix_runner import completion_loop
 from task_matrix_project import expected, INPUT
-from task_matrix_cases import check_research, diagnosis_audit
+from task_matrix_cases import check_research, diagnosis_audit, check_numerical_review
 
 
 class MatrixObserverTests(unittest.TestCase):
+    def test_numerical_values_preserve_exact_requested_decimal_text(self):
+        check_numerical_review(None, '{"current":"44.10","required":"49.10","at_60_with_coupon":"54.00"}')
+        check_numerical_review(None, '{"current":44.10,"required":49.10,"at_60_with_coupon":54.00}')
+        for answer in ('{"current":44.1,"required":49.10,"at_60_with_coupon":54.00}',
+                       '{"current":44.10,"required":48.60,"at_60_with_coupon":54.00}',
+                       '{"current":4.410e1,"required":49.10,"at_60_with_coupon":54.00}',
+                       '{"current":44.10,"required":49.10,"at_60_with_coupon":54}',
+                       '{"current":44.10,"required":49.10,"at_60_with_coupon":54.00,"extra":0}'):
+            with self.assertRaises(AssertionError):
+                check_numerical_review(None, answer)
+
     def test_failing_reproducer_is_observed_even_when_wrapper_collects_its_result(self):
         output = "FAIL: test_cost (test_cost.CostTests.test_cost)\nAssertionError: 12 != 13\nRan 1 test in 0.001s\nFAILED (failures=1)\n"
         def message(args, text=output, failed=False):

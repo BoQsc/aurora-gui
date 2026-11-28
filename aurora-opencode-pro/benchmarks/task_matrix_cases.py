@@ -150,7 +150,11 @@ def check_diagnosis(_, answer, *__):
 
 
 def check_numerical_review(_, answer, *__):
-    assert json_answer(answer) == {"current": "44.10", "required": "49.10", "at_60_with_coupon": "54.00"}
+    # The request specifies string keys and two decimal places, not a value
+    # type. Preserve numeric lexemes so 44.10 passes while 44.1 does not.
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", answer.strip())
+    values = json.loads(text, parse_float=lambda token: token, parse_int=lambda token: token)
+    assert values == {"current": "44.10", "required": "49.10", "at_60_with_coupon": "54.00"}
 
 
 def diagnosis_audit(w, p, f, history, root):

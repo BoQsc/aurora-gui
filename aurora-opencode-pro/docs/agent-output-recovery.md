@@ -245,3 +245,6 @@ same built executable. Reports retain binary/source hashes, provider timing,
 tool counts, repeated results, final state, replies, grounding checks and
 workspace hashes. Source outages use controlled HTTP documents; primary-source
 research fetches the actual public Python and SQLite documentation.
+The numerical review compares exact two-decimal text for string or numeric JSON
+values, as its prompt specifies string keys rather than a value type. Incorrect
+values, missing precision, exponent notation and extra keys still fail.
