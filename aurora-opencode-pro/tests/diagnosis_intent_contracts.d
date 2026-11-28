@@ -31,6 +31,14 @@ void request(ref ChatSession s, string text)
 
 int main()
 {
+    const reserveRule = "Read inventory.py without changing files. Required rule: reserve is excluded from loss; apply the loss percentage only to the remaining quantity. Independently calculate the current and required results.";
+    assert(requestIntent(reserveRule) == RequestIntent.analysis && !artifactChangeRequested(reserveRule),
+        "A verb inside a required calculation rule lifted the read-only boundary and created an impossible mutation obligation");
+    assert(requestIntent("Read rates.py without changing files. Required rule: apply a 0.10 discount; add 5 delivery. Independently calculate the result.") == RequestIntent.analysis);
+    assert(requestIntent("Read cost.py without changing files. Run the existing tests and report their actual results.") == RequestIntent.analysis,
+        "Running checks under a read-only request required an unrelated mutation");
+    assert(requestIntent("Read inventory.py without changing files. Required rule: apply the loss percentage. Then implement and verify the fix.") == RequestIntent.implementation,
+        "A genuine later implementation instruction was lost with rule data");
     // A why-question authorizes diagnosis and resolution; it is not an
     // answer-only explanation and it must not detach the unfinished task.
     assert(requestIntent("Why did it stop?") == RequestIntent.diagnosis);

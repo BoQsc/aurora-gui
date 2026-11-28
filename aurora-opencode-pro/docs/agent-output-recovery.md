@@ -248,3 +248,10 @@ research fetches the actual public Python and SQLite documentation.
 The numerical review compares exact two-decimal text for string or numeric JSON
 values, as its prompt specifies string keys rather than a value type. Incorrect
 values, missing precision, exponent notation and extra keys still fail.
+Buffered unittest execution may report its actual TestResult failure/error
+counts instead of printing a traceback. The observer ties those printed counts
+to the real runner result and named test loader; literal counters do not qualify.
+For goal-duration measurements, `AURORA_MATRIX_WAIT_FOR_GOAL=1` retains the
+existing time target as an explicit overrun flag and keeps observing until
+native completion. It sends no Continue or extra prompt and does not waive loop
+detection, user-input detection or the independent final checks.

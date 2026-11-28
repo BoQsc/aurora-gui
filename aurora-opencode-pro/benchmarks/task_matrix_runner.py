@@ -175,6 +175,7 @@ class ProviderProxy:
 
 
 def run_case(case, executable, saved, root, repeat=1):
+    wait_for_goal = case.goal and os.environ.get("AURORA_MATRIX_WAIT_FOR_GOAL") == "1"
     root.mkdir(parents=True, exist_ok=False)
     workspace = root / "workspace"; workspace.mkdir()
     private = root / "private"; private.mkdir()
@@ -224,7 +225,8 @@ def run_case(case, executable, saved, root, repeat=1):
             prompts = case.prompts(fixtures)
             (root / "prompts.json").write_text(json.dumps(prompts, indent=2), encoding="utf-8")
             position, turn_started, last_print = 0, time.monotonic(), 0
-            while time.monotonic() - started < case.timeout:
+            overrun_reported = False
+            while time.monotonic() - started < case.timeout or wait_for_goal:
                 try:
                     event = inbox.get(timeout=1)
                     events.write(json.dumps(event) + "\n"); events.flush()
@@ -252,6 +254,10 @@ def run_case(case, executable, saved, root, repeat=1):
                 assert not any(m.get("toolName") in ("request_input", "task_blocker", "ask_user") for m in tools), "Requested user intervention"
                 assert not any(m.get("toolName") in ("rebuild", "sync", "computer", "open") for m in tools), "Requested self-maintenance or desktop outside task"
                 elapsed = time.monotonic() - started
+                if elapsed >= case.timeout and wait_for_goal and not overrun_reported:
+                    print("OBSERVATION TARGET EXCEEDED", case.name, case.timeout,
+                          "seconds; continuing to observe native goal completion without sending Continue", flush=True)
+                    overrun_reported = True
                 if elapsed - last_print >= 30:
                     print("LIVE", case.name, round(elapsed), "seconds; tools", len(tools), "state", header.get("taskStatus"), flush=True)
                     last_print = elapsed
@@ -297,6 +303,8 @@ def run_case(case, executable, saved, root, repeat=1):
             externalSubmissions=len([m for m in history if m.get("role") == "user" and not m.get("internal")]),
             compactionOccurred=bool(header.get("compactionSummary")),
             answerWords=sum(len(turn["reply"].split()) for turn in result["turns"]),
+            observationTargetSeconds=case.timeout, observationTargetExceeded=time.monotonic() - started > case.timeout,
+            waitedForGoalCompletion=wait_for_goal,
             efficiencyBudget=case.tool_budget, efficiencyExceeded=len(tools) > case.tool_budget,
             sourceFiles=files(workspace))
         # Efficiency is separately reported: a slow correct result is not

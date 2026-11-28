@@ -404,7 +404,7 @@ bool continuationFragment(string text)
 /// for arbitrary tools. The model still sees the complete current instruction.
 private RequestIntent restrictedResultIntent(string text)
 {
-    import std.regex : matchAll;
+    import std.regex : matchAll, replaceAll, regex;
     string after;
     bool restricted;
     foreach (match; matchAll(text.toLower(),
@@ -414,9 +414,13 @@ private RequestIntent restrictedResultIntent(string text)
     if (!restricted) return RequestIntent.indeterminate;
     // A subsequent explicit instruction can lift the restriction. A response
     // schema, descriptive sentence or a research verb cannot manufacture edits.
-    const later = requestIntent(after);
-    if (later == RequestIntent.implementation ||
-        (later == RequestIntent.changeRequest && artifactChangeRequested(after))) return later;
+    // Verbs in a labeled rule describe the calculation, not new authorization
+    // to edit. Sentence punctuation excludes decimal points within the rule.
+    const actionText = replaceAll(after,
+        regex(`(?i)\b(?:required|business|calculation)\s+rules?\s*:[\s\S]*?(?:[.!?](?=\s|$)|$)`), " ");
+    const later = requestIntent(actionText);
+    if ((later == RequestIntent.implementation || later == RequestIntent.changeRequest) &&
+        artifactChangeRequested(actionText)) return later;
     return RequestIntent.analysis;
 }
 

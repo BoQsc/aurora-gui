@@ -169,6 +169,7 @@ def diagnosis_audit(w, p, f, history, root):
             rows = [(step["command"], step["output"]) for step in json.loads(message["content"])["steps"]]
         for command, output in rows:
             argv = command.get("args", [])
+            tree = None
             invoked = any(argv[i:i + 2] == ["-m", "unittest"] for i in range(len(argv)))
             if "-c" in argv:
                 try:
@@ -181,8 +182,29 @@ def diagnosis_audit(w, p, f, history, root):
                                    and n.func.attr in ("TextTestRunner", "loadTestsFromName", "main") for n in ast.walk(tree))
                 except (ValueError, SyntaxError):
                     pass
-            observed |= bool(invoked and "test_cost" in output and "12 != 13" in output
-                             and re.search(r"Ran\s+1\s+test", output) and re.search(r"FAILED\s*\(failures=1\)", output))
+            summary = False
+            if tree is not None:
+                results = {target.id for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                           and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute)
+                           and node.value.func.attr == "run" and isinstance(node.value.func.value, ast.Call)
+                           and isinstance(node.value.func.value.func, ast.Attribute)
+                           and node.value.func.value.func.attr == "TextTestRunner"
+                           for target in node.targets if isinstance(target, ast.Name)}
+                target_loaded = any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                                    and node.func.attr == "loadTestsFromName" and node.args
+                                    and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)
+                                    and node.args[0].value.split('.')[0] == "test_cost" for node in ast.walk(tree))
+                for call in ast.walk(tree):
+                    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name) or call.func.id != "print":
+                        continue
+                    counts = {(node.args[0].value.id, node.args[0].attr) for node in ast.walk(call)
+                              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "len"
+                              and len(node.args) == 1 and isinstance(node.args[0], ast.Attribute)
+                              and isinstance(node.args[0].value, ast.Name)}
+                    summary |= target_loaded and any({(name, "failures"), (name, "errors")} <= counts for name in results)
+                summary &= bool(re.search(r"\bunittest_failures=1\s+errors=0\b", output))
+            trace = "test_cost" in output and "12 != 13" in output and re.search(r"Ran\s+1\s+test", output) and re.search(r"FAILED\s*\(failures=1\)", output)
+            observed |= bool(invoked and (trace or summary))
     assert observed, "Diagnosis did not execute and observe the requested failing unittest"
     return {"passed": True, "failedReproducerCorrectlyExplained": True, "unittestFailureObserved": True}
 

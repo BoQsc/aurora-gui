@@ -7,6 +7,17 @@ from task_matrix_cases import check_research, diagnosis_audit, check_numerical_r
 
 
 class MatrixObserverTests(unittest.TestCase):
+    def test_buffered_unittest_observes_actual_result_counts(self):
+        source = "import unittest, io; s=unittest.defaultTestLoader.loadTestsFromName('test_cost'); r=unittest.TextTestRunner(stream=io.StringIO()).run(s); print('unittest_failures=%d errors=%d' % (len(r.failures),len(r.errors)))"
+        def row(code, output):
+            return {"role":"tool", "toolName":"run", "toolArgs":json.dumps({"program":"python", "args":["-B","-c",code]}), "content":output}
+        self.assertTrue(diagnosis_audit(None,None,None,[row(source,"unittest_failures=1 errors=0\n")],None)["unittestFailureObserved"])
+        for code, output in ((source,"unittest_failures=0 errors=0\n"),
+                             (source.replace("len(r.failures),len(r.errors)","1,0"),"unittest_failures=1 errors=0\n"),
+                             (source.replace("loadTestsFromName('test_cost')","loadTestsFromName('other')"),"unittest_failures=1 errors=0\n")):
+            with self.assertRaises(AssertionError):
+                diagnosis_audit(None,None,None,[row(code,output)],None)
+
     def test_numerical_values_preserve_exact_requested_decimal_text(self):
         check_numerical_review(None, '{"current":"44.10","required":"49.10","at_60_with_coupon":"54.00"}')
         check_numerical_review(None, '{"current":44.10,"required":49.10,"at_60_with_coupon":54.00}')
