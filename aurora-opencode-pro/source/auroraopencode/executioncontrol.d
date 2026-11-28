@@ -441,12 +441,23 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
         }
         catch (Exception) {}
     }
-    foreach (failed; failedChecks)
+    auto described = new bool[failedChecks.length];
+    foreach (position, failed; failedChecks)
     {
+        if (described[position]) continue;
+        string[] calls = [failed.call];
+        // Repeated attempts remain in the ledger and transcript. Describe one
+        // identical named invocation once instead of crowding out its source.
+        if (!failed.adHoc)
+            foreach (i; position + 1 .. failedChecks.length)
+                if (!failedChecks[i].adHoc && failedChecks[i].category == failed.category &&
+                    failedChecks[i].commands == failed.commands)
+                { calls ~= failedChecks[i].call; described[i] = true; }
         JSONValue revision;
         revision["failed_call_id"] = failed.call;
         revision["reason"] = "Explain the original requirement, the checker mistake and how the corrected tests cover it.";
-        state.remaining ~= "Behavioral check " ~ failed.call ~ " failed and has not passed on a subsequent run. Resolve and rerun that check; an unrelated passing check cannot replace it. " ~
+        state.remaining ~= "Behavioral check " ~ (calls.length == 1 ? failed.call : JSONValue(calls).toString()) ~
+            " failed and has not passed on a subsequent run. Resolve and rerun that check; an unrelated passing check cannot replace it. " ~
             "Pending invocation(s), each recorded as program followed by JSON arguments: " ~ JSONValue(failed.commands).toString() ~ ". " ~
             "Use the original workspace and input coverage; batch pending invocations in one verify call when useful. ";
         if (failed.adHoc)

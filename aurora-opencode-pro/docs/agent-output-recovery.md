@@ -152,6 +152,10 @@ credentials, making projection loss visible.
 Failed-check recovery supplies the actual pending program and arguments rather
 than requiring reconstruction from a call ID. Named checks still have to pass;
 the inline-hypothesis correction path is suggested only when it is applicable.
+Repeated failures of the same named invocation share one recovery description,
+with every original call ID retained. The failure ledger and rerun requirements
+are unchanged; the control context no longer repeats the whole instruction for
+each unsuccessful attempt.
 For a multi-step recipe, only its failed step is pending; earlier successful
 steps are not turned into fresh obligations by the recovery note.
 Plan updates do not consume that source result or move its protection window.

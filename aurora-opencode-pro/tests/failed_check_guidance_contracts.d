@@ -1,7 +1,7 @@
 module failed_check_guidance_contracts;
 import auroraopencode.core;
 import auroraopencode.executioncontrol;
-import std.string : indexOf;
+import std.string : indexOf, split;
 import std.stdio : writeln;
 
 int main()
@@ -34,6 +34,17 @@ int main()
     const pendingCommands = checkCommands(recipe);
     assert(pendingCommands.length == 1 && pendingCommands[0].indexOf("actually_failed.py") >= 0,
         "A failed recipe demanded repetition of its already successful steps or lost its native report behind guidance");
+    ChatSession repeats; repeats.verificationStatus = "passed";
+    auto retry = failed; retry.id = retry.toolCallId = "named-retry"; retry.parentId = failed.id;
+    repeats.messages = [user, failed, retry]; repeats.activeLeafId = retry.id;
+    const repeated = executionState(repeats).remaining;
+    assert(repeated.split("Pending invocation(s)").length == 2,
+        "Repeated attempts of one named check duplicated the entire recovery instruction");
+    assert(repeated.indexOf("named-failure") >= 0 && repeated.indexOf("named-retry") >= 0 && repeats.messages.length == 3,
+        "Coalescing recovery text removed recorded failures");
+    passing.id = "both-passed"; passing.parentId = retry.id; passing.toolCallId = passing.id;
+    passing.toolArgs = failed.toolArgs; repeats.messages ~= passing; repeats.activeLeafId = passing.id;
+    assert(!executionState(repeats).remaining.length, "A successful actual rerun did not resolve repeated attempts");
     writeln("PASS named failures expose exact retry commands; unrelated successes cannot waive checks; actual reruns settle them");
     return 0;
 }
