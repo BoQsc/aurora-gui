@@ -404,7 +404,7 @@ ExecutionState executionState(const ref ChatSession session, bool strictPlan = f
             {
                 auto commands = checkCommands(message);
                 import auroraopencode.checkreconciliation : revisableAdHocCheck;
-                if (message.failed && !invalidatedCheck(message))
+                if (message.failed && !invalidatedCheck(message) && session.contract.currentIntent != "analysis")
                     failedChecks ~= FailedCheck(message.toolCallId.length ? message.toolCallId : message.id,
                         message.verificationCheck, commands, revisableAdHocCheck(message, actualRequest));
                 else if (!message.failed)

@@ -51,7 +51,7 @@ parser.set_defaults(fixtures=parser.get_default('fixtures') + [
     'active_observation_contracts', 'source_observation_contracts',
     'failed_check_observation_contracts',
     'failed_check_guidance_contracts',
-    'numerical_grounding_contracts', 'numerical_claims_contracts'])
+    'numerical_grounding_contracts', 'numerical_claims_contracts', 'read_only_diagnosis_contracts'])
 args = parser.parse_args()
 if args.keep_runs < 1:
     parser.error('--keep-runs must be at least 1')

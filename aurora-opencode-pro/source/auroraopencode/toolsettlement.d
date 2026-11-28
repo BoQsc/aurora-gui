@@ -225,7 +225,12 @@ bool advanceToolTaskState(ref ChatSession session, const ref ToolSettlement sett
     const prose = !settled.message.failed && isPlainDocumentMutation(event.toolName, arguments);
     if (!prose && (event.workspaceChanged || isSubstantiveMutation(event.toolName,
         settled.message.failed, event.diffAdditions, event.diffDeletions, event.diffText))) requireCheck();
-    else if (settled.currentFailure) requireCheck();
+    else if (settled.currentFailure)
+    {
+        // A read-only investigation can intentionally reproduce a failure.
+        // Keep its failed receipt, without turning observation into repair.
+        if (session.contract.intent != "analysis" || session.contract.currentIntent != "analysis") requireCheck();
+    }
     else if (settled.acceptedVerification) passCheck();
     else if (settled.checkerAttempt && !settled.scopedVerification &&
         !(priorStatus == "passed" && priorScope == session.verificationScope)) requireCheck();

@@ -5,8 +5,9 @@ import auroraopencode.numericalgrounding : numericalCodeRequest;
 import std.algorithm : canFind;
 import std.conv : to;
 import std.json : JSONValue, JSONType, parseJSON;
+import std.path : baseName;
 import std.regex : matchFirst, matchAll;
-import std.string : indexOf, strip;
+import std.string : indexOf, strip, splitLines, toLower;
 
 // Exact decimal identity, including exponent notation, without float tolerance.
 private string decimalIdentity(string value)
@@ -25,21 +26,80 @@ private string decimalIdentity(string value)
     return (match[1] == "-" ? "-" : "") ~ digits ~ "e" ~ to!string(exponent);
 }
 
-private void numericValues(JSONValue value, ref string[] result)
+private struct NumericalClaim { string value; bool assertionFact; }
+
+private void numericValues(JSONValue value, ref NumericalClaim[] result, string field = "")
 {
-    if (value.type == JSONType.object) foreach (key, child; value.object) numericValues(child, result);
-    else if (value.type == JSONType.array) foreach (child; value.array) numericValues(child, result);
+    const fact = ["test_expected", "test_expectation", "assertion_expected", "assertion_expectation"].canFind(field.toLower());
+    if (value.type == JSONType.object) foreach (key, child; value.object) numericValues(child, result, key);
+    else if (value.type == JSONType.array) foreach (child; value.array) numericValues(child, result, field);
     else if (value.type == JSONType.string)
-    { if (decimalIdentity(value.str).length) result ~= value.str; }
+    { if (decimalIdentity(value.str).length) result ~= NumericalClaim(value.str, fact); }
     else if (value.type == JSONType.integer || value.type == JSONType.uinteger)
-        result ~= value.toString();
+        result ~= NumericalClaim(value.toString(), fact);
+}
+
+// Only a literal expected argument of a real assertion supplies a source fact.
+// Mask comments/strings first; numbers in inputs, examples and read metadata do
+// not become evidence. This deliberately does not evaluate arbitrary Python.
+private string[] assertionExpectations(string output)
+{
+    string source;
+    foreach (line; output.splitLines())
+    {
+        const numbered = matchFirst(line, `^\d+: (.*)$`);
+        if (numbered.length) source ~= numbered[1] ~ "\n";
+    }
+    auto code = source.dup;
+    for (size_t i; i < code.length;)
+    {
+        if (code[i] == '#')
+        { while (i < code.length && code[i] != '\n') code[i++] = ' '; continue; }
+        if (code[i] != '\'' && code[i] != '"') { ++i; continue; }
+        const quote = code[i];
+        const width = i + 2 < code.length && code[i + 1] == quote && code[i + 2] == quote ? 3 : 1;
+        foreach (_; 0 .. width) code[i++] = ' ';
+        while (i < code.length)
+        {
+            if (code[i] == '\\')
+            { code[i++] = ' '; if (i < code.length) code[i++] = ' '; continue; }
+            if (code[i] == quote && (width == 1 ||
+                (i + 2 < code.length && code[i + 1] == quote && code[i + 2] == quote)))
+            { foreach (_; 0 .. width) code[i++] = ' '; break; }
+            if (code[i] != '\n') code[i] = ' ';
+            ++i;
+        }
+    }
+    string[] result;
+    foreach (line; (cast(string)code).splitLines())
+    {
+        const call = matchFirst(line, `^\s*(?:def\s+test\w*\s*\([^)]*\)\s*:\s*)?self\.assert(?:Equal|AlmostEqual|NotEqual)\s*\(`);
+        if (!call.length) continue;
+        const args = line[call[0].length .. $];
+        int depth;
+        size_t begin;
+        string[] values;
+        foreach (i, c; args)
+        {
+            if ((c == ',' || c == ')') && depth == 0)
+            { values ~= args[begin .. i].strip(); begin = i + 1; if (c == ')' || values.length == 2) break; }
+            else if (c == '(' || c == '[' || c == '{') ++depth;
+            else if (c == ')' || c == ']' || c == '}') --depth;
+        }
+        if (values.length < 2) continue;
+        auto expected = decimalIdentity(values[1]);
+        if (!expected.length) expected = decimalIdentity(values[0]);
+        if (expected.length) result ~= expected;
+    }
+    return result;
 }
 
 /// Decimal-string and integer JSON answers must not introduce an uncalculated
 /// expected value after observing the current code. Floating JSON numbers stay
 /// outside this exact-decimal check rather than using a float tolerance.
-/// No proof is inferred from arguments,
-/// source literals, failed execution or receipt metadata.
+/// Computed values never gain proof from source literals, failed execution or
+/// receipt metadata. Explicit assertion-expectation fields may report the
+/// observed expected argument of a requested test source.
 string unobservedNumericalClaim(const ref ChatSession session)
 {
     const path = activeMessagePath(session);
@@ -49,7 +109,7 @@ string unobservedNumericalClaim(const ref ChatSession session)
         if (session.messages[index].role == "user" && !session.messages[index].internal)
         { begin = i + 1; request = session.messages[index].content; }
     if (!numericalCodeRequest(request)) return "";
-    string[] claims;
+    NumericalClaim[] claims;
     foreach_reverse (index; path[begin .. $])
     {
         const ref message = session.messages[index];
@@ -61,6 +121,7 @@ string unobservedNumericalClaim(const ref ChatSession session)
     }
     if (!claims.length) return "";
     string[] observed;
+    string[][string] assertionFacts;
     bool executionAvailable;
     void outputs(string output)
     {
@@ -73,9 +134,21 @@ string unobservedNumericalClaim(const ref ChatSession session)
     foreach (index; path[begin .. $])
     {
         const ref message = session.messages[index];
-        if (message.role != "tool" || message.failed) continue;
+        if (message.role != "tool") continue;
+        // Source facts belong to the current observed workspace snapshot.
+        if (message.workspaceChanged || ["write", "edit", "apply_patch", "remove"].canFind(message.toolName))
+            assertionFacts = null;
         try
         {
+            if (message.toolName == "read")
+            {
+                const file = parseJSON(message.toolArgs)["filePath"].str;
+                const name = baseName(file).toLower();
+                assertionFacts.remove(file);
+                if (!message.failed && name.length > 3 && name[$-3 .. $] == ".py" && request.toLower().indexOf(name) >= 0)
+                    assertionFacts[file] = assertionExpectations(message.content);
+            }
+            if (message.failed) continue;
             if (message.toolName == "run")
             {
                 executionAvailable = true;
@@ -100,6 +173,14 @@ string unobservedNumericalClaim(const ref ChatSession session)
         catch (Exception) {}
     }
     if (!executionAvailable) return ""; // Preserve the execution-unavailable reporting path.
-    foreach (claim; claims) if (!observed.canFind(decimalIdentity(claim))) return claim;
+    foreach (claim; claims)
+    {
+        const identity = decimalIdentity(claim.value);
+        if (observed.canFind(identity)) continue;
+        bool sourced;
+        if (claim.assertionFact)
+            foreach (facts; assertionFacts) if (facts.canFind(identity)) { sourced = true; break; }
+        if (!sourced) return claim.value;
+    }
     return "";
 }

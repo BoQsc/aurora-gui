@@ -1,5 +1,13 @@
 # Agent recovery
 
+Read-only diagnosis retains intentionally failing test receipts as observations,
+without requiring an unrequested repair. Implementation checks and mutations
+still require verification. Numerical answers distinguish a test's observed
+assertion expectation from the independently computed required result: only
+explicit assertion-expectation fields can use an expected literal from a real
+read of the requested test source; computed values still require calculation
+output. Comments, examples, assertion inputs and receipt metadata supply none.
+
 Desktop and conversation-actor execution use the shared decision in `turnpolicy.d`
 and the recovery strategy in `agentloop.d`. Failed attempts retain ownership of
 unfinished work. There is no default attempt or outage deadline. Explicit Stop,

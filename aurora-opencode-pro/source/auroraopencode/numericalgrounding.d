@@ -30,6 +30,7 @@ enum numericalGroundingInstruction =
     "Read the named source directly in the supplied workspace; inspect unrelated files, inventory or environment only for a concrete missing path or dependency. " ~
     "Use an ordinary run with python -B or an equivalent cache-free invocation; omit run.check and run.inputs for this read-only calculation. " ~
     "No file changes or verification recipe are required. " ~
+    "A reported test/assertion expectation is an observed source fact; distinguish it from the independently computed required value. " ~
     "In the same probe independently calculate every requested required/expected value from the original rule, preserving its units and operation order. " ~
     "Derive that formula from the rule's components and exclusions, not by changing constants in the implementation under review. " ~
     "Keep quantities excluded from a discount, tax or other adjustment outside that adjustment, and show the separate components in the probe. " ~
